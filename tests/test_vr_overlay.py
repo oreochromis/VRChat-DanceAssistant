@@ -484,6 +484,36 @@ class WorkerHandleProtocolTests(unittest.TestCase):
         self.assertIs(result, vr_overlay.WORKER_CLOSED)
 
 
+class WorkerSocketTimeoutTests(unittest.TestCase):
+    """回归：worker 连接父进程后必须清掉 create_connection 残留的读超时。
+    父进程状态推送是去重的，面板状态静止时可能很久不发数据；残留的 15 秒
+    连接超时会让 reader 线程读超时，误判"父进程断开"而退出——3.9.8 面板
+    每隔约 16 秒"异常退出（代码 None）"的根因。"""
+
+    def test_worker_main_clears_socket_timeout_after_connect(self):
+        srv, cli = socket.socketpair()
+        self.addCleanup(srv.close)
+        self.addCleanup(cli.close)
+
+        def fake_create_connection(address, timeout=None, *args, **kwargs):
+            cli.settimeout(timeout)   # 模拟 create_connection 残留在 socket 上的超时
+            return cli
+
+        fake_openvr = types.SimpleNamespace(
+            VRApplication_Overlay=2,
+            init=MagicMock(side_effect=RuntimeError("InitError_Init_HmdNotFound")),
+            shutdown=MagicMock(),
+        )
+        with patch.object(vr_panel_worker.socket, "create_connection",
+                          fake_create_connection), \
+             patch.dict("os.environ", {vr_panel_worker.ENV_PORT: "1",
+                                       vr_panel_worker.ENV_TOKEN: "tok"}), \
+             patch("dance_ui.openvr_runtime.import_openvr", return_value=fake_openvr):
+            code = vr_panel_worker.worker_main()
+        self.assertEqual(code, vr_panel_worker.EXIT_INIT_ERROR)
+        self.assertIsNone(cli.gettimeout())
+
+
 class ApplicationsTests(unittest.TestCase):
     def setUp(self):
         # 主进程 init 前的 vrserver 就绪探针（子进程）在测试里一律 mock，

@@ -208,6 +208,10 @@ def worker_main():
         sock = socket.create_connection(("127.0.0.1", port), timeout=15)
     except OSError:
         return EXIT_ERROR
+    # create_connection 的 timeout 会残留在已连接的 socket 上：父进程状态推送
+    # 是去重的，状态静止时可能很久不发数据，reader 线程 15 秒读不到就会被
+    # 残留的读超时打断，误判为"父进程断开"而退出。连接成功后必须回到阻塞模式。
+    sock.settimeout(None)
     commands = queue.Queue()
     try:
         wfile = sock.makefile("w", encoding="utf-8", newline="\n")
