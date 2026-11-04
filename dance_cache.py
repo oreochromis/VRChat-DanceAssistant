@@ -564,6 +564,7 @@ BUNDLE_PATH = os.path.join(SCRIPT_DIR, "bundle_songs.json")
 YT_ID_RE = re.compile(r"(?:v=|youtu\.be/)([\w-]{11})")
 
 _bundle_ytid = {}            # song_id -> YouTube ID（官方歌单里 4821/4850 首可用）
+_bundle_names = {}           # song_id -> 歌名（官方歌单 n 字段，供曲库浏览显示）
 _bundle_lock = threading.Lock()
 _bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（会话内有效）
 _bundle_retry_at = {}        # 探测网络错误的退避时间戳
@@ -578,8 +579,9 @@ def _extract_ytid(urls):
 
 
 def _load_bundle_data(data):
-    """从 bundle JSON 建 id -> ytid 表，返回条数。已验证 CDN 文件名 == ytid + .mp4。"""
+    """从 bundle JSON 建 id -> ytid 表和 id -> 歌名表，返回条数。已验证 CDN 文件名 == ytid + .mp4。"""
     table = {}
+    names = {}
     for song in data.get("songs") or []:
         sid = song.get("i")
         urls = song.get("o") or []
@@ -587,11 +589,27 @@ def _load_bundle_data(data):
             ytid = _extract_ytid(urls if isinstance(urls, list) else [urls])
             if ytid:
                 table[sid] = ytid
+            name = str(song.get("n") or "").strip()
+            if name:
+                names[sid] = name
     if table:
         with _bundle_lock:
             _bundle_ytid.clear()
             _bundle_ytid.update(table)
+            _bundle_names.clear()
+            _bundle_names.update(names)
     return len(table)
+
+
+def bundle_song_names():
+    """id -> 歌名表（官方歌单）；为空时先尝试读本地缓存的 bundle。"""
+    with _bundle_lock:
+        names = dict(_bundle_names)
+    if not names:
+        load_bundle_cache()
+        with _bundle_lock:
+            names = dict(_bundle_names)
+    return names
 
 
 def load_bundle_cache():
@@ -862,7 +880,7 @@ def _wd_catalog():
 def scan_library(kind):
     """扫描曲库目录。kind: "pypy" | "wd"。未配置目录返回 None，否则返回
     {"dir", "kind", "songs": [{id, name, size, mtime}], "parts", "total_bytes"}。
-    .part 只计数不列入；name 仅 WannaDance（读 catalog，PyPyDance 本地无歌名）。"""
+    .part 只计数不列入；歌名 PyPyDance 读官方歌单直取表，WannaDance 读 catalog。"""
     with _config_lock:
         if kind == "wd":
             directory = _config.get("wd_library_dir") or ""
@@ -882,6 +900,8 @@ def scan_library(kind):
                 label = f"{nm} - {ar}" if ar and ar != nm else nm
                 if label:
                     names[sid] = label
+    else:
+        names = bundle_song_names()  # PyPyDance 歌名来自官方歌单直取表
     songs = []
     parts = 0
     total = 0

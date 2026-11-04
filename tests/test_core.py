@@ -946,6 +946,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.dc.clean_stale_hosts(), 0)
 
     def test_scan_library_pypy(self):
+        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")  # 无歌单时歌名为 None
         (self.library / "100.mp4").write_bytes(b"\0" * 10)
         (self.library / "200.mp4").write_bytes(b"\0" * 20)
         (self.library / "200.mp4.part").write_bytes(b"x")
@@ -955,6 +956,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["parts"], 1)
         self.assertEqual(result["total_bytes"], 30)
         self.assertIsNone(result["songs"][0]["name"])
+
+    def test_scan_library_pypy_reads_bundle_names(self):
+        (self.library / "100.mp4").write_bytes(b"\0" * 10)
+        with self.dc._bundle_lock:
+            self.dc._bundle_names.clear()
+            self.dc._bundle_names.update({100: "Test Song - Singer"})
+        result = self.dc.scan_library("pypy")
+        self.assertEqual(result["songs"][0]["name"], "Test Song - Singer")
 
     def test_scan_library_wd_reads_catalog_names(self):
         wd_dir = self.root / "wdlib"
@@ -975,6 +984,7 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(self.dc.scan_library("wd"))
 
     def test_library_missing_pypy_against_bundle(self):
+        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
         (self.library / "100.mp4").write_bytes(b"\0")
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
