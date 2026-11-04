@@ -916,6 +916,129 @@ class CoreTests(unittest.TestCase):
             restore.assert_called_once()
             self.assertFalse(self.dc.is_running())
 
+    def test_count_stale_hosts_readonly(self):
+        hosts = self.root / "hosts-sample"
+        hosts.write_text("127.0.0.1 localhost\n"
+                         "127.0.0.1 cdn.pypy.dance # dance-cache\n"
+                         "# comment\n"
+                         "127.0.0.1 api.pypy.dance # dance-cache\n",
+                         encoding="utf-8")
+        self.dc.HOSTS_PATH = str(hosts)
+        before = hosts.read_text(encoding="utf-8")
+        self.assertEqual(self.dc.count_stale_hosts(), 2)
+        self.assertEqual(hosts.read_text(encoding="utf-8"), before)  # 只读，不修改文件
+
+    def test_count_stale_hosts_missing_file_returns_zero(self):
+        self.dc.HOSTS_PATH = str(self.root / "no-such-hosts")
+        self.assertEqual(self.dc.count_stale_hosts(), 0)
+
+    def test_clean_stale_hosts_returns_removed_count(self):
+        hosts = self.root / "hosts-sample"
+        hosts.write_text("127.0.0.1 localhost\n"
+                         "127.0.0.1 cdn.pypy.dance # dance-cache\n"
+                         "127.0.0.1 api.pypy.dance # dance-cache\n",
+                         encoding="utf-8")
+        self.dc.HOSTS_PATH = str(hosts)
+        self.assertEqual(self.dc.clean_stale_hosts(), 2)
+        self.assertEqual(hosts.read_text(encoding="utf-8"), "127.0.0.1 localhost\n")
+        self.assertEqual(self.dc.clean_stale_hosts(), 0)  # 幂等：再清没有可清的
+        self.dc.HOSTS_PATH = str(self.root / "no-such-hosts")
+        self.assertEqual(self.dc.clean_stale_hosts(), 0)
+
+    def test_scan_library_pypy(self):
+        (self.library / "100.mp4").write_bytes(b"\0" * 10)
+        (self.library / "200.mp4").write_bytes(b"\0" * 20)
+        (self.library / "200.mp4.part").write_bytes(b"x")
+        (self.library / "notes.txt").write_text("skip", encoding="utf-8")
+        result = self.dc.scan_library("pypy")
+        self.assertEqual([s["id"] for s in result["songs"]], [100, 200])
+        self.assertEqual(result["parts"], 1)
+        self.assertEqual(result["total_bytes"], 30)
+        self.assertIsNone(result["songs"][0]["name"])
+
+    def test_scan_library_wd_reads_catalog_names(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        (wd_dir / "wd_7.mp4").write_bytes(b"\0" * 5)
+        (wd_dir / "other.mp4").write_bytes(b"\0")  # 不匹配 wd_ 命名，跳过
+        (wd_dir / "wannadance_catalog.json").write_text(json.dumps(
+            {"7": {"name": "Song A", "artist": "Group B", "disable_public": 0}}), encoding="utf-8")
+        result = self.dc.scan_library("wd")
+        self.assertEqual(len(result["songs"]), 1)
+        self.assertEqual(result["songs"][0]["id"], 7)
+        self.assertEqual(result["songs"][0]["name"], "Song A - Group B")
+
+    def test_scan_library_unset_dir_returns_none(self):
+        self.dc._config["library_dir"] = ""
+        self.assertIsNone(self.dc.scan_library("pypy"))
+        self.assertIsNone(self.dc.scan_library("wd"))
+
+    def test_library_missing_pypy_against_bundle(self):
+        (self.library / "100.mp4").write_bytes(b"\0")
+        with self.dc._bundle_lock:
+            self.dc._bundle_ytid.clear()
+            self.dc._bundle_ytid.update({100: "aaaaaaaaaaa", 101: "bbbbbbbbbbb"})
+        result = self.dc.library_missing("pypy")
+        self.assertEqual(result["source"], "官方歌单直取表")
+        self.assertEqual(result["expected"], 2)
+        self.assertEqual(result["missing"], [101])
+
+    def test_library_missing_pypy_without_bundle_returns_no_source(self):
+        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
+        with self.dc._bundle_lock:
+            self.dc._bundle_ytid.clear()
+        result = self.dc.library_missing("pypy")
+        self.assertIsNone(result["source"])
+        self.assertEqual(result["missing"], [])
+
+    def test_library_missing_wd_excludes_disabled(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        (wd_dir / "wd_7.mp4").write_bytes(b"\0")
+        (wd_dir / "wannadance_catalog.json").write_text(json.dumps({
+            "7": {"name": "A", "disable_public": 0},
+            "8": {"name": "B", "disable_public": 1},   # 下架曲目不算缺失
+            "9": {"name": "C", "disable_public": 0}}), encoding="utf-8")
+        result = self.dc.library_missing("wd")
+        self.assertEqual(result["expected"], 2)
+        self.assertEqual(result["missing"], [9])
+
+    def test_library_missing_wd_without_catalog(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        result = self.dc.library_missing("wd")
+        self.assertIsNone(result["source"])
+
+    def test_delete_library_songs(self):
+        (self.library / "1.mp4").write_bytes(b"\0" * 10)
+        (self.library / "2.mp4").write_bytes(b"\0" * 10)
+        with mock.patch.object(self.dc, "is_running", return_value=False):
+            result = self.dc.delete_library_songs("pypy", [1, 2, 3])
+        self.assertEqual(result["deleted"], 2)
+        self.assertEqual(result["freed"], 20)
+        self.assertEqual(len(result["failed"]), 1)
+        self.assertEqual(result["failed"][0][0], 3)
+        self.assertFalse((self.library / "1.mp4").exists())
+        self.assertFalse((self.library / "2.mp4").exists())
+
+    def test_delete_library_songs_refused_while_running(self):
+        (self.library / "1.mp4").write_bytes(b"\0" * 10)
+        with mock.patch.object(self.dc, "is_running", return_value=True):
+            with self.assertRaises(RuntimeError):
+                self.dc.delete_library_songs("pypy", [1])
+        self.assertTrue((self.library / "1.mp4").exists())
+
+    def test_delete_library_songs_refused_during_maintenance(self):
+        (self.library / "1.mp4").write_bytes(b"\0" * 10)
+        with mock.patch.object(self.dc, "is_running", return_value=False), \
+                mock.patch.object(self.dc, "rebuilding", return_value=True):
+            with self.assertRaises(RuntimeError):
+                self.dc.delete_library_songs("pypy", [1])
+        self.assertTrue((self.library / "1.mp4").exists())
+
     def test_stop_failure_is_visible_in_runtime_state(self):
         with self.service_environment() as (server, factory, resolver, hijack, restore):
             self.assertIsNone(self.dc.start_services())

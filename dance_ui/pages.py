@@ -143,6 +143,16 @@ class Pages:
         self.close_to_tray.setToolTip("开启后点击右上角 X 会把窗口收进系统托盘（屏幕右下角），缓存服务保持运行；双击托盘图标恢复窗口，右键托盘图标可选择退出。")
         self.close_to_tray.toggled.connect(lambda: self.mark_dirty("settings"))
         startup.box.addWidget(self.close_to_tray)
+        hosts_row, hosts_box = row()
+        self.hosts_clean_button = button("清理 hosts 残留", self.clean_stale_hosts_clicked)
+        hosts_box.addWidget(self.hosts_clean_button)
+        self.hosts_clean_status = label("", muted=True, wrap=True)
+        hosts_box.addWidget(self.hosts_clean_status, 1)
+        startup.box.addWidget(hosts_row)
+        startup.box.addWidget(label(
+            "上次异常退出（强杀、断电）可能在系统 hosts 留下本程序的条目，导致不开软件时视频无法加载。服务启动时会自动清理；此处可手动清理，适合准备停用或卸载本软件时使用。",
+            muted=True, wrap=True,
+        ))
         box.addWidget(startup)
         general = Card()
         general.box.addWidget(label("缓存行为", subheading=True))
@@ -322,7 +332,9 @@ class Pages:
         library.box.addWidget(self.youtube_permanent)
         library.box.addWidget(label("YouTube 视频在实际播放并解析到视频地址后缓存。"
                                     "永久保存需先填写曲库目录才会生效，未填写时自动暂缓。", muted=True, wrap=True))
-        library.box.addWidget(button("打开曲库目录", self.open_library, link=True), 0, Qt.AlignmentFlag.AlignLeft)
+        lib_actions, lib_actions_box = row(button("打开曲库目录", self.open_library, link=True),
+                                           button("浏览曲库…", lambda: self.open_library_browser("pypy"), link=True))
+        library.box.addWidget(lib_actions, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(library)
 
         wd_library = Card()
@@ -341,7 +353,9 @@ class Pages:
         wd_library.box.addWidget(self.wd_permanent)
         wd_library.box.addWidget(label("永久保存需先填写曲库目录才会生效，未填写时自动暂缓。"
                                        "永久曲库不受临时缓存上限影响。", muted=True, wrap=True))
-        wd_library.box.addWidget(button("打开曲库目录", self.open_wd_library, link=True), 0, Qt.AlignmentFlag.AlignLeft)
+        wd_actions, wd_actions_box = row(button("打开曲库目录", self.open_wd_library, link=True),
+                                         button("浏览曲库…", lambda: self.open_library_browser("wd"), link=True))
+        wd_library.box.addWidget(wd_actions, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(wd_library)
 
         maintenance = Card()

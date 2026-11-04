@@ -830,6 +830,152 @@ def wd_target_path(song_id):
     return cache_path(wd_cache_name(song_id))
 
 
+# ---------------- 曲库浏览（GUI 曲库管理窗口） ----------------
+
+NUMERIC_MP4_RE = re.compile(r"^(\d+)\.mp4$")  # PyPyDance 曲库命名（编号即文件名）
+
+
+def _wd_catalog():
+    """读取 WannaDance 曲库目录旁 wannadance_catalog.json（批量下载器保存）。
+    返回 {id: item_dict}；文件不存在或解析失败返回 None。"""
+    with _config_lock:
+        directory = _config.get("wd_library_dir") or ""
+    if not directory:
+        return None
+    try:
+        with open(os.path.join(directory, "wannadance_catalog.json"), "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    catalog = {}
+    if isinstance(data, dict):
+        for key, item in data.items():
+            try:
+                sid = int(key)
+            except (TypeError, ValueError):
+                continue
+            if isinstance(item, dict):
+                catalog[sid] = item
+    return catalog
+
+
+def scan_library(kind):
+    """扫描曲库目录。kind: "pypy" | "wd"。未配置目录返回 None，否则返回
+    {"dir", "kind", "songs": [{id, name, size, mtime}], "parts", "total_bytes"}。
+    .part 只计数不列入；name 仅 WannaDance（读 catalog，PyPyDance 本地无歌名）。"""
+    with _config_lock:
+        if kind == "wd":
+            directory = _config.get("wd_library_dir") or ""
+            pattern = WD_CACHE_RE
+        else:
+            directory = _config.get("library_dir") or ""
+            pattern = NUMERIC_MP4_RE
+    if not directory or not os.path.isdir(directory):
+        return None
+    names = {}
+    if kind == "wd":
+        catalog = _wd_catalog()
+        if catalog:
+            for sid, item in catalog.items():
+                nm = str(item.get("name") or "").strip()
+                ar = str(item.get("artist") or "").strip()
+                label = f"{nm} - {ar}" if ar and ar != nm else nm
+                if label:
+                    names[sid] = label
+    songs = []
+    parts = 0
+    total = 0
+    try:
+        with os.scandir(directory) as it:
+            for entry in it:
+                if entry.name.endswith(".part"):
+                    parts += 1
+                    continue
+                m = pattern.match(entry.name)
+                if not m:
+                    continue
+                try:
+                    if not entry.is_file():
+                        continue
+                    st = entry.stat()
+                except OSError:
+                    continue
+                sid = int(m.group(1))
+                songs.append({"id": sid, "name": names.get(sid),
+                              "size": st.st_size, "mtime": st.st_mtime})
+                total += st.st_size
+    except OSError:
+        return None
+    songs.sort(key=lambda s: s["id"])
+    return {"dir": directory, "kind": kind, "songs": songs,
+            "parts": parts, "total_bytes": total}
+
+
+def library_missing(kind):
+    """对照官方清单找曲库里缺的编号。返回 None（目录未设置）或
+    {"source": 清单描述或 None（无清单无法对比）, "expected", "missing": [id], "dir"}。
+    pypy 对照歌单直取表（_bundle_ytid）；wd 对照 wannadance_catalog.json。"""
+    scan = scan_library(kind)
+    if scan is None:
+        return None
+    have = {s["id"] for s in scan["songs"]}
+    if kind == "wd":
+        catalog = _wd_catalog()
+        if catalog is None:
+            return {"source": None, "expected": 0, "missing": [], "dir": scan["dir"]}
+        expected = {sid for sid, item in catalog.items() if not item.get("disable_public")}
+        source = "wannadance_catalog.json（批量下载器清单）"
+    else:
+        with _bundle_lock:
+            table = dict(_bundle_ytid)
+        if not table:
+            load_bundle_cache()
+            with _bundle_lock:
+                table = dict(_bundle_ytid)
+        if not table:
+            return {"source": None, "expected": 0, "missing": [], "dir": scan["dir"]}
+        expected = set(table)
+        source = "官方歌单直取表"
+    return {"source": source, "expected": len(expected),
+            "missing": sorted(expected - have), "dir": scan["dir"]}
+
+
+def delete_library_songs(kind, ids):
+    """从曲库目录永久删除指定编号的 mp4（不进回收站）。
+    服务运行中或曲库维护任务（重建/校验）进行中拒绝。返回 {"deleted", "failed", "freed"}。"""
+    with _config_lock:
+        if kind == "wd":
+            directory = _config.get("wd_library_dir") or ""
+            name_for = wd_cache_name
+        else:
+            directory = _config.get("library_dir") or ""
+            name_for = lambda sid: f"{sid}.mp4"
+    if not directory or not os.path.isdir(directory):
+        raise RuntimeError("曲库目录未设置或不存在")
+    if is_running():
+        raise RuntimeError("服务运行中，请先停止服务再删除曲库文件")
+    if rebuilding() or verifying():
+        raise RuntimeError("曲库任务进行中，请等待完成或取消后再删除")
+    deleted = 0
+    freed = 0
+    failed = []
+    for sid in ids:
+        sid = int(sid)
+        path = os.path.join(directory, name_for(sid))
+        try:
+            size = os.path.getsize(path)
+            os.remove(path)
+            deleted += 1
+            freed += size
+        except FileNotFoundError:
+            failed.append((sid, "文件不存在"))
+        except OSError as e:
+            failed.append((sid, str(e)))
+    log(f"曲库浏览：永久删除 {deleted} 个文件，释放 {freed / 1048576:.1f} MB"
+        + (f"，失败 {len(failed)} 个" if failed else ""))
+    return {"deleted": deleted, "failed": failed, "freed": freed}
+
+
 def learn_mapping_from_redirect(song_num, loc):
     """从 /video 的 302 Location 学习映射：CDN 记文件名，YouTube 记 yt:地址"""
     u = urllib.parse.urlparse(loc)
@@ -1056,18 +1202,31 @@ def _hosts_error_reason(e):
             "请关闭相关防护后重试，或先启动本软件再开加速器")
 
 
+def count_stale_hosts():
+    """只读统计 hosts 里带本程序标记的条目数（不修改文件）。
+    服务未运行时这些条目就是异常退出（强杀、断电）留下的残留。"""
+    try:
+        with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
+            return sum(1 for line in f if HOSTS_MARK in line)
+    except OSError:
+        return 0
+
+
 def clean_stale_hosts():
+    """删除 hosts 里带本程序标记的条目，返回清理条数。"""
     with _hosts_lock:
         try:
             with open(HOSTS_PATH, "r", encoding="utf-8", errors="replace") as f:
                 lines = f.readlines()
             kept = [l for l in lines if HOSTS_MARK not in l]
-            if len(kept) != len(lines):
+            removed = len(lines) - len(kept)
+            if removed:
                 with open(HOSTS_PATH, "w", encoding="utf-8") as f:
                     f.writelines(kept)
                 log("已清理上次残留的 hosts 记录")
+            return removed
         except FileNotFoundError:
-            pass
+            return 0
         except PermissionError as e:
             log(f"错误: hosts 修改失败（{_hosts_error_reason(e)}）")
             raise

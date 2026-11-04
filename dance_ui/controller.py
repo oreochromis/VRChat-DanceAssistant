@@ -239,6 +239,48 @@ class CoreController(QObject):
             return
         self._run("clear_cache", core.clear_cache)
 
+    def clean_stale_hosts(self):
+        if self.demo:
+            self.result.emit("clean_stale_hosts", {"removed": 0, "demo": True})
+            return
+        self._run("clean_stale_hosts", core.clean_stale_hosts)
+
+    @staticmethod
+    def _demo_library_scan(kind):
+        songs = [
+            {"id": 3528, "name": "恋爱循环 - 千石抚子" if kind == "wd" else None,
+             "size": 18 * 1024**2, "mtime": 1761000000},
+            {"id": 7152, "name": "极乐净土 - GARNiDELiA" if kind == "wd" else None,
+             "size": 42 * 1024**2, "mtime": 1761100000},
+            {"id": 5290, "name": "アイドル - YOASOBI" if kind == "wd" else None,
+             "size": 36 * 1024**2, "mtime": 1761200000},
+        ]
+        return {"dir": "演示曲库", "kind": kind, "songs": songs, "parts": 1,
+                "total_bytes": sum(s["size"] for s in songs), "demo": True}
+
+    def library_scan(self, kind: str):
+        if self.demo:
+            self.result.emit("library_scan", self._demo_library_scan(kind))
+            return
+        self._run("library_scan", lambda: core.scan_library(kind))
+
+    def library_missing(self, kind: str):
+        if self.demo:
+            scan = self._demo_library_scan(kind)
+            scan.update({"source": "演示清单", "expected": 4, "missing": [9999]})
+            self.result.emit("library_missing", scan)
+            return
+        self._run("library_missing", lambda: core.library_missing(kind))
+
+    def library_delete(self, kind: str, ids):
+        ids = [int(i) for i in ids]
+        if self.demo:
+            self.result.emit("library_delete", {"deleted": len(ids), "failed": [],
+                                                "freed": len(ids) * 20 * 1024**2,
+                                                "demo": True, "kind": kind})
+            return
+        self._run("library_delete", lambda: core.delete_library_songs(kind, ids))
+
     def maintenance(self, kind: str):
         if self.demo:
             self._demo_maintenance_kind = kind

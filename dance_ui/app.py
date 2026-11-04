@@ -86,6 +86,7 @@ class MainWindow(QMainWindow, Pages):
         self._banner_generation = 0
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
+        self._library_browser = None  # 曲库浏览窗口（非模态单例）
         self.setWindowTitle("VRChat 跳舞房助手" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
@@ -566,11 +567,27 @@ class MainWindow(QMainWindow, Pages):
             return
         self.controller.open_directory(saved)
 
+    def open_library_browser(self, kind="pypy"):
+        from .library_browser import LibraryBrowser
+        if self._library_browser is not None:
+            self._library_browser.close()
+            self._library_browser = None
+        self._library_browser = LibraryBrowser(self, kind)
+        self._library_browser.show()
+        self._library_browser.raise_()
+        self._library_browser.activateWindow()
+
     def clear_cache(self):
         if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.controller.clear_cache()
+
+    def clean_stale_hosts_clicked(self):
+        if self._runtime.get("running"):
+            self.hosts_clean_status.setText("服务运行中，hosts 条目由本程序管理，无需清理；停用软件时请先停止服务再清理。")
+            return
+        self.controller.clean_stale_hosts()
 
     def toggle_service(self):
         if self._runtime.get("running") or self._runtime.get("hosts_restore_pending"):
@@ -951,6 +968,14 @@ class MainWindow(QMainWindow, Pages):
                 for error in result.get("errors", []):
                     self.append_log(str(error))
             self.notify(text, error=bool(result.get("failed_count")))
+        elif operation == "clean_stale_hosts":
+            removed = (result or {}).get("removed", 0)
+            if (result or {}).get("demo"):
+                self.hosts_clean_status.setText("演示模式：未实际修改 hosts。")
+            elif removed:
+                self.hosts_clean_status.setText(f"已清理 {removed} 条残留条目。停用本软件后视频域名将直接访问官方服务器。")
+            else:
+                self.hosts_clean_status.setText("没有残留条目，hosts 是干净的。")
             self.controller.refresh_stats()
         elif operation == "update_check":
             manual = self._update_manual
@@ -990,6 +1015,10 @@ class MainWindow(QMainWindow, Pages):
                 self.update_status.setText("检查失败：" + message)
                 self.update_check_button.setEnabled(True)
             return  # 自动检查失败（无网络等）静默忽略
+        if operation == "clean_stale_hosts":
+            self.hosts_clean_status.setText("清理失败：" + message)
+            self.append_log("[界面] hosts 残留清理失败：" + message)
+            return
         self.notify(message, error=True)
         if operation == "steamvr_startup":
             self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + message)
@@ -1027,6 +1056,9 @@ class MainWindow(QMainWindow, Pages):
         elif operation == "clear_cache":
             self.clear_cache_button.setEnabled(not busy)
             self.clear_cache_button.setText("正在清理…" if busy else "清理临时缓存")
+        elif operation == "clean_stale_hosts":
+            self.hosts_clean_button.setEnabled(not busy)
+            self.hosts_clean_button.setText("正在清理…" if busy else "清理 hosts 残留")
         elif operation in ("start", "stop"):
             if busy:
                 self.service_button.setEnabled(False)
@@ -1178,6 +1210,19 @@ def main(argv=None):
                              daemon=True, name="instance-wake").start()
         for warning in store.warnings:
             window.notify(warning, error=True)
+        if os.name == "nt" and not args.demo:
+            # 异常退出（强杀、断电）会把本程序的 hosts 条目留在系统里，导致不开
+            # 软件时视频无法加载。在服务自动启动（200ms 后连带清理）之前提示，
+            # 让准备停用/卸载的用户知道有手动清理入口。
+            try:
+                import dance_cache as core
+                stale_hosts = core.count_stale_hosts()
+            except Exception:
+                stale_hosts = 0
+            if stale_hosts:
+                window.notify(f"检测到上次异常退出留下的 hosts 残留（{stale_hosts} 条），"
+                              "服务启动时会自动清理；若准备停用本软件，可在「设置 → 启动」手动清理。")
+                window.append_log(f"检测到上次异常退出留下的 hosts 残留（{stale_hosts} 条）")
         QTimer.singleShot(0, controller.publish_initial)
         if args.smoke_test_report is not None:
             from .smoke import inspect_demo, save_report
