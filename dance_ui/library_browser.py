@@ -5,10 +5,11 @@ import os
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView,
-    QLineEdit, QMessageBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
+    QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QTableWidget,
+    QTableWidgetItem, QVBoxLayout,
 )
 
 from .pages import button
@@ -16,6 +17,8 @@ from .widgets import bytes_text, label
 
 _KINDS = (("pypy", "PyPyDance 曲库"), ("wd", "WannaDance 曲库"))
 _OPS = ("library_scan", "library_missing", "library_delete")
+_FLAG_ROLE = Qt.ItemDataRole.UserRole + 1  # 行类型标记：None=本地文件，"missing"/"dead"=缺失行
+_MISSING_COLOR = QColor(Qt.GlobalColor.gray)
 
 
 class _SortItem(QTableWidgetItem):
@@ -37,11 +40,13 @@ class LibraryBrowser(QDialog):
         self._kind = kind if kind in dict(_KINDS) else "pypy"
         self._dir = ""
         self._songs = []
+        self._parts = 0
+        self._missing = {}  # id -> {"name": str|None, "dead": bool}
         self._pending = set()
 
         self.setWindowTitle("曲库浏览")
         self.setWindowFlag(Qt.WindowType.Window, True)
-        self.resize(760, 560)
+        self.resize(820, 560)
 
         box = QVBoxLayout(self)
         box.setContentsMargins(20, 16, 20, 16)
@@ -59,6 +64,9 @@ class LibraryBrowser(QDialog):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._apply_filter)
         top.addWidget(self.search, 1)
+        self.only_missing = QCheckBox("只看缺失")
+        self.only_missing.toggled.connect(self._apply_filter)
+        top.addWidget(self.only_missing)
         self.refresh_button = button("刷新", self.refresh)
         top.addWidget(self.refresh_button)
         box.addLayout(top)
@@ -89,6 +97,10 @@ class LibraryBrowser(QDialog):
         bottom = QHBoxLayout()
         self.missing_button = button("查缺失", self.find_missing)
         bottom.addWidget(self.missing_button)
+        self.copy_button = button("复制选中编号", self.copy_selected)
+        bottom.addWidget(self.copy_button)
+        self.export_button = button("导出缺失清单…", self.export_missing)
+        bottom.addWidget(self.export_button)
         self.open_dir_button = button("打开曲库目录", self.open_directory)
         bottom.addWidget(self.open_dir_button)
         bottom.addStretch(1)
@@ -105,6 +117,8 @@ class LibraryBrowser(QDialog):
     # ---------------- 数据流 ----------------
 
     def refresh(self):
+        self._missing = {}
+        self.missing_label.hide()
         self.summary.setText("正在扫描…")
         self.table.setRowCount(0)
         self.controller.library_scan(self._kind)
@@ -116,11 +130,11 @@ class LibraryBrowser(QDialog):
 
     def _on_result(self, operation, result):
         if operation == "library_scan":
-            if result is None or not isinstance(result, dict) or result.get("kind", self._kind) != self._kind:
-                if result is None:
-                    self._show_no_dir()
+            if result is None:
+                self._show_no_dir()
                 return
-            self._populate(result)
+            if isinstance(result, dict) and result.get("kind", self._kind) == self._kind:
+                self._populate(result)
         elif operation == "library_missing":
             if result is None:
                 self.missing_label.setText("未设置曲库目录，无法检查。")
@@ -156,10 +170,28 @@ class LibraryBrowser(QDialog):
         self._songs = []
         self.summary.setText("未设置曲库目录或目录不存在，请先在「存储」页配置并应用更改。")
 
+    @staticmethod
+    def _row_items(sid, name, size_text, size_key, time_text, time_key, flag=None):
+        item_id = _SortItem(str(sid))
+        item_id.setData(Qt.ItemDataRole.UserRole, sid)
+        item_id.setData(_FLAG_ROLE, flag)
+        item_name = _SortItem(name or "—")
+        item_size = _SortItem(size_text)
+        item_size.setData(Qt.ItemDataRole.UserRole, size_key)
+        item_time = _SortItem(time_text)
+        item_time.setData(Qt.ItemDataRole.UserRole, time_key)
+        items = [item_id, item_name, item_size, item_time]
+        if flag:
+            for item in items:
+                item.setForeground(_MISSING_COLOR)
+                item.setToolTip("已确认下架（服务器无此文件）" if flag == "dead"
+                                else "缺失：本地没有该文件")
+        return items
+
     def _populate(self, result):
         self._dir = result.get("dir") or ""
         self._songs = result.get("songs") or []
-        parts = result.get("parts", 0)
+        parts = self._parts = result.get("parts", self._parts)
         total = result.get("total_bytes", 0)
         text = f"共 {len(self._songs)} 首 · {bytes_text(total)}"
         if parts:
@@ -168,23 +200,27 @@ class LibraryBrowser(QDialog):
             text += f" — {self._dir}"
         self.summary.setText(text)
 
+        rows = []
+        for song in self._songs:
+            mtime = song.get("mtime") or 0
+            rows.append(self._row_items(
+                int(song.get("id", 0)), song.get("name"),
+                bytes_text(song.get("size", 0)), int(song.get("size", 0)),
+                datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "—",
+                mtime))
+        for sid, info in self._missing.items():
+            rows.append(self._row_items(
+                sid, info.get("name"),
+                "已下架" if info.get("dead") else "缺失", -2 if info.get("dead") else -1,
+                "—", 0, "dead" if info.get("dead") else "missing"))
+        rows.sort(key=lambda items: items[0].data(Qt.ItemDataRole.UserRole))
+
         self.table.setSortingEnabled(False)
         self.table.setUpdatesEnabled(False)
-        self.table.setRowCount(len(self._songs))
-        for row, song in enumerate(self._songs):
-            sid = int(song.get("id", 0))
-            item_id = _SortItem(str(sid))
-            item_id.setData(Qt.ItemDataRole.UserRole, sid)
-            item_name = _SortItem(str(song.get("name") or "—"))
-            item_size = _SortItem(bytes_text(song.get("size", 0)))
-            item_size.setData(Qt.ItemDataRole.UserRole, int(song.get("size", 0)))
-            mtime = song.get("mtime") or 0
-            item_time = _SortItem(datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "—")
-            item_time.setData(Qt.ItemDataRole.UserRole, mtime)
-            self.table.setItem(row, 0, item_id)
-            self.table.setItem(row, 1, item_name)
-            self.table.setItem(row, 2, item_size)
-            self.table.setItem(row, 3, item_time)
+        self.table.setRowCount(len(rows))
+        for row_index, items in enumerate(rows):
+            for column, item in enumerate(items):
+                self.table.setItem(row_index, column, item)
         self.table.setUpdatesEnabled(True)
         self.table.setSortingEnabled(True)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
@@ -192,32 +228,49 @@ class LibraryBrowser(QDialog):
 
     def _apply_filter(self):
         needle = self.search.text().strip().lower()
+        only_missing = self.only_missing.isChecked()
         for row in range(self.table.rowCount()):
-            if not needle:
-                self.table.setRowHidden(row, False)
-                continue
-            hay = (self.table.item(row, 0).text() + " " + self.table.item(row, 1).text()).lower()
-            self.table.setRowHidden(row, needle not in hay)
+            flag = self.table.item(row, 0).data(_FLAG_ROLE)
+            hidden = False
+            if only_missing and not flag:
+                hidden = True
+            if not hidden and needle:
+                hay = (self.table.item(row, 0).text() + " " + self.table.item(row, 1).text()).lower()
+                hidden = needle not in hay
+            self.table.setRowHidden(row, hidden)
 
     def _show_missing(self, result):
         source = result.get("source")
         missing = result.get("missing") or []
+        dead = set(result.get("dead") or [])
+        names = result.get("names") or {}
         expected = result.get("expected", 0)
         if not source:
             if self._kind == "wd":
                 text = "缺少清单文件 wannadance_catalog.json（可由批量下载器生成），无法对比缺失。"
             else:
                 text = "官方歌单直取表尚未加载，无法对比缺失；启动一次缓存服务后重试。"
-        elif not missing:
+            self.missing_label.setText(text)
+            self.missing_label.show()
+            return
+        self._missing = {int(sid): {"name": names.get(str(sid)) or names.get(sid),
+                                    "dead": sid in dead}
+                         for sid in missing}
+        fillable = len(missing) - len(dead)
+        if not missing:
             text = f"对照{source}（{expected} 首）：没有缺失，曲库完整。"
         else:
-            shown = "、".join(str(i) for i in missing[:20])
-            suffix = f" 等共 {len(missing)} 首" if len(missing) > 20 else ""
-            text = f"对照{source}（{expected} 首）：缺失 {len(missing)} 首 — {shown}{suffix}"
+            text = f"对照{source}（{expected} 首）：缺失 {len(missing)} 首（可补 {fillable}"
+            if dead:
+                text += f" · 已确认下架 {len(dead)}"
+            text += "），已在列表中灰色标出。"
             if self._kind == "pypy":
-                text += "（仅覆盖官方歌单直取表范围）"
+                text += "仅覆盖官方歌单直取表范围。"
         self.missing_label.setText(text)
         self.missing_label.show()
+        # 合并缺失行进表格（保留已有文件行的最新扫描数据）
+        self._populate({"dir": self._dir, "songs": self._songs,
+                        "total_bytes": sum(int(s.get("size", 0)) for s in self._songs)})
 
     def _show_deleted(self, result):
         deleted = result.get("deleted", 0)
@@ -237,23 +290,56 @@ class LibraryBrowser(QDialog):
 
     def _source_changed(self):
         self._kind = self.source.currentData()
-        self.missing_label.hide()
         self.refresh()
 
-    def _selected_ids(self):
-        rows = {index.row() for index in self.table.selectionModel().selectedRows()}
+    def _selected_rows(self):
+        return sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+
+    def _row_info(self, row):
+        item = self.table.item(row, 0)
+        if item is None:
+            return None, None
+        return int(item.data(Qt.ItemDataRole.UserRole)), item.data(_FLAG_ROLE)
+
+    def copy_selected(self):
         ids = []
-        for row in sorted(rows):
-            item = self.table.item(row, 0)
-            if item is not None:
-                ids.append(int(item.data(Qt.ItemDataRole.UserRole)))
-        return ids
+        for row in self._selected_rows():
+            sid, _ = self._row_info(row)
+            if sid is not None:
+                ids.append(str(sid))
+        if not ids:
+            self._window.notify("请先在表格中选中歌曲。")
+            return
+        QApplication.clipboard().setText("\n".join(ids))
+        self._window.notify(f"已复制 {len(ids)} 个编号到剪贴板。")
+
+    def export_missing(self):
+        ids = []
+        for row in range(self.table.rowCount()):
+            if self.table.isRowHidden(row):
+                continue
+            sid, flag = self._row_info(row)
+            if flag:
+                ids.append(sid)
+        if not ids:
+            self._window.notify("当前没有可导出的缺失歌曲，请先「查缺失」。")
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出缺失清单", f"缺失歌曲-{self._kind}.txt", "文本文件 (*.txt)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(str(sid) for sid in ids) + "\n")
+        except OSError as e:
+            self._window.notify(f"导出失败：{e}", error=True)
+            return
+        self._window.notify(f"已导出 {len(ids)} 个缺失编号到 {path}")
 
     def _row_path(self, row):
-        item = self.table.item(row, 0)
-        if item is None or not self._dir:
+        sid, flag = self._row_info(row)
+        if sid is None or flag or not self._dir:
             return None
-        sid = int(item.data(Qt.ItemDataRole.UserRole))
         name = f"wd_{sid}.mp4" if self._kind == "wd" else f"{sid}.mp4"
         return os.path.join(self._dir, name)
 
@@ -270,9 +356,20 @@ class LibraryBrowser(QDialog):
             self.controller.open_directory(self._dir)
 
     def delete_selected(self):
-        ids = self._selected_ids()
+        rows = self._selected_rows()
+        ids = []
+        skipped_missing = 0
+        for row in rows:
+            sid, flag = self._row_info(row)
+            if sid is None:
+                continue
+            if flag:
+                skipped_missing += 1
+            else:
+                ids.append(sid)
         if not ids:
-            self._window.notify("请先在表格中选中要删除的歌曲。")
+            self._window.notify("选中的是缺失歌曲，没有本地文件可删。" if skipped_missing
+                                else "请先在表格中选中要删除的歌曲。")
             return
         if self._window._runtime.get("running"):
             self._window.notify("服务运行中，请先停止服务再删除曲库文件。")

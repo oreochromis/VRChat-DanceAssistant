@@ -566,8 +566,37 @@ YT_ID_RE = re.compile(r"(?:v=|youtu\.be/)([\w-]{11})")
 _bundle_ytid = {}            # song_id -> YouTube ID（官方歌单里 4821/4850 首可用）
 _bundle_names = {}           # song_id -> 歌名（官方歌单 n 字段，供曲库浏览显示）
 _bundle_lock = threading.Lock()
-_bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（会话内有效）
+_bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（持久化到 dead_songs.json）
 _bundle_retry_at = {}        # 探测网络错误的退避时间戳
+
+DEAD_PATH = os.path.join(SCRIPT_DIR, "dead_songs.json")
+_dead_loaded = False
+
+
+def _ensure_dead_loaded():
+    """把持久化的"CDN 已下架"记录并入 _bundle_miss（首次使用时读一次）。"""
+    global _dead_loaded
+    if _dead_loaded:
+        return
+    _dead_loaded = True
+    try:
+        with open(DEAD_PATH, "r", encoding="utf-8") as f:
+            for sid in json.load(f):
+                _bundle_miss.add(int(sid))
+    except (OSError, ValueError):
+        pass
+
+
+def _note_dead(song_id):
+    """确认某首歌 CDN 上不存在：记入会话集合并持久化，供曲库浏览区分"已下架"。"""
+    _ensure_dead_loaded()
+    if song_id not in _bundle_miss:
+        _bundle_miss.add(song_id)
+        try:
+            with open(DEAD_PATH, "w", encoding="utf-8") as f:
+                json.dump(sorted(_bundle_miss), f)
+        except OSError as e:
+            log(f"下架记录保存失败: {e}")
 
 
 def _extract_ytid(urls):
@@ -625,6 +654,7 @@ def load_bundle_cache():
     n = _load_bundle_data(data)
     if n:
         log(f"已加载本地歌单直取表 {n} 条")
+    _ensure_dead_loaded()
 
 
 def fetch_bundle():
@@ -692,7 +722,7 @@ def _bundle_probe(song_num):
         log(f"歌单直取命中 id={song_num} -> {filename}")
         return filename
     if status == 404:
-        _bundle_miss.add(song_num)
+        _note_dead(song_num)
         log(f"歌单直取无此文件 id={song_num}，回退 API 解析")
     else:
         log(f"歌单直取探测 id={song_num} 返回 HTTP {status}，回退 API 解析")
@@ -710,7 +740,7 @@ def invalidate_mapping(song_id, filename):
         _mapping_dirty = True
     with _resolved_lock:
         _resolved_ids.pop(song_id, None)
-    _bundle_miss.add(song_id)
+    _note_dead(song_id)
     log(f"id={song_id} 的文件 {filename} 在 CDN 已不存在，已清除映射，将回退 API 解析")
 
 
@@ -933,18 +963,30 @@ def scan_library(kind):
 
 def library_missing(kind):
     """对照官方清单找曲库里缺的编号。返回 None（目录未设置）或
-    {"source": 清单描述或 None（无清单无法对比）, "expected", "missing": [id], "dir"}。
-    pypy 对照歌单直取表（_bundle_ytid）；wd 对照 wannadance_catalog.json。"""
+    {"source": 清单描述或 None, "expected", "missing": [id], "dead": [id],
+     "names": {id: 歌名}, "dir"}。
+    pypy 对照歌单直取表（_bundle_ytid），dead 是历史 404 确认的下架歌曲；
+    wd 对照 wannadance_catalog.json（下架曲目已被清单排除）。"""
     scan = scan_library(kind)
     if scan is None:
         return None
     have = {s["id"] for s in scan["songs"]}
+    names = {}
+    dead = []
     if kind == "wd":
         catalog = _wd_catalog()
         if catalog is None:
-            return {"source": None, "expected": 0, "missing": [], "dir": scan["dir"]}
+            return {"source": None, "expected": 0, "missing": [], "dead": [],
+                    "names": {}, "dir": scan["dir"]}
         expected = {sid for sid, item in catalog.items() if not item.get("disable_public")}
         source = "wannadance_catalog.json（批量下载器清单）"
+        for sid in expected - have:
+            item = catalog.get(sid) or {}
+            nm = str(item.get("name") or "").strip()
+            ar = str(item.get("artist") or "").strip()
+            label = f"{nm} - {ar}" if ar and ar != nm else nm
+            if label:
+                names[sid] = label
     else:
         with _bundle_lock:
             table = dict(_bundle_ytid)
@@ -953,11 +995,22 @@ def library_missing(kind):
             with _bundle_lock:
                 table = dict(_bundle_ytid)
         if not table:
-            return {"source": None, "expected": 0, "missing": [], "dir": scan["dir"]}
+            return {"source": None, "expected": 0, "missing": [], "dead": [],
+                    "names": {}, "dir": scan["dir"]}
         expected = set(table)
         source = "官方歌单直取表"
+        _ensure_dead_loaded()
+        with _bundle_lock:
+            name_table = dict(_bundle_names)
+        lacking = expected - have
+        dead = sorted(lacking & _bundle_miss)
+        for sid in lacking:
+            nm = name_table.get(sid)
+            if nm:
+                names[sid] = nm
     return {"source": source, "expected": len(expected),
-            "missing": sorted(expected - have), "dir": scan["dir"]}
+            "missing": sorted(expected - have), "dead": dead,
+            "names": names, "dir": scan["dir"]}
 
 
 def delete_library_songs(kind, ids):

@@ -985,6 +985,7 @@ class CoreTests(unittest.TestCase):
 
     def test_library_missing_pypy_against_bundle(self):
         self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
+        self.dc.DEAD_PATH = str(self.root / "no-dead.json")
         (self.library / "100.mp4").write_bytes(b"\0")
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
@@ -1048,6 +1049,43 @@ class CoreTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.dc.delete_library_songs("pypy", [1])
         self.assertTrue((self.library / "1.mp4").exists())
+
+    def test_library_missing_pypy_marks_dead_and_names(self):
+        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
+        self.dc.DEAD_PATH = str(self.root / "no-dead.json")
+        (self.library / "100.mp4").write_bytes(b"\0")
+        with self.dc._bundle_lock:
+            self.dc._bundle_ytid.clear()
+            self.dc._bundle_ytid.update({100: "aaaaaaaaaaa", 101: "bbbbbbbbbbb", 102: "ccccccccccc"})
+            self.dc._bundle_names.clear()
+            self.dc._bundle_names.update({101: "Dead Song", 102: "Missing Song"})
+        self.dc._note_dead(101)  # 历史播放 404 确认下架
+        result = self.dc.library_missing("pypy")
+        self.assertEqual(result["missing"], [101, 102])
+        self.assertEqual(result["dead"], [101])
+        self.assertEqual(result["names"], {101: "Dead Song", 102: "Missing Song"})
+
+    def test_note_dead_persists_and_reloads(self):
+        self.dc.DEAD_PATH = str(self.root / "dead.json")
+        self.dc._note_dead(7)
+        self.assertEqual(json.loads((self.root / "dead.json").read_text()), [7])
+        self.dc._bundle_miss.clear()
+        self.dc._dead_loaded = False
+        self.dc._ensure_dead_loaded()
+        self.assertIn(7, self.dc._bundle_miss)
+        self.dc._note_dead(7)  # 已存在时不重复写文件
+        self.assertEqual(json.loads((self.root / "dead.json").read_text()), [7])
+
+    def test_library_missing_wd_returns_names(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        (wd_dir / "wannadance_catalog.json").write_text(json.dumps({
+            "9": {"name": "Solo", "artist": "Hide", "disable_public": 0}}), encoding="utf-8")
+        result = self.dc.library_missing("wd")
+        self.assertEqual(result["missing"], [9])
+        self.assertEqual(result["dead"], [])
+        self.assertEqual(result["names"], {9: "Solo - Hide"})
 
     def test_stop_failure_is_visible_in_runtime_state(self):
         with self.service_environment() as (server, factory, resolver, hijack, restore):

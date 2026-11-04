@@ -267,7 +267,9 @@ class CoreController(QObject):
     def library_missing(self, kind: str):
         if self.demo:
             scan = self._demo_library_scan(kind)
-            scan.update({"source": "演示清单", "expected": 4, "missing": [9999]})
+            scan.update({"source": "演示清单", "expected": 5, "missing": [9998, 9999],
+                         "dead": [9998],
+                         "names": {9998: "下架演示曲 - 歌手", 9999: "缺失演示曲 - 歌手"}})
             self.result.emit("library_missing", scan)
             return
         self._run("library_missing", lambda: core.library_missing(kind))
