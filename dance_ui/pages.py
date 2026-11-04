@@ -332,9 +332,7 @@ class Pages:
         library.box.addWidget(self.youtube_permanent)
         library.box.addWidget(label("YouTube 视频在实际播放并解析到视频地址后缓存。"
                                     "永久保存需先填写曲库目录才会生效，未填写时自动暂缓。", muted=True, wrap=True))
-        lib_actions, lib_actions_box = row(button("打开曲库目录", self.open_library, link=True),
-                                           button("浏览曲库…", lambda: self.open_library_browser("pypy"), link=True))
-        library.box.addWidget(lib_actions, 0, Qt.AlignmentFlag.AlignLeft)
+        library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("pypy"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(library)
 
         wd_library = Card()
@@ -353,9 +351,7 @@ class Pages:
         wd_library.box.addWidget(self.wd_permanent)
         wd_library.box.addWidget(label("永久保存需先填写曲库目录才会生效，未填写时自动暂缓。"
                                        "永久曲库不受临时缓存上限影响。", muted=True, wrap=True))
-        wd_actions, wd_actions_box = row(button("打开曲库目录", self.open_wd_library, link=True),
-                                         button("浏览曲库…", lambda: self.open_library_browser("wd"), link=True))
-        wd_library.box.addWidget(wd_actions, 0, Qt.AlignmentFlag.AlignLeft)
+        wd_library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("wd"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(wd_library)
 
         maintenance = Card()

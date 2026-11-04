@@ -545,13 +545,6 @@ class MainWindow(QMainWindow, Pages):
         if path:
             self.wd_library_path.setText(path)
 
-    def open_wd_library(self):
-        saved = self.controller.config().get("wd_library_dir", "")
-        if not saved:
-            self.notify("请先选择 WannaDance 曲库目录并应用更改。")
-            return
-        self.controller.open_directory(saved)
-
     def browse_cooldown(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择放松视频", self.cooldown_path.text(), "MP4 视频 (*.mp4)")
         if path:
@@ -559,13 +552,6 @@ class MainWindow(QMainWindow, Pages):
 
     def open_cache(self):
         self.controller.open_directory(self.controller.config()["cache_dir"])
-
-    def open_library(self):
-        saved = self.controller.config()["library_dir"]
-        if not saved:
-            self.notify("请先选择曲库目录并应用更改。")
-            return
-        self.controller.open_directory(saved)
 
     def open_library_browser(self, kind="pypy"):
         from .library_browser import LibraryBrowser
