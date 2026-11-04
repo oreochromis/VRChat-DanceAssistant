@@ -21,6 +21,7 @@ import os
 import random
 import re
 import select
+import shutil
 import socket
 import ssl
 import sys
@@ -55,7 +56,106 @@ UDON_API_HOST = "api.udon.dance"    # WannaDance：302 跳转服务（不劫持�
 UDON_PLAY_HOST = "play.udon.dance"  # WannaDance：视频文件 CDN（劫持）
 HIJACK_HOSTS = CDN_HOSTS + [API_HOST]  # api 仅在 YouTube 缓存模式启用时劫持
 VRC_LOG_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "LocalLow", "VRChat", "VRChat")
-MAPPING_PATH = os.path.join(SCRIPT_DIR, "mapping.json")
+
+
+def _default_roaming_root():
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), "AppData", "Local")
+    else:
+        base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(base, "VRChatDanceAssistant")
+
+
+ROAMING_ROOT = _default_roaming_root()  # 系统用户目录数据根（测试可改写）
+_STORAGE_MODES = ("portable", "roaming")
+_storage_mode_override = None           # 测试用：强制数据保存位置
+
+
+def _pointer_path():
+    return os.path.join(ROAMING_ROOT, "storage-mode.json")
+
+
+def get_storage_mode():
+    """数据保存位置：portable=随程序目录；roaming=系统用户目录。
+    指针文件不存在时：exe 旁已有 config.json 的老用户保持便携（行为不变），
+    全新用户默认用户目录（解压到任何位置都读到同一份配置）。"""
+    if _storage_mode_override:
+        return _storage_mode_override
+    try:
+        with open(_pointer_path(), "r", encoding="utf-8") as f:
+            mode = json.load(f).get("mode")
+        if mode in _STORAGE_MODES:
+            return mode
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "portable" if os.path.isfile(os.path.join(SCRIPT_DIR, "config.json")) else "roaming"
+
+
+def data_dir():
+    """当前生效的数据目录：config.json/mapping.json/歌单缓存等用户数据的存放位置"""
+    return SCRIPT_DIR if get_storage_mode() == "portable" else ROAMING_ROOT
+
+
+def get_storage_info():
+    return {"mode": get_storage_mode(), "portable_dir": SCRIPT_DIR,
+            "roaming_dir": ROAMING_ROOT, "active_dir": data_dir()}
+
+
+MAPPING_FILENAME = "mapping.json"
+
+
+def mapping_path():
+    return os.path.join(data_dir(), MAPPING_FILENAME)
+
+
+_STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json")
+
+
+def set_storage_mode(mode):
+    """切换数据保存位置并迁移数据文件（复制，旧位置文件保留不删）。
+    需停止服务且无曲库任务；指针文件始终写在用户目录，先落指针再重载。"""
+    if mode not in _STORAGE_MODES:
+        raise ValueError("未知的数据保存位置: " + str(mode))
+    with _lifecycle_lock:
+        if _running:
+            raise RuntimeError("请先停止服务，再更改数据保存位置")
+        if rebuilding() or verifying():
+            raise RuntimeError("曲库任务进行中，请等待完成或取消后再更改数据保存位置")
+        if mode == get_storage_mode():
+            return get_storage_info()
+        source = data_dir()
+        target = SCRIPT_DIR if mode == "portable" else ROAMING_ROOT
+        os.makedirs(target, exist_ok=True)
+        copied = 0
+        for name in _STORAGE_FILES:
+            src = os.path.join(source, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(target, name))
+                copied += 1
+        os.makedirs(ROAMING_ROOT, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix="storage-mode-", suffix=".tmp", dir=ROAMING_ROOT)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"mode": mode}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, _pointer_path())
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+        with _mapping_lock:
+            _mapping.clear()
+            _reverse_mapping.clear()
+        with _resolved_lock:
+            _resolved_ids.clear()
+            _resolve_retry_at.clear()
+        load_config()
+        load_mapping()
+    label = "随程序目录（便携）" if mode == "portable" else "系统用户目录"
+    log(f"数据保存位置已切换为{label}：{target}（已迁移 {copied} 个数据文件，原位置文件保留）")
+    emit("config", changed=[], restart_required=False)
+    return get_storage_info()
+
 
 QUEUE_RE = re.compile(r"^\[PyPyDanceQueue] (\[.*])")
 WD_QUEUE_RE = re.compile(r"queue info serialized: (\[.*])")  # WannaDance 队列（不含正在播放的歌曲）
@@ -270,7 +370,7 @@ def _note_session_miss(filename):
 
 def load_config():
     global _config
-    path = os.path.join(SCRIPT_DIR, "config.json")
+    path = os.path.join(data_dir(), "config.json")
     missing = not os.path.exists(path)
     warnings = []
     loaded = {}
@@ -351,7 +451,7 @@ def _validated_config(config, *, allow_shared_storage=False):
         raise ValueError("缓存目录不能为空")
     for name in ("cache_dir", "library_dir", "wd_library_dir", "cooldown_file"):
         if cfg[name]:
-            cfg[name] = os.path.abspath(os.path.join(SCRIPT_DIR, os.path.expanduser(cfg[name])))
+            cfg[name] = os.path.abspath(os.path.join(data_dir(), os.path.expanduser(cfg[name])))
     if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["library_dir"]):
         raise ValueError("缓存目录与永久曲库不能是同一个目录")
     if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["wd_library_dir"]):
@@ -378,18 +478,19 @@ def get_config():
 
 def _write_config(config):
     cfg = copy.deepcopy(config)
+    base = data_dir()
     try:
-        cfg["cache_dir"] = os.path.relpath(cfg["cache_dir"], SCRIPT_DIR)
+        cfg["cache_dir"] = os.path.relpath(cfg["cache_dir"], base)
     except (ValueError, KeyError):
         pass
-    os.makedirs(SCRIPT_DIR, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix="config-", suffix=".tmp", dir=SCRIPT_DIR)
+    os.makedirs(base, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="config-", suffix=".tmp", dir=base)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2, ensure_ascii=False)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(temporary, os.path.join(SCRIPT_DIR, "config.json"))
+        os.replace(temporary, os.path.join(base, "config.json"))
     finally:
         if os.path.exists(temporary):
             os.remove(temporary)
@@ -489,7 +590,7 @@ def cache_path(filename):
 def load_mapping():
     global _mapping_dirty
     try:
-        with open(MAPPING_PATH, "r", encoding="utf-8") as f:
+        with open(mapping_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
         with _mapping_lock:
             for k, v in data.items():
@@ -548,7 +649,7 @@ def flush_mapping():
         data = dict(_mapping)
         _mapping_dirty = False
     try:
-        with open(MAPPING_PATH, "w", encoding="utf-8") as f:
+        with open(mapping_path(), "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception as e:
         log(f"mapping.json 保存失败: {e}")
@@ -561,7 +662,10 @@ def _mapping_flush_loop():
 
 # ---------------- 歌单直取（bundle：id -> YouTube ID -> CDN 文件名） ----------------
 
-BUNDLE_PATH = os.path.join(SCRIPT_DIR, "bundle_songs.json")
+def bundle_path():
+    return os.path.join(data_dir(), "bundle_songs.json")
+
+
 YT_ID_RE = re.compile(r"(?:v=|youtu\.be/)([\w-]{11})")
 
 _bundle_ytid = {}            # song_id -> YouTube ID（官方歌单里 4821/4850 首可用）
@@ -570,7 +674,11 @@ _bundle_lock = threading.Lock()
 _bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（持久化到 dead_songs.json）
 _bundle_retry_at = {}        # 探测网络错误的退避时间戳
 
-DEAD_PATH = os.path.join(SCRIPT_DIR, "dead_songs.json")
+
+def dead_path():
+    return os.path.join(data_dir(), "dead_songs.json")
+
+
 _dead_loaded = False
 
 
@@ -581,7 +689,7 @@ def _ensure_dead_loaded():
         return
     _dead_loaded = True
     try:
-        with open(DEAD_PATH, "r", encoding="utf-8") as f:
+        with open(dead_path(), "r", encoding="utf-8") as f:
             for sid in json.load(f):
                 _bundle_miss.add(int(sid))
     except (OSError, ValueError):
@@ -594,7 +702,7 @@ def _note_dead(song_id):
     if song_id not in _bundle_miss:
         _bundle_miss.add(song_id)
         try:
-            with open(DEAD_PATH, "w", encoding="utf-8") as f:
+            with open(dead_path(), "w", encoding="utf-8") as f:
                 json.dump(sorted(_bundle_miss), f)
         except OSError as e:
             log(f"下架记录保存失败: {e}")
@@ -645,7 +753,7 @@ def bundle_song_names():
 def load_bundle_cache():
     """启动时先读本地缓存的歌单（不等网络，歌单变化由 fetch_bundle 在线更新）"""
     try:
-        with open(BUNDLE_PATH, "r", encoding="utf-8") as f:
+        with open(bundle_path(), "r", encoding="utf-8") as f:
             data = json.load(f)
     except FileNotFoundError:
         return
@@ -682,7 +790,7 @@ def fetch_bundle():
         return
     log(f"歌单直取表已更新：{n} 首")
     try:
-        with open(BUNDLE_PATH, "w", encoding="utf-8") as f:
+        with open(bundle_path(), "w", encoding="utf-8") as f:
             json.dump(data, f)
     except Exception as e:
         log(f"bundle_songs.json 保存失败: {e}")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QHBoxLayout, QLineEdit, QProgressBar, QPushButton,
+    QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QProgressBar, QPushButton,
     QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -289,6 +289,21 @@ class Pages:
     def build_storage_page(self):
         area, body, box = page()
         box.addWidget(section_title("存储", "管理临时缓存与永久曲库"))
+        location = Card()
+        location.box.addWidget(label("数据保存位置", subheading=True))
+        self.storage_mode = QComboBox()
+        self.storage_mode.addItem("系统用户目录（推荐）：解压到任何位置都保留设置", "roaming")
+        self.storage_mode.addItem("随程序目录（便携）：配置跟随软件文件夹一起搬走", "portable")
+        self.storage_mode.setMinimumWidth(420)
+        location.box.addWidget(self.storage_mode)
+        self.storage_mode_hint = label("", muted=True, wrap=True)
+        location.box.addWidget(self.storage_mode_hint)
+        self.storage_mode_button = button("切换保存位置", self.apply_storage_mode)
+        location.box.addWidget(self.storage_mode_button, 0, Qt.AlignmentFlag.AlignLeft)
+        location.box.addWidget(label("切换会把配置、编号映射、歌单直取表等数据文件复制到新位置（原位置文件保留不删），需先停止服务。",
+                                     muted=True, wrap=True))
+        box.addWidget(location)
+
         cache = Card()
         cache.box.addWidget(label("临时缓存", subheading=True))
         self.cache_summary = label("等待统计")

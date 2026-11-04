@@ -80,12 +80,16 @@ class UIIntegrationTests(unittest.TestCase):
             "get_queue_snapshot", "get_downloads_snapshot", "get_cooldown_state",
             "emit_stats", "update_config", "clear_cache", "rebuild_mapping",
             "verify_library", "cancel_library_download", "speed_test_ips", "full_scan_ips",
-            "cooldown_arm", "cooldown_disarm", "is_running",
+            "cooldown_arm", "cooldown_disarm", "is_running", "set_storage_mode",
         )
         for name in guarded:
             self.core_mocks[name] = self.patches.enter_context(patch.object(
                 core, name, side_effect=AssertionError("Unexpected real-core operation: " + name),
             ))
+        self.patches.enter_context(patch.object(core, "get_storage_info", return_value={
+            "mode": "portable", "portable_dir": str(self.root),
+            "roaming_dir": str(self.root / "roaming"), "active_dir": str(self.root),
+        }))
 
     def wait_until(self, condition, message="Qt event did not arrive", timeout=1500):
         if condition():

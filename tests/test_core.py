@@ -80,7 +80,9 @@ class CoreTests(unittest.TestCase):
         self.cache.mkdir()
         self.library.mkdir()
         self.dc.SCRIPT_DIR = str(self.root)
-        self.dc.MAPPING_PATH = str(self.root / "mapping.json")
+        self.dc.ROAMING_ROOT = str(self.root / "roaming")
+        # 现有测试语义全部基于"数据在程序目录"：强制便携模式，存储位置测试自行解除
+        self.dc._storage_mode_override = "portable"
         self.dc.HOSTS_PATH = str(self.root / "hosts-never-used")
         self.dc.VRC_LOG_DIR = str(self.root / "missing-logs")
         self.builtin_cooldown = self.root / "bundled-resources" / "assets" / "default_cooldown.mp4"
@@ -107,6 +109,7 @@ class CoreTests(unittest.TestCase):
     def tearDown(self):
         self.dc._stop_event.set()
         self.dc._library_stop.set()
+        self.dc._storage_mode_override = None
         threads = list(self.dc._service_threads)
         threads += [self.dc._rebuild_thread, self.dc._verify_thread]
         for thread in threads:
@@ -164,6 +167,55 @@ class CoreTests(unittest.TestCase):
         snapshot = self.dc.get_config()
         snapshot["preload_count"] = 99
         self.assertEqual(self.dc.get_config()["preload_count"], 3)
+
+    def test_storage_mode_resolution(self):
+        self.dc._storage_mode_override = None
+        # 无指针、exe 旁有 config.json（setUp 已写入）→ 老用户保持便携
+        self.assertEqual(self.dc.get_storage_mode(), "portable")
+        self.assertEqual(self.dc.data_dir(), str(self.root))
+        # 无指针、无 exe 旁配置 → 全新用户默认用户目录
+        (self.root / "config.json").unlink()
+        self.assertEqual(self.dc.get_storage_mode(), "roaming")
+        self.assertEqual(self.dc.data_dir(), self.dc.ROAMING_ROOT)
+        # 指针文件优先
+        roaming = Path(self.dc.ROAMING_ROOT)
+        roaming.mkdir(parents=True, exist_ok=True)
+        with open(self.dc._pointer_path(), "w", encoding="utf-8") as f:
+            json.dump({"mode": "portable"}, f)
+        self.assertEqual(self.dc.get_storage_mode(), "portable")
+
+    def test_set_storage_mode_migrates_and_reloads(self):
+        self.dc._storage_mode_override = None
+        self.dc.mark_mapping(3528, "video.mp4")
+        self.dc.flush_mapping()
+        info = self.dc.set_storage_mode("roaming")
+        self.assertEqual(info["mode"], "roaming")
+        roaming = Path(self.dc.ROAMING_ROOT)
+        for name in ("config.json", "mapping.json", "storage-mode.json"):
+            self.assertTrue((roaming / name).is_file(), name)
+        # 迁移是复制：原位置文件保留
+        self.assertTrue((self.root / "config.json").is_file())
+        self.assertTrue((self.root / "mapping.json").is_file())
+        self.assertEqual(self.dc.data_dir(), str(roaming))
+        # 配置与映射已从新位置重载
+        self.assertEqual(self.dc.song_route(3528), ("cdn", "video.mp4"))
+        # 相对路径的临时缓存随数据目录迁移到用户目录下（曲库等绝对路径不受影响）
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(roaming / "cache"))
+        # 再切回便携
+        info = self.dc.set_storage_mode("portable")
+        self.assertEqual(info["mode"], "portable")
+        self.assertEqual(self.dc.data_dir(), str(self.root))
+        self.assertEqual(self.dc.song_route(3528), ("cdn", "video.mp4"))
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(self.cache))
+        self.assertEqual(json.loads((roaming / "storage-mode.json").read_text())["mode"], "portable")
+
+    def test_set_storage_mode_requires_stopped_service(self):
+        self.dc._storage_mode_override = None
+        with self.service_environment():
+            self.assertIsNone(self.dc.start_services())
+            with self.assertRaises(RuntimeError):
+                self.dc.set_storage_mode("roaming")
+            self.assertEqual(self.dc.get_storage_mode(), "portable")
 
     def test_wd_queue_inserts_current_song_from_update_state(self):
         # WannaDance 的 queue info 开播即把当前歌曲移出队列，需从 UpdateState 行插回队首
@@ -726,7 +778,6 @@ class CoreTests(unittest.TestCase):
 
     def test_fetch_bundle_updates_table_and_persists(self):
         self.dc._origin_ips[self.dc.API_HOST] = ["1.0.0.1"]
-        self.dc.BUNDLE_PATH = str(self.root / "bundle_songs.json")
         payload = json.dumps({"songs": [{"i": 1, "o": ["https://youtu.be/abcdef12345"]}]}).encode()
         with mock.patch.object(self.dc, "api_request", return_value=(200, {}, payload)):
             self.dc.fetch_bundle()
@@ -740,7 +791,6 @@ class CoreTests(unittest.TestCase):
     def test_load_bundle_cache_reads_persisted_table(self):
         path = self.root / "bundle_songs.json"
         path.write_text(json.dumps({"songs": [{"i": 7, "o": ["https://youtu.be/abcdef12345"]}]}), encoding="utf-8")
-        self.dc.BUNDLE_PATH = str(path)
         self.dc.load_bundle_cache()
         self.assertEqual(self.dc._bundle_ytid, {7: "abcdef12345"})
 
@@ -964,7 +1014,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.dc.clean_stale_hosts(), 0)
 
     def test_scan_library_pypy(self):
-        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")  # 无歌单时歌名为 None
+        # 无歌单直取表文件时歌名为 None
         (self.library / "100.mp4").write_bytes(b"\0" * 10)
         (self.library / "200.mp4").write_bytes(b"\0" * 20)
         (self.library / "200.mp4.part").write_bytes(b"x")
@@ -1002,8 +1052,6 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(self.dc.scan_library("wd"))
 
     def test_library_missing_pypy_against_bundle(self):
-        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
-        self.dc.DEAD_PATH = str(self.root / "no-dead.json")
         (self.library / "100.mp4").write_bytes(b"\0")
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
@@ -1014,7 +1062,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["missing"], [101])
 
     def test_library_missing_pypy_without_bundle_returns_no_source(self):
-        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
         result = self.dc.library_missing("pypy")
@@ -1069,8 +1116,6 @@ class CoreTests(unittest.TestCase):
         self.assertTrue((self.library / "1.mp4").exists())
 
     def test_library_missing_pypy_marks_dead_and_names(self):
-        self.dc.BUNDLE_PATH = str(self.root / "no-bundle.json")
-        self.dc.DEAD_PATH = str(self.root / "no-dead.json")
         (self.library / "100.mp4").write_bytes(b"\0")
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
@@ -1084,15 +1129,15 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["names"], {101: "Dead Song", 102: "Missing Song"})
 
     def test_note_dead_persists_and_reloads(self):
-        self.dc.DEAD_PATH = str(self.root / "dead.json")
+        dead_file = self.root / "dead_songs.json"
         self.dc._note_dead(7)
-        self.assertEqual(json.loads((self.root / "dead.json").read_text()), [7])
+        self.assertEqual(json.loads(dead_file.read_text()), [7])
         self.dc._bundle_miss.clear()
         self.dc._dead_loaded = False
         self.dc._ensure_dead_loaded()
         self.assertIn(7, self.dc._bundle_miss)
         self.dc._note_dead(7)  # 已存在时不重复写文件
-        self.assertEqual(json.loads((self.root / "dead.json").read_text()), [7])
+        self.assertEqual(json.loads(dead_file.read_text()), [7])
 
     def test_library_missing_wd_returns_names(self):
         wd_dir = self.root / "wdlib"

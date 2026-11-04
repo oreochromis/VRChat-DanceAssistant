@@ -452,6 +452,7 @@ class MainWindow(QMainWindow, Pages):
                 self.cdn_permanent.setChecked(config["cdn_permanent"])
                 self.wd_permanent.setChecked(config.get("wd_permanent", False))
                 self.youtube_permanent.setChecked(config["youtube_permanent"])
+                self.refresh_storage_location()
             if section in (None, "settings"):
                 self.preload_count.setMaximum(max(10, config["preload_count"]))
                 self.preload_count.setValue(config["preload_count"])
@@ -489,6 +490,24 @@ class MainWindow(QMainWindow, Pages):
             self.toggle_service()
         elif action == "cooldown":
             self.toggle_cooldown()
+
+    def refresh_storage_location(self):
+        info = self.controller.storage_info()
+        index = self.storage_mode.findData(info.get("mode"))
+        if index >= 0:
+            self.storage_mode.setCurrentIndex(index)
+        self.storage_mode_hint.setText("当前位置：" + info.get("active_dir", "?"))
+
+    def apply_storage_mode(self):
+        mode = self.storage_mode.currentData()
+        if mode == self.controller.storage_info().get("mode"):
+            self.notify("当前已是该保存位置。")
+            return
+        if self._runtime.get("running"):
+            self.notify("请先停止服务，再切换数据保存位置。", error=True)
+            self.refresh_storage_location()
+            return
+        self.controller.set_storage_mode(mode)
 
     def mark_dirty(self, section):
         if self._syncing:
@@ -1017,6 +1036,12 @@ class MainWindow(QMainWindow, Pages):
                     self.update_status.setText("检查失败：无法访问 GitHub，请检查网络或稍后再试。")
         elif operation == "diagnostics":
             self._write_diagnostics(result)
+        elif operation == "storage_mode":
+            self.controller.reload_config()
+            self.load_fields()
+            info = result or {}
+            self.notify("数据保存位置已切换：" + str(info.get("active_dir", "")))
+            self.controller.refresh_stats()
         elif operation == "shutdown":
             self.controller.dispose()
             self._can_close = True

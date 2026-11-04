@@ -73,6 +73,25 @@ class CoreController(QObject):
         # UI reads never wait for a worker holding the core's configuration lock.
         return copy.deepcopy(self._demo_config if self.demo else self._config_cache)
 
+    def storage_info(self):
+        if self.demo:
+            demo_dir = r"C:\Users\Demo\AppData\Local\VRChatDanceAssistant"
+            return {"mode": "roaming", "portable_dir": r"C:\PyPyDance",
+                    "roaming_dir": demo_dir, "active_dir": demo_dir}
+        return core.get_storage_info()
+
+    def set_storage_mode(self, mode):
+        if self.demo:
+            self.result.emit("storage_mode", self.storage_info())
+            return
+
+        def apply():
+            info = core.set_storage_mode(mode)
+            self._config_cache = core.get_config()
+            return info
+
+        self._run("storage_mode", apply)
+
     def reload_config(self):
         """后台任务（如自动优选 CDN）直接改配置后，同步 UI 侧的配置缓存。"""
         if not self.demo:
