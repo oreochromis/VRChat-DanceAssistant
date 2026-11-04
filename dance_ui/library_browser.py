@@ -268,9 +268,31 @@ class LibraryBrowser(QDialog):
                 text += "仅覆盖官方歌单直取表范围。"
         self.missing_label.setText(text)
         self.missing_label.show()
-        # 合并缺失行进表格（保留已有文件行的最新扫描数据）
-        self._populate({"dir": self._dir, "songs": self._songs,
-                        "total_bytes": sum(int(s.get("size", 0)) for s in self._songs)})
+        self._merge_missing()
+
+    def _merge_missing(self):
+        """把缺失行增量合入表格：只删旧的缺失行、只建新的缺失行，
+        不重建成千上万的本地文件行（否则大曲库点查缺失会长时间卡死界面）。"""
+        self.table.setSortingEnabled(False)
+        self.table.setUpdatesEnabled(False)
+        for row in range(self.table.rowCount() - 1, -1, -1):
+            item = self.table.item(row, 0)
+            if item is not None and item.data(_FLAG_ROLE):
+                self.table.removeRow(row)
+        start = self.table.rowCount()
+        self.table.setRowCount(start + len(self._missing))
+        for offset, (sid, info) in enumerate(sorted(self._missing.items())):
+            items = self._row_items(
+                sid, info.get("name"),
+                "已下架" if info.get("dead") else "缺失",
+                -2 if info.get("dead") else -1, "—", 0,
+                "dead" if info.get("dead") else "missing")
+            for column, item in enumerate(items):
+                self.table.setItem(start + offset, column, item)
+        self.table.setUpdatesEnabled(True)
+        self.table.setSortingEnabled(True)
+        self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
+        self._apply_filter()
 
     def _show_deleted(self, result):
         deleted = result.get("deleted", 0)
