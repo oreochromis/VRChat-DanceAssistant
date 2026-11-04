@@ -101,6 +101,13 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
     QPushButton[danger="true"] {{ color: #c04c5b; }}
+    QFrame#modeSwitch {{ background: {subtle}; border: 1px solid {border}; border-radius: {min(radius, 9)}px; }}
+    QPushButton[segment="true"] {{
+        background: transparent; border: none; color: {muted};
+        padding: {px(3)}px {px(11)}px; min-height: {px(14)}px; border-radius: {min(radius, 7)}px;
+    }}
+    QPushButton[segment="true"]:hover {{ color: {text}; background: {rgba(accent, .10)}; }}
+    QPushButton[segment="true"]:checked {{ background: {accent}; color: {on_color(accent)}; font-weight: 600; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 7)}px;
         padding: {px(padding)}px {px(10)}px; min-height: {px(19)}px;
