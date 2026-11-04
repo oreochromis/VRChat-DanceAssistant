@@ -70,6 +70,7 @@ class UIIntegrationTests(unittest.TestCase):
             cache_dir=str(self.root / "cache"), library_dir=str(self.root / "library"),
             cooldown_file=str(self.root / "cooldown.mp4"), cdn_permanent=True,
             vr_overlay=False,  # 测试 runner 上不起真实 VR overlay 线程
+            auto_start_service=False,  # 测试窗口不得在构造时自动拉起服务
         )
         self.core_mocks = {}
         guarded = (
@@ -489,6 +490,20 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window._cooldown["phase"], "idle")
         for mocked in self.core_mocks.values():
             mocked.assert_not_called()
+
+    def test_auto_start_service_launches_service_when_enabled(self):
+        self.config["auto_start_service"] = True
+        with patch.object(CoreController, "start", autospec=True) as start_mock:
+            window, controller, _ = self.make_window(demo=False)
+            self.wait_until(lambda: start_mock.called, "开启自动启动服务后，窗口构造时未调用 controller.start")
+
+    def test_auto_start_service_stays_stopped_when_disabled(self):
+        self.config["auto_start_service"] = False
+        with patch.object(CoreController, "start", autospec=True) as start_mock:
+            window, controller, _ = self.make_window(demo=False)
+            QTest.qWait(50)
+            QApplication.processEvents()
+            start_mock.assert_not_called()
 
     def test_restore_builtin_cooldown_is_a_draft_until_applied(self):
         window, controller, _ = self.make_window()

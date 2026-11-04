@@ -143,6 +143,10 @@ class Pages:
         self.close_to_tray.setToolTip("开启后点击右上角 X 会把窗口收进系统托盘（屏幕右下角），缓存服务保持运行；双击托盘图标恢复窗口，右键托盘图标可选择退出。")
         self.close_to_tray.toggled.connect(lambda: self.mark_dirty("settings"))
         startup.box.addWidget(self.close_to_tray)
+        self.auto_start_service = QCheckBox("打开软件时自动启动服务")
+        self.auto_start_service.setToolTip("开启后每次启动软件即自动开启缓存服务，无需手动点「启动服务」；管理员权限不足或服务启动失败时会按原样提示，不会静默吞掉错误。")
+        self.auto_start_service.toggled.connect(lambda: self.mark_dirty("settings"))
+        startup.box.addWidget(self.auto_start_service)
         hosts_row, hosts_box = row()
         self.hosts_clean_row = hosts_row
         self.hosts_clean_button = button("清理 hosts 残留", self.clean_stale_hosts_clicked)

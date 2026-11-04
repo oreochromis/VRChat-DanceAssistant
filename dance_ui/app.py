@@ -115,7 +115,7 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.build_storage_page())
         self.stack.addWidget(self.build_settings_page())
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
-                                  self.hosts_clean_row, self.hosts_clean_hint]
+                                  self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -140,6 +140,10 @@ class MainWindow(QMainWindow, Pages):
         self.render_queue()
         self.render_downloads()
         QTimer.singleShot(0, self.refresh_steamvr_startup)
+        # 自动启动服务：默认开启（仅高级模式可关）。controller.start 自身会拦截
+        # 非 Windows/非管理员/已在启动中等情况并按原路径提示，此处只需跳过演示模式。
+        if not controller.demo and controller.config().get("auto_start_service", True):
+            QTimer.singleShot(0, controller.start)
         # SteamVR 面板页：仅真机 Windows 启用；跟随配置热启停
         if os.name == "nt" and not controller.demo:
             from . import vr_overlay
@@ -459,6 +463,7 @@ class MainWindow(QMainWindow, Pages):
                 self.auto_prefer_cdn.setChecked(config.get("auto_prefer_cdn", True))
                 self.vr_overlay.setChecked(config.get("vr_overlay", True))
                 self.close_to_tray.setChecked(config.get("close_to_tray", False))
+                self.auto_start_service.setChecked(config.get("auto_start_service", True))
             for name in (section,) if section else ("storage", "settings"):
                 self._dirty[name] = False
                 self.apply_buttons[name].setEnabled(False)
@@ -503,7 +508,8 @@ class MainWindow(QMainWindow, Pages):
                      "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
                      "vr_overlay": self.vr_overlay.isChecked(), "close_to_tray": self.close_to_tray.isChecked(),
                      "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip(),
-                     "auto_prefer_cdn": self.auto_prefer_cdn.isChecked()}
+                     "auto_prefer_cdn": self.auto_prefer_cdn.isChecked(),
+                     "auto_start_service": self.auto_start_service.isChecked()}
         self.controller.apply_config(patch, section)
 
     def render_steamvr_controls(self):
