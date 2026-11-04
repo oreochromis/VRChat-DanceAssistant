@@ -115,6 +115,17 @@ class Pages:
     def build_settings_page(self):
         area, body, box = page()
         box.addWidget(section_title("设置", "下载、放松视频、网络与启动"))
+        mode = Card()
+        mode_heading, mode_heading_box = row(label("界面模式", subheading=True))
+        mode_heading_box.addStretch()
+        self.mode_simple_button = button("简单", lambda: self.set_ui_mode("simple"))
+        self.mode_advanced_button = button("高级", lambda: self.set_ui_mode("advanced"))
+        mode_heading_box.addWidget(self.mode_simple_button)
+        mode_heading_box.addWidget(self.mode_advanced_button)
+        mode.box.addWidget(mode_heading)
+        self.mode_hint = label("", muted=True, wrap=True)
+        mode.box.addWidget(self.mode_hint)
+        box.addWidget(mode)
         startup = Card()
         startup.box.addWidget(label("启动", subheading=True))
         self.steamvr_startup = QCheckBox("跟随 SteamVR 启动")
@@ -144,17 +155,20 @@ class Pages:
         self.close_to_tray.toggled.connect(lambda: self.mark_dirty("settings"))
         startup.box.addWidget(self.close_to_tray)
         hosts_row, hosts_box = row()
+        self.hosts_clean_row = hosts_row
         self.hosts_clean_button = button("清理 hosts 残留", self.clean_stale_hosts_clicked)
         hosts_box.addWidget(self.hosts_clean_button)
         self.hosts_clean_status = label("", muted=True, wrap=True)
         hosts_box.addWidget(self.hosts_clean_status, 1)
         startup.box.addWidget(hosts_row)
-        startup.box.addWidget(label(
+        self.hosts_clean_hint = label(
             "上次异常退出（强杀、断电）可能在系统 hosts 留下本程序的条目，导致不开软件时视频无法加载。服务启动时会自动清理；此处可手动清理，适合准备停用或卸载本软件时使用。",
             muted=True, wrap=True,
-        ))
+        )
+        startup.box.addWidget(self.hosts_clean_hint)
         box.addWidget(startup)
         general = Card()
+        self.general_card = general
         general.box.addWidget(label("缓存行为", subheading=True))
         preload_row, preload_box = row(label("预缓存后续歌曲"))
         preload_box.addStretch()
@@ -194,6 +208,7 @@ class Pages:
         box.addWidget(cooldown)
 
         network = Card()
+        self.network_card = network
         network.box.addWidget(label("CDN 网络", subheading=True))
         self.preferred_ip = QLineEdit()
         self.preferred_ip.setPlaceholderText("自动选择（留空）")
@@ -355,6 +370,7 @@ class Pages:
         box.addWidget(wd_library)
 
         maintenance = Card()
+        self.maintenance_card = maintenance
         maintenance.box.addWidget(label("曲库维护", subheading=True))
         maintenance.box.addWidget(label("重建索引用于重新关联歌曲编号与文件；校验会比较本地文件与远端文件大小。"
                                         "仅针对 PyPyDance；WannaDance 文件名自带编号（如 wd_5283.mp4），放入曲库即自动识别，无需索引。", muted=True, wrap=True))

@@ -53,7 +53,8 @@ class ThemeUpgradeTests(unittest.TestCase):
             themes.append(copy.deepcopy(self.previous))
         return {
             "version": 1, "active_theme": custom["id"], "themes": themes,
-            "preferences": {"scale": 125, "density": "compact", "logs_expanded": True, "dismissed_update_version": ""},
+            "preferences": {"scale": 125, "density": "compact", "logs_expanded": True,
+                            "dismissed_update_version": "", "ui_mode": "advanced"},
         }
 
     def write_document(self, root, document):
@@ -104,7 +105,8 @@ class ThemeUpgradeTests(unittest.TestCase):
                 store = ThemeStore(path.parent)
                 self.assertEqual(store.active, BUILTIN_THEMES["light"])
                 self.assertEqual(store.themes, list(BUILTIN_THEMES.values()))
-                self.assertEqual(store.preferences, DEFAULT_PREFERENCES)
+                # 已有存档缺 ui_mode 键按老用户处理，默认高级模式
+                self.assertEqual(store.preferences, {**DEFAULT_PREFERENCES, "ui_mode": "advanced"})
                 self.assertEqual(path.read_bytes(), original)
                 self.assertEqual(store.warnings, [])
 

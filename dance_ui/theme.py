@@ -51,7 +51,8 @@ IMAGE_FITS = ("cover", "contain", "stretch", "center", "tile")
 THEME_FIELDS = COLOR_FIELDS | frozenset(NUMBER_RANGES) | {
     "background_image", "image_fit",
 }
-DEFAULT_PREFERENCES = {"scale": 100, "density": "standard", "logs_expanded": False, "dismissed_update_version": ""}
+DEFAULT_PREFERENCES = {"scale": 100, "density": "standard", "logs_expanded": False,
+                       "dismissed_update_version": "", "ui_mode": "simple"}
 
 _COMMON = {
     "background_image": "", "background_opacity": 1.0,
@@ -172,6 +173,10 @@ def _preference_value(key: str, value: Any) -> Any:
         if not isinstance(value, str):
             raise ThemeError("不再提醒的版本号必须是文本。")
         return value.strip()
+    if key == "ui_mode":
+        if value not in ("simple", "advanced"):
+            raise ThemeError("界面模式请选择简单或高级。")
+        return value
     raise ThemeError("未识别的阅读偏好：" + str(key))
 
 
@@ -339,6 +344,9 @@ class ThemeStore:
                         state["preferences"][key] = _preference_value(key, preferences[key])
                     except (ThemeError, TypeError):
                         self.warnings.append("已恢复无效的阅读偏好：" + key)
+        if not isinstance(preferences, dict) or "ui_mode" not in preferences:
+            # 老用户升级：存档里没有界面模式键，默认高级（不隐藏原有功能）
+            state["preferences"]["ui_mode"] = "advanced"
         return state
 
     @property

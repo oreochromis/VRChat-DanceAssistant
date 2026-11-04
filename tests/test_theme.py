@@ -68,10 +68,33 @@ class ThemeStoreTests(unittest.TestCase):
         self.store.select("dark")
         self.store.change({"radius": 18})
         self.store.reset_current()
-        self.assertEqual(self.store.preferences, preferences)
-        self.assertEqual(ThemeStore(self.store.root_dir).preferences, preferences)
+        expected = {**DEFAULT_PREFERENCES, **preferences}
+        self.assertEqual(self.store.preferences, expected)
+        self.assertEqual(ThemeStore(self.store.root_dir).preferences, expected)
         self.store.reset_preferences()
         self.assertEqual(self.store.preferences, DEFAULT_PREFERENCES)
+
+    def test_ui_mode_defaults_to_simple_for_fresh_install(self):
+        fresh = ThemeStore(self.root / "brand-new")
+        self.assertEqual(fresh.preferences["ui_mode"], "simple")
+
+    def test_ui_mode_defaults_to_advanced_for_legacy_profile(self):
+        legacy = self.root / "legacy"
+        legacy.mkdir()
+        doc = {"version": 1, "active_theme": "light",
+               "themes": list(BUILTIN_THEMES.values()),
+               "preferences": {"scale": 100, "density": "standard",
+                               "logs_expanded": False, "dismissed_update_version": ""}}
+        (legacy / "appearance.json").write_text(json.dumps(doc), encoding="utf-8")
+        self.assertEqual(ThemeStore(legacy).preferences["ui_mode"], "advanced")
+
+    def test_ui_mode_roundtrip_and_validation(self):
+        self.store.change_preferences({"ui_mode": "simple"})
+        self.assertEqual(ThemeStore(self.store.root_dir).preferences["ui_mode"], "simple")
+        self.store.change_preferences({"ui_mode": "advanced"})
+        self.assertEqual(self.store.preferences["ui_mode"], "advanced")
+        with self.assertRaises(ThemeError):
+            self.store.change_preferences({"ui_mode": "expert"})
 
     def test_copy_rename_delete_and_undo_keep_original(self):
         self.store.change({"accent": "#123456"})
@@ -234,7 +257,8 @@ class ThemeStoreTests(unittest.TestCase):
         recovered = ThemeStore(self.store.root_dir)
         self.assertEqual(recovered.active["accent"], BUILTIN_THEMES["light"]["accent"])
         self.assertEqual(recovered.active["radius"], 24)
-        self.assertEqual(recovered.preferences, {"scale": 100, "density": "compact", "logs_expanded": False, "dismissed_update_version": ""})
+        self.assertEqual(recovered.preferences, {"scale": 100, "density": "compact", "logs_expanded": False,
+                                                 "dismissed_update_version": "", "ui_mode": "advanced"})  # 老存档无 ui_mode 键 -> 高级
         self.assertEqual(recovered.active_id, "light")
         independent = ThemeStore(self.root / "another-store")
         self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)

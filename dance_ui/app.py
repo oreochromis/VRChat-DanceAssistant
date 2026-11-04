@@ -114,6 +114,9 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.build_run_page())
         self.stack.addWidget(self.build_storage_page())
         self.stack.addWidget(self.build_settings_page())
+        self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
+                                  self.hosts_clean_row, self.hosts_clean_hint]
+        self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
         self.stack.addWidget(self.appearance_page)
@@ -224,6 +227,27 @@ class MainWindow(QMainWindow, Pages):
             self.controller.refresh_stats()
         elif index == 3:
             self.appearance_page.refresh()
+
+    def set_ui_mode(self, mode):
+        if mode == self.store.preferences.get("ui_mode", "advanced"):
+            return
+        self.store.change_preferences({"ui_mode": mode})
+        self.apply_ui_mode()
+        self.notify("已切换到简单模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。"
+                    if mode == "simple" else "已切换到高级模式：全部功能已显示。")
+
+    def apply_ui_mode(self):
+        advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
+        for widget in self._advanced_widgets:
+            widget.setVisible(advanced)
+        for btn, active in ((self.mode_simple_button, not advanced),
+                            (self.mode_advanced_button, advanced)):
+            btn.setProperty("primary", active)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        self.mode_hint.setText(
+            "显示全部功能，包含曲库维护、CDN 网络测速与 hosts 清理等高级选项。" if advanced
+            else "只保留常用功能；曲库维护、CDN 网络等高级选项已隐藏，适合新手。")
 
     def apply_appearance(self):
         theme, preferences = self.store.active, self.store.preferences
