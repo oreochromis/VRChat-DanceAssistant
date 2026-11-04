@@ -115,7 +115,8 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.build_storage_page())
         self.stack.addWidget(self.build_settings_page())
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
-                                  self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service]
+                                  self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
+                                  self.storage_location_box]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -452,7 +453,6 @@ class MainWindow(QMainWindow, Pages):
                 self.cdn_permanent.setChecked(config["cdn_permanent"])
                 self.wd_permanent.setChecked(config.get("wd_permanent", False))
                 self.youtube_permanent.setChecked(config["youtube_permanent"])
-                self.refresh_storage_location()
             if section in (None, "settings"):
                 self.preload_count.setMaximum(max(10, config["preload_count"]))
                 self.preload_count.setValue(config["preload_count"])
@@ -465,6 +465,7 @@ class MainWindow(QMainWindow, Pages):
                 self.vr_overlay.setChecked(config.get("vr_overlay", True))
                 self.close_to_tray.setChecked(config.get("close_to_tray", False))
                 self.auto_start_service.setChecked(config.get("auto_start_service", True))
+                self.refresh_storage_location()
             for name in (section,) if section else ("storage", "settings"):
                 self._dirty[name] = False
                 self.apply_buttons[name].setEnabled(False)

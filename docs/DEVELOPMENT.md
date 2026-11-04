@@ -40,8 +40,8 @@ py -3.12 -m venv .venv
 
 ### 业务数据
 
-- `config.json`、`mapping.json`、`bundle_songs.json`、`dead_songs.json` 的存放位置由"数据保存位置"模式决定：便携模式在程序（源码或 exe）旁；用户目录模式在系统用户目录（Windows 为 `%LOCALAPPDATA%\VRChatDanceAssistant`）。模式指针 `storage-mode.json` 始终写在用户目录；无指针时 exe 旁已有 `config.json` 视为便携，否则默认用户目录。
-- 存储页可切换模式：切换复制上述数据文件到新位置（原文件保留），需先停止服务；切换后临时缓存等相对路径按新数据目录解析，曲库等绝对路径不受影响。
+- `config.json`、`mapping.json`、`bundle_songs.json`、`dead_songs.json` 的存放位置由"数据保存位置"模式决定：便携模式在程序（源码或 exe）旁；用户目录模式在系统用户目录（Windows 为 `%LOCALAPPDATA%\VRChatDanceAssistant`），为默认模式。模式指针 `storage-mode.json` 始终写在用户目录；无指针时一律按用户目录，exe 旁有旧版便携数据则在首次加载配置时自动复制迁移（原文件保留，失败时本次会话回退便携）。
+- 设置页（高级模式）可切换模式：切换复制上述数据文件到新位置（原文件保留），需先停止服务；切换后临时缓存等相对路径按新数据目录解析，曲库等绝对路径不受影响。
 - 打包运行时 `_internal` 只放只读资源，用户数据一律不写进去。
 
 移动旧数据前保留配置、映射和视频目录的备份，确认相对路径在新位置仍有效。界面改版不会自动搬迁、合并或清理旧曲库。

@@ -170,22 +170,42 @@ class CoreTests(unittest.TestCase):
 
     def test_storage_mode_resolution(self):
         self.dc._storage_mode_override = None
-        # 无指针、exe 旁有 config.json（setUp 已写入）→ 老用户保持便携
-        self.assertEqual(self.dc.get_storage_mode(), "portable")
-        self.assertEqual(self.dc.data_dir(), str(self.root))
-        # 无指针、无 exe 旁配置 → 全新用户默认用户目录
-        (self.root / "config.json").unlink()
+        # 无指针时一律默认用户目录（exe 旁旧配置由自动迁移接管，见迁移测试）
         self.assertEqual(self.dc.get_storage_mode(), "roaming")
         self.assertEqual(self.dc.data_dir(), self.dc.ROAMING_ROOT)
+        (self.root / "config.json").unlink()
+        self.assertEqual(self.dc.get_storage_mode(), "roaming")
         # 指针文件优先
         roaming = Path(self.dc.ROAMING_ROOT)
         roaming.mkdir(parents=True, exist_ok=True)
         with open(self.dc._pointer_path(), "w", encoding="utf-8") as f:
             json.dump({"mode": "portable"}, f)
         self.assertEqual(self.dc.get_storage_mode(), "portable")
+        self.assertEqual(self.dc.data_dir(), str(self.root))
+
+    def test_legacy_portable_data_auto_migrates_to_roaming(self):
+        # 老版本升级：exe 旁的 config.json/mapping.json 自动复制到用户目录并写指针
+        self.dc._storage_mode_override = None
+        (self.root / "mapping.json").write_text(json.dumps({"3528": "video.mp4"}), encoding="utf-8")
+        self.dc.load_config()  # 加载即触发迁移
+        self.assertEqual(self.dc.get_storage_mode(), "roaming")
+        roaming = Path(self.dc.ROAMING_ROOT)
+        for name in ("config.json", "mapping.json", "storage-mode.json"):
+            self.assertTrue((roaming / name).is_file(), name)
+        # 迁移是复制：原位置文件保留
+        self.assertTrue((self.root / "config.json").is_file())
+        self.assertTrue((self.root / "mapping.json").is_file())
+        self.dc.load_mapping()
+        self.assertEqual(self.dc.song_route(3528), ("cdn", "video.mp4"))
+        # 幂等：指针已存在后再次加载不会从便携目录重新复制
+        (roaming / "mapping.json").unlink()
+        self.dc.load_config()
+        self.assertFalse((roaming / "mapping.json").exists())
 
     def test_set_storage_mode_migrates_and_reloads(self):
         self.dc._storage_mode_override = None
+        # 默认 roaming；先切到便携（空迁移），再造数据切回用户目录验证完整迁移
+        self.assertEqual(self.dc.set_storage_mode("portable")["mode"], "portable")
         self.dc.mark_mapping(3528, "video.mp4")
         self.dc.flush_mapping()
         info = self.dc.set_storage_mode("roaming")
@@ -214,8 +234,8 @@ class CoreTests(unittest.TestCase):
         with self.service_environment():
             self.assertIsNone(self.dc.start_services())
             with self.assertRaises(RuntimeError):
-                self.dc.set_storage_mode("roaming")
-            self.assertEqual(self.dc.get_storage_mode(), "portable")
+                self.dc.set_storage_mode("portable")
+            self.assertEqual(self.dc.get_storage_mode(), "roaming")
 
     def test_wd_queue_inserts_current_song_from_update_state(self):
         # WannaDance 的 queue info 开播即把当前歌曲移出队列，需从 UpdateState 行插回队首

@@ -76,11 +76,13 @@ def _pointer_path():
 
 
 def get_storage_mode():
-    """数据保存位置：portable=随程序目录；roaming=系统用户目录。
-    指针文件不存在时：exe 旁已有 config.json 的老用户保持便携（行为不变），
-    全新用户默认用户目录（解压到任何位置都读到同一份配置）。"""
+    """数据保存位置：portable=随程序目录；roaming=系统用户目录（默认）。
+    无指针文件时一律默认用户目录；exe 旁有旧版便携数据时由
+    _migrate_legacy_portable_data 在加载配置前自动迁移，不会读到空配置。"""
     if _storage_mode_override:
         return _storage_mode_override
+    if _legacy_fallback:
+        return "portable"
     try:
         with open(_pointer_path(), "r", encoding="utf-8") as f:
             mode = json.load(f).get("mode")
@@ -88,7 +90,35 @@ def get_storage_mode():
             return mode
     except (OSError, ValueError, AttributeError):
         pass
-    return "portable" if os.path.isfile(os.path.join(SCRIPT_DIR, "config.json")) else "roaming"
+    return "roaming"
+
+
+_legacy_fallback = False  # 旧数据迁移失败时的本次会话兜底：按便携模式读取
+
+
+def _migrate_legacy_portable_data():
+    """exe 旁有旧版数据且尚未记录模式：复制迁移到默认的用户目录模式。
+    原文件保留不删；迁移失败时本次会话回退便携模式，绝不读到空配置。"""
+    global _legacy_fallback
+    if _storage_mode_override or os.path.isfile(_pointer_path()):
+        return
+    if not os.path.isfile(os.path.join(SCRIPT_DIR, "config.json")):
+        return
+    try:
+        os.makedirs(ROAMING_ROOT, exist_ok=True)
+        copied = 0
+        for name in _STORAGE_FILES:
+            src = os.path.join(SCRIPT_DIR, name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(ROAMING_ROOT, name))
+                copied += 1
+        with open(_pointer_path(), "w", encoding="utf-8") as f:
+            json.dump({"mode": "roaming"}, f)
+        log(f"检测到旧版本的数据文件，已迁移到系统用户目录（{ROAMING_ROOT}，{copied} 个文件，原位置保留）；"
+            "可在 设置 → 数据保存位置 改回便携模式")
+    except OSError as e:
+        _legacy_fallback = True
+        log(f"旧数据迁移失败（本次仍按便携模式读取，下次启动重试）: {e}")
 
 
 def data_dir():
@@ -370,6 +400,7 @@ def _note_session_miss(filename):
 
 def load_config():
     global _config
+    _migrate_legacy_portable_data()
     path = os.path.join(data_dir(), "config.json")
     missing = not os.path.exists(path)
     warnings = []
