@@ -245,7 +245,7 @@ class MainWindow(QMainWindow, Pages):
         advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
         for widget in self._advanced_widgets:
             widget.setVisible(advanced)
-        self.mode_switch.set_mode("advanced" if advanced else "simple", animate=False)
+        self.mode_switch.set_mode("advanced" if advanced else "simple")
 
     def apply_appearance(self):
         theme, preferences = self.store.active, self.store.preferences

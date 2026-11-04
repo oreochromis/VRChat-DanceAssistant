@@ -6,7 +6,7 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Property, QRectF, QSize, Qt, QPoint, QPointF, Signal
+from PySide6.QtCore import QRectF, QSize, Qt, QPoint, QPointF, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
@@ -361,9 +361,6 @@ class SegmentedSwitch(QWidget):
         self._pos = 0.0
         self._hover = -1
         self._colors = {}
-        self._anim = QPropertyAnimation(self, b"thumbPos", self)
-        self._anim.setDuration(180)
-        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -388,34 +385,16 @@ class SegmentedSwitch(QWidget):
         }
         self.update()
 
-    # Qt 属性动画目标
-    def thumbPos(self):
-        return self._pos
-
-    def setThumbPos(self, value):
-        self._pos = float(value)
-        self.update()
-
-    thumbPos = Property(float, thumbPos, setThumbPos)
-
     def mode(self) -> str:
         return self._modes[self._index][0]
 
-    def set_mode(self, mode: str, *, animate: bool = True):
+    def set_mode(self, mode: str):
         index = next((i for i, (m, _) in enumerate(self._modes) if m == mode), None)
         if index is None:
             return
-        if index == self._index and self._pos == float(index):
-            return
         self._index = index
-        if animate:
-            self._anim.stop()
-            self._anim.setStartValue(self._pos)
-            self._anim.setEndValue(float(index))
-            self._anim.start()
-        else:
-            self._pos = float(index)
-            self.update()
+        self._pos = float(index)
+        self.update()
 
     def _segment_at(self, x: float) -> int:
         index = int((x - self._PAD) // self._seg_w)
