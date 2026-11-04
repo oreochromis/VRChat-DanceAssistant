@@ -11,7 +11,7 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFrame, QFileDialog, QHBoxLayout, QHeaderView,
+    QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QHeaderView,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea,
     QStackedWidget, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget,
 )
@@ -22,7 +22,7 @@ from .controller import CoreController
 from .pages import Pages, button, row
 from .theme import ThemeStore
 from .windows_taskbar import set_windows_application_identity
-from .widgets import Backdrop, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
+from .widgets import Backdrop, SegmentedSwitch, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
 
 
 STATES = {
@@ -179,22 +179,9 @@ class MainWindow(QMainWindow, Pages):
             box.addWidget(nav)
         self.nav_buttons[0].setChecked(True)
         box.addStretch()
-        self.mode_switch = QFrame()
-        self.mode_switch.setObjectName("modeSwitch")
+        self.mode_switch = SegmentedSwitch()
         self.mode_switch.setToolTip("界面模式：简单只保留常用功能；高级显示曲库维护、CDN 网络等全部选项")
-        switch_box = QHBoxLayout(self.mode_switch)
-        switch_box.setContentsMargins(3, 3, 3, 3)
-        switch_box.setSpacing(2)
-        self.mode_buttons = {}
-        mode_group = QButtonGroup(self.mode_switch)
-        mode_group.setExclusive(True)
-        for mode, text in (("simple", "简单"), ("advanced", "高级")):
-            segment = button(text, lambda checked=False, m=mode: self.set_ui_mode(m))
-            segment.setProperty("segment", True)
-            segment.setCheckable(True)
-            mode_group.addButton(segment)
-            switch_box.addWidget(segment)
-            self.mode_buttons[mode] = segment
+        self.mode_switch.modeChanged.connect(self.set_ui_mode)
         box.addWidget(self.mode_switch)
         box.addSpacing(12)
         self.service_status = label("●  已停止")
@@ -258,12 +245,13 @@ class MainWindow(QMainWindow, Pages):
         advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
         for widget in self._advanced_widgets:
             widget.setVisible(advanced)
-        self.mode_buttons["advanced" if advanced else "simple"].setChecked(True)
+        self.mode_switch.set_mode("advanced" if advanced else "simple", animate=False)
 
     def apply_appearance(self):
         theme, preferences = self.store.active, self.store.preferences
         self.backdrop.set_appearance(theme, self.store.background_path())
         self.setStyleSheet(stylesheet(theme, preferences))
+        self.mode_switch.apply_theme(theme)
         scale = preferences.get("scale", 100) / 100
         self._row_height = round({"comfortable": 52, "standard": 44, "compact": 36}[preferences["density"]] * scale)
         for widget in (self.queue_table, self.download_table, self.scan_table, self.favorites_table):

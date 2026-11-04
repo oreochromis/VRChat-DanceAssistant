@@ -6,8 +6,8 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import Qt, QPoint, QPointF
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPixmap
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Property, QRectF, QSize, Qt, QPoint, QPointF, Signal
+from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
@@ -101,13 +101,6 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
     QPushButton[danger="true"] {{ color: #c04c5b; }}
-    QFrame#modeSwitch {{ background: {subtle}; border: 1px solid {border}; border-radius: {min(radius, 9)}px; }}
-    QPushButton[segment="true"] {{
-        background: transparent; border: none; color: {muted};
-        padding: {px(3)}px {px(11)}px; min-height: {px(14)}px; border-radius: {min(radius, 7)}px;
-    }}
-    QPushButton[segment="true"]:hover {{ color: {text}; background: {rgba(accent, .10)}; }}
-    QPushButton[segment="true"]:checked {{ background: {accent}; color: {on_color(accent)}; font-weight: 600; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
         background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 7)}px;
         padding: {px(padding)}px {px(10)}px; min-height: {px(19)}px;
@@ -353,6 +346,128 @@ def set_status(widget: QLabel, text: str, state: str = "muted"):
     widget.style().unpolish(widget)
     widget.style().polish(widget)
     widget.update()
+
+
+class SegmentedSwitch(QWidget):
+    """自绘分段拨杆：滑块随切换滑动，悬停段有文字反馈。颜色由 apply_theme 注入。"""
+
+    modeChanged = Signal(str)
+    _PAD = 3
+
+    def __init__(self, modes=(("simple", "简单"), ("advanced", "高级")), parent=None):
+        super().__init__(parent)
+        self._modes = list(modes)
+        self._index = 0
+        self._pos = 0.0
+        self._hover = -1
+        self._colors = {}
+        self._anim = QPropertyAnimation(self, b"thumbPos", self)
+        self._anim.setDuration(180)
+        self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self._recalc_size()
+
+    def _recalc_size(self):
+        metrics = self.fontMetrics()
+        self._seg_w = max(metrics.horizontalAdvance(text) for _, text in self._modes) + 30
+        self.setFixedSize(QSize(self._seg_w * len(self._modes) + self._PAD * 2, 30))
+
+    def apply_theme(self, theme: dict[str, Any]):
+        is_dark = QColor(theme["background_color"]).lightnessF() < .45
+        border = QColor(theme["border_color"])
+        border.setAlphaF(min(1.0, theme.get("border_opacity", 1.0) + 0.25))
+        self._colors = {
+            "track": QColor(255, 255, 255, 18) if is_dark else QColor(24, 43, 73, 10),
+            "border": border,
+            "thumb": QColor(theme["accent"]),
+            "on_thumb": QColor(on_color(theme["accent"])),
+            "text": QColor(theme["text_primary"]),
+            "muted": QColor(theme["text_secondary"]),
+        }
+        self.update()
+
+    # Qt 属性动画目标
+    def thumbPos(self):
+        return self._pos
+
+    def setThumbPos(self, value):
+        self._pos = float(value)
+        self.update()
+
+    thumbPos = Property(float, thumbPos, setThumbPos)
+
+    def mode(self) -> str:
+        return self._modes[self._index][0]
+
+    def set_mode(self, mode: str, *, animate: bool = True):
+        index = next((i for i, (m, _) in enumerate(self._modes) if m == mode), None)
+        if index is None:
+            return
+        if index == self._index and self._pos == float(index):
+            return
+        self._index = index
+        if animate:
+            self._anim.stop()
+            self._anim.setStartValue(self._pos)
+            self._anim.setEndValue(float(index))
+            self._anim.start()
+        else:
+            self._pos = float(index)
+            self.update()
+
+    def _segment_at(self, x: float) -> int:
+        index = int((x - self._PAD) // self._seg_w)
+        return index if 0 <= index < len(self._modes) else -1
+
+    def mouseReleaseEvent(self, event):
+        index = self._segment_at(event.position().x())
+        if index >= 0 and index != self._index:
+            self.set_mode(self._modes[index][0])
+            self.modeChanged.emit(self.mode())
+        super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event):
+        hover = self._segment_at(event.position().x())
+        if hover != self._hover:
+            self._hover = hover
+            self.update()
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = -1
+        self.update()
+        super().leaveEvent(event)
+
+    def paintEvent(self, _):
+        if not self._colors:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        height = self.height()
+        track = QRectF(0.5, 0.5, self.width() - 1.0, height - 1.0)
+        painter.setPen(QPen(self._colors["border"], 1))
+        painter.setBrush(self._colors["track"])
+        painter.drawRoundedRect(track, height / 2, height / 2)
+        inner_h = height - self._PAD * 2
+        thumb = QRectF(self._PAD + self._pos * self._seg_w, self._PAD, self._seg_w, inner_h)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(self._colors["thumb"])
+        painter.drawRoundedRect(thumb, inner_h / 2, inner_h / 2)
+        painter.setFont(self.font())
+        active = round(self._pos)
+        for index, (_, text) in enumerate(self._modes):
+            segment = QRectF(self._PAD + index * self._seg_w, self._PAD, self._seg_w, inner_h)
+            if index == active:
+                color = self._colors["on_thumb"]
+            elif index == self._hover:
+                color = self._colors["text"]
+            else:
+                color = self._colors["muted"]
+            painter.setPen(color)
+            painter.drawText(segment, Qt.AlignmentFlag.AlignCenter, text)
+        painter.end()
 
 
 def app_icon() -> QIcon:
