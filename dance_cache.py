@@ -2795,10 +2795,17 @@ def describe_queue(items):
             kind, payload = song_route(sn) if valid_id else (None, None)
             filename = payload if kind == "cdn" else (f"yt_{sn}.mp4" if kind == "yt" else None)
             source = {"cdn": "cdn", "yt": "youtube"}.get(kind, "unknown" if valid_id else "external")
+            # 不回落 yt_local_path：CDN 源歌曲按 CDN 文件名查找，历史 yt_{id}.mp4
+            # 残留不能显示为已缓存（实际播放走 CDN 文件名，会未命中回源）
             local = local_path_for(filename) if filename else None
-            if local is None and valid_id:
-                local = yt_local_path(sn)
-        matches = lambda task: (valid_id and task.get("song_id") == sn) or (filename and task.get("filename") == filename)
+        expect_wd = bool(it.get("wd"))
+
+        def matches(task, expect_wd=expect_wd, sn=sn, filename=filename, valid_id=valid_id):
+            # PyPyDance 与 WannaDance 编号同范围，按来源各自匹配；否则换房间后
+            # 旧房间的下载结果（保留最近 200 条）会贴到新房间同编号的歌上
+            if (task.get("source") == "wannadance") != expect_wd:
+                return False
+            return (valid_id and task.get("song_id") == sn) or (filename and task.get("filename") == filename)
         task = next((task for task in tasks if matches(task)), None)
         outcome = next((outcome for outcome in reversed(outcomes) if matches(outcome)), None)
         entry = {
@@ -3339,6 +3346,7 @@ def start_services():
 def stop_services():
     """停止并恢复 hosts；None 表示成功，错误字符串表示需留窗重试。"""
     global _server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
+    global _last_queue_items, _preload_pending
     # 在等待生命周期锁之前通知启动线程取消，防止窗口关闭后又启动成功。
     _stop_event.set()
     with _lifecycle_lock:
@@ -3374,6 +3382,14 @@ def stop_services():
                            youtube_available=False, queue_watcher_available=False, warnings=[],
                            hosts_restore_pending=_hosts_restore_pending, error=error)
         log("服务已停止" if restored else "服务已停止，hosts 尚未成功恢复")
+        # 清空跨会话状态：残留的预载列表会在下次启动时立刻下载上一个房间的歌；
+        # 残留队列会被误显示，学到新映射时还会用它误触发预载（_refresh_queue_for_mapping）
+        with _queue_lock:
+            _last_queue_items = []
+        with _preload_lock:
+            _preload_pending = None
+        with _preload_dl_lock:
+            _preload_dl_items[:] = []
         _reset_wd_state()
         refresh_queue_state()
         return error

@@ -379,6 +379,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(row["source"], "youtube")
         self.assertEqual(row["storage"], "library")
 
+    def test_download_outcomes_do_not_leak_across_sources(self):
+        # WannaDance 与 PyPyDance 编号同范围：旧房间的下载结果不能贴到新房间同编号的歌上
+        self.queue_song(sid=100, route="somefile.mp4")
+        meta = self.dc._begin_download(str(self.cache / "wd_100.mp4"), "wd_100.mp4", 100, "wannadance")
+        self.dc._finish_download(meta, False, False, "network timeout", 0, 0)
+        row = self.dc.get_queue_snapshot()[0]
+        self.assertEqual(row["state_code"], "not_cached")
+        wd_row = self.dc.describe_queue(
+            [{"songNum": 100, "videoName": "Song", "playerName": "P", "wd": True}])[0]
+        self.assertEqual(wd_row["state_code"], "failed")
+
+    def test_cdn_song_with_stale_yt_recording_is_not_reported_cached(self):
+        # 历史 yt_{id}.mp4 残留不能让 CDN 源歌曲误报已缓存（实际播放走 CDN 文件名会回源）
+        self.queue_song(sid=7, route="cdnfile.mp4")
+        (self.cache / "yt_7.mp4").write_bytes(b"stale recording")
+        row = self.dc.get_queue_snapshot()[0]
+        self.assertEqual(row["state_code"], "not_cached")
+
     def test_learning_mapping_refreshes_queue_state(self):
         # 映射缺失时队列显示"待解析"；之后学习到映射（如播放时代理透传学到）
         # 必须主动刷新队列，否则本地已缓存的歌会一直卡在"待解析"
@@ -1086,6 +1104,20 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["missing"], [9])
         self.assertEqual(result["dead"], [])
         self.assertEqual(result["names"], {9: "Solo - Hide"})
+
+    def test_stop_clears_queue_and_preload_state(self):
+        # 停止服务必须清空跨会话状态：残留的预载列表会在下次启动时立刻下载
+        # 上一个房间的歌，残留队列会被误显示、学到新映射时还会误触发预载
+        with self.service_environment():
+            self.assertIsNone(self.dc.start_services())
+            self.dc._last_queue_items = [{"songNum": 1, "videoName": "Song", "playerName": "P"}]
+            self.dc._preload_pending = [{"songNum": 1}]
+            self.dc._preload_dl_items[:] = [("cdn", "video.mp4", 1)]
+            self.assertIsNone(self.dc.stop_services())
+            self.assertEqual(self.dc._last_queue_items, [])
+            self.assertIsNone(self.dc._preload_pending)
+            self.assertEqual(self.dc._preload_dl_items, [])
+            self.assertEqual(self.dc.get_queue_snapshot(), [])
 
     def test_stop_failure_is_visible_in_runtime_state(self):
         with self.service_environment() as (server, factory, resolver, hijack, restore):
