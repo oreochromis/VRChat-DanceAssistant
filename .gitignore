@@ -22,6 +22,7 @@ config.json
 config-*.tmp
 mapping.json
 bundle_songs.json
+dead_songs.json
 cache/
 cookie/
 error.log
