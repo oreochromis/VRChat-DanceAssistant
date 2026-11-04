@@ -76,6 +76,7 @@ class LibraryBrowser(QDialog):
         self.missing_label = label("", muted=True, wrap=True)
         self.missing_label.hide()
         box.addWidget(self.missing_label)
+        box.addWidget(label("双击行可用默认播放器打开；灰色行为缺失歌曲（缺失 / 已下架）。", muted=True))
 
         self.table = QTableWidget(0, 4)
         self.table.setHorizontalHeaderLabels(["编号", "歌名", "大小", "修改时间"])
