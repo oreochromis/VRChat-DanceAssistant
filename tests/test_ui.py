@@ -20,7 +20,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
     from PySide6.QtCore import QEventLoop, QTimer, Qt
-    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtGui import QFont, QFontDatabase, QImage
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QProgressBar
     import dance_cache as core
@@ -200,11 +200,13 @@ class UIIntegrationTests(unittest.TestCase):
         window, controller, _ = self.make_window()
         stats = window.play_stats_page
         self.assertEqual(stats.table.rowCount(), 0)
+        self.assertFalse(stats.report_button.isEnabled())
         window.navigate(2)
         self.assertEqual(stats.table.rowCount(), 3)
         self.assertEqual(stats.table.item(0, 0).text(), "1")
         self.assertIn("84 次点歌", stats.summary.text())
         self.assertTrue(stats.export_button.isEnabled())
+        self.assertTrue(stats.report_button.isEnabled())
         stats.source.setCurrentIndex(stats.source.findData("wd"))
         self.assertEqual(stats.table.rowCount(), 1)
         self.assertEqual(stats.table.item(0, 3).text(), "7152")
@@ -214,6 +216,28 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(stats.table.isVisible())
         self.assertTrue(stats.empty_state.isVisible())
         self.assertFalse(stats.export_button.isEnabled())
+        self.assertFalse(stats.report_button.isEnabled())
+
+    def test_play_report_renders_and_exports_high_resolution_png(self):
+        window, _, _ = self.make_window()
+        stats = window.play_stats_page
+        window.navigate(2)
+        stats.open_report()
+        report = stats._report
+        self.assertIsNotNone(report)
+        self.assertTrue(report.isVisible())
+        self.assertEqual(report.canvas.data["total"], 84)
+        self.assertEqual(report.canvas.data["active_days"], 37)
+        self.assertFalse(report.canvas.grab().isNull())
+        path = self.root / "annual-report.png"
+        self.assertTrue(report.canvas.save_png(str(path)))
+        image = QImage(str(path))
+        self.assertFalse(image.isNull())
+        self.assertEqual(image.width(), report.canvas.width() * 2)
+        self.assertGreater(image.height(), 2000)
+        report.close()
+        QApplication.processEvents()
+        self.assertIsNone(stats._report)
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)
@@ -874,7 +898,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report["checks"], [
             "demo_mode", "bundled_cooldown_video", "application_icon_resources", "application_window_icon",
             "builtin_light_theme", "pillow_generated_background",
-            "embedded_svg_icons", "five_page_navigation_and_rendering",
+            "embedded_svg_icons", "play_report_rendering", "five_page_navigation_and_rendering",
         ])
         self.assertEqual(report["bundled_cooldown_video"]["relative_path"], "assets/default_cooldown.mp4")
         self.assertLessEqual(report["bundled_cooldown_video"]["size_bytes"], 5 * 1024 * 1024)

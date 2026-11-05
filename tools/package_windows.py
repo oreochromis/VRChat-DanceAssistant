@@ -109,7 +109,7 @@ def main() -> int:
         or smoke.get("windows_executable_icon") != embedded_icon
         or not {
             "demo_mode", "builtin_light_theme", "pillow_generated_background",
-            "embedded_svg_icons", "five_page_navigation_and_rendering",
+            "embedded_svg_icons", "play_report_rendering", "five_page_navigation_and_rendering",
             "openvr_library_loaded_without_initialization",
             "bundled_cooldown_video",
             "application_icon_resources", "application_window_icon", "windows_executable_icon",

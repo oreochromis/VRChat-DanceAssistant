@@ -117,6 +117,15 @@ def inspect_demo(window) -> dict:
                 raise ValueError("Navigation did not show page " + titles[index])
             if window.grab().isNull():
                 raise ValueError("Qt could not render page " + titles[index])
+            if index == 2:
+                window.play_stats_page.open_report()
+                play_report = window.play_stats_page._report
+                QApplication.processEvents()
+                if play_report is None or play_report.canvas.grab().isNull():
+                    raise ValueError("Qt could not render the play history report.")
+                play_report.close()
+                QApplication.processEvents()
+                report["checks"].append("play_report_rendering")
         report["checks"].append("five_page_navigation_and_rendering")
         report["status"] = "passed"
     except Exception:

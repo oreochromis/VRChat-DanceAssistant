@@ -295,6 +295,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in stats["songs"]], [1, 2, 3])
         self.assertEqual(stats["players"], [{"player": "Alice", "count": 3},
                                             {"player": "Bob", "count": 1}])
+        self.assertEqual(stats["active_days"], 1)
+        self.assertEqual(stats["months"], [{"month": "1970-01", "count": 4}])
         # 时间范围过滤（end 不含）
         ranged = self.dc.play_history_stats(start_ts=2500.0, end_ts=9500.0)
         self.assertEqual(ranged["total"], 2)
@@ -309,6 +311,8 @@ class CoreTests(unittest.TestCase):
         empty = self.dc.play_history_stats()
         self.assertEqual(empty["total"], 0)
         self.assertIsNone(empty["earliest"])
+        self.assertEqual(empty["months"], [])
+        self.assertEqual(empty["active_days"], 0)
 
     def test_play_history_jsonl_migrates_with_storage_files(self):
         self.assertIn("play_history.jsonl", self.dc._STORAGE_FILES)

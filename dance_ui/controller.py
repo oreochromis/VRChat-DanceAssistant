@@ -6,7 +6,7 @@ import os
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Signal, Slot, QUrl
+from PySide6.QtCore import QDate, QObject, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QDesktopServices
 
 import dance_cache as core
@@ -373,10 +373,16 @@ class CoreController(QObject):
                 songs = [s for s in songs if s["kind"] == kind]
                 for index, song in enumerate(songs, 1):
                     song["rank"] = index
+            total = sum(s["count"] for s in songs)
+            month_counts = {"": [8, 12, 10, 14, 16, 24], "pypy": [6, 10, 8, 12, 14, 22],
+                            "wd": [2, 2, 2, 2, 2, 2]}[kind or ""]
+            months = [{"month": f"{QDate.currentDate().year()}-{month:02d}", "count": count}
+                      for month, count in zip((1, 3, 5, 7, 9, 11), month_counts)]
             self.result.emit("play_history_stats", {
-                "total": sum(s["count"] for s in songs), "songs": songs,
+                "total": total, "songs": songs,
                 "players": [{"player": "小林", "count": 42}, {"player": "Momo", "count": 30}],
-                "earliest": start_ts})
+                "earliest": start_ts, "months": months,
+                "active_days": min(total, {"": 37, "pypy": 32, "wd": 8}[kind or ""])})
             return
         self._run("play_history_stats", lambda: core.play_history_stats(start_ts, end_ts, kind or None))
 

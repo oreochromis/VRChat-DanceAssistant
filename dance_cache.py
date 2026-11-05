@@ -450,11 +450,12 @@ def record_queue_snapshot(items):
 
 def play_history_stats(start_ts=None, end_ts=None, kind=None):
     """聚合点歌历史。start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"。
-    返回 {"total", "songs": [{rank, id, kind, name, count, top_player, first_ts, last_ts}],
-          "players": [{player, count}], "earliest": 最早一条记录的时间戳或 None}。
-    损坏行跳过；文件不存在返回空统计。"""
+    返回歌曲/玩家排行，以及报告使用的 months=[{month, count}] 和 active_days。
+    earliest 是最早一条历史记录的时间戳，不受筛选范围影响。损坏行跳过。"""
     counts = {}
     players = {}
+    months = {}
+    days = set()
     total = 0
     earliest = None
     try:
@@ -484,6 +485,13 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None):
         if kind and ekind != kind:
             continue
         total += 1
+        try:
+            local = time.localtime(ts)
+            month = time.strftime("%Y-%m", local)
+            months[month] = months.get(month, 0) + 1
+            days.add(time.strftime("%Y-%m-%d", local))
+        except (OverflowError, OSError, ValueError):
+            pass
         key = (ekind, sid)
         slot = counts.setdefault(key, {"id": sid, "kind": ekind, "name": "", "count": 0,
                                        "players": {}, "first_ts": ts, "last_ts": ts})
@@ -504,7 +512,9 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None):
         del slot["players"]
     top_players = sorted(({"player": p, "count": c} for p, c in players.items()),
                          key=lambda x: (-x["count"], x["player"]))
-    return {"total": total, "songs": songs, "players": top_players, "earliest": earliest}
+    return {"total": total, "songs": songs, "players": top_players, "earliest": earliest,
+            "months": [{"month": month, "count": months[month]} for month in sorted(months)],
+            "active_days": len(days)}
 
 
 # ---------------- 配置 ----------------

@@ -34,7 +34,10 @@ class PlayStatsPage(QWidget):
     def __init__(self, window):
         super().__init__(window)
         self.controller = window.controller
+        self._main = window
         self._songs = []
+        self._report_data = None
+        self._report = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -113,6 +116,12 @@ class PlayStatsPage(QWidget):
         box.addWidget(label(
             "统计本软件运行期间检测到的点歌，从本功能上线起累积；同一首歌离开队列后再次入队会记为新的一次。",
             muted=True, wrap=True))
+        report_row = QHBoxLayout()
+        report_row.addWidget(label("把当前日期和来源的统计结果变成一份可分享的年度风格报告。", muted=True, wrap=True), 1)
+        self.report_button = button("查看报告", self.open_report, primary=True)
+        self.report_button.setEnabled(False)
+        report_row.addWidget(self.report_button)
+        box.addLayout(report_row)
         box.addStretch()
 
         self.controller.result.connect(self._on_result)
@@ -145,6 +154,7 @@ class PlayStatsPage(QWidget):
     def _on_result(self, operation, result):
         if operation != "play_history_stats" or not isinstance(result, dict):
             return
+        self._report_data = result
         self._songs = list(result.get("songs") or [])
         total = result.get("total", 0)
         players = result.get("players") or []
@@ -187,10 +197,24 @@ class PlayStatsPage(QWidget):
         self.table.setVisible(has_songs)
         self.empty_state.setVisible(not has_songs)
         self.export_button.setEnabled(has_songs)
+        self.report_button.setEnabled(has_songs)
         if has_songs:
             row_height = max(36, self.table.verticalHeader().defaultSectionSize())
             header_height = self.table.horizontalHeader().sizeHint().height()
             self.table.setFixedHeight(header_height + min(len(self._songs), 8) * row_height + 4)
+
+    def open_report(self):
+        if not self._report_data or not self._songs:
+            return
+        from .play_report import PlayReportDialog
+        if self._report is not None:
+            self._report.close()
+        self._report = PlayReportDialog(
+            self, self._report_data, self.start.date(), self.end.date(),
+            self.source.currentText(), self._main.store.active)
+        self._report.show()
+        self._report.raise_()
+        self._report.activateWindow()
 
     def _export_csv(self):
         if not self._songs:
