@@ -67,8 +67,11 @@ class ReportCanvas(QWidget):
         super().resizeEvent(event)
 
     def _report_height(self, width):
-        top_height = 100 + min(len(self.songs), 10) * 44
-        return 28 + 270 + 18 + 112 + 34 + 34 + 184 + 24 + top_height + 24 + 310 + 24 + 112 + 52 + 28
+        height = 704
+        if len(self.songs) > 3:
+            height += 100 + min(len(self.songs), 10) * 44 + 24
+        height += 310 if len(self.months) > 1 else 230
+        return height + 24 + 112 + 52 + 28
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -97,16 +100,22 @@ class ReportCanvas(QWidget):
         _text(painter, QRectF(margin, favorite_title_y, content, 34), "年度最爱",
               size=23, color=self.text, weight=QFont.Weight.DemiBold)
         self._draw_favorites(painter, QRectF(margin, favorite_title_y + 34, content, 184))
-        top_y = favorite_title_y + 34 + 184 + 24
-        top_height = 100 + min(len(self.songs), 10) * 44
-        self._draw_top_songs(painter, QRectF(margin, top_y, content, top_height))
-        charts_y = top_y + top_height + 24
-        gap = 18
-        monthly_width = round((content - gap) * .62)
-        self._draw_monthly(painter, QRectF(margin, charts_y, monthly_width, 310))
-        self._draw_sources(painter, QRectF(margin + monthly_width + gap, charts_y,
-                                           content - monthly_width - gap, 310))
-        closing_y = charts_y + 334
+        charts_y = favorite_title_y + 34 + 184 + 24
+        if len(self.songs) > 3:
+            top_height = 100 + min(len(self.songs), 10) * 44
+            self._draw_top_songs(painter, QRectF(margin, charts_y, content, top_height))
+            charts_y += top_height + 24
+        if len(self.months) > 1:
+            gap = 18
+            monthly_width = round((content - gap) * .62)
+            self._draw_monthly(painter, QRectF(margin, charts_y, monthly_width, 310))
+            self._draw_sources(painter, QRectF(margin + monthly_width + gap, charts_y,
+                                               content - monthly_width - gap, 310))
+            charts_y += 310
+        else:
+            self._draw_sources(painter, QRectF(margin, charts_y, content, 230))
+            charts_y += 230
+        closing_y = charts_y + 24
         self._draw_closing(painter, QRectF(margin, closing_y, content, 112))
         _text(painter, QRectF(margin, closing_y + 126, content, 30),
               "VRChat 跳舞房助手  ·  数据来自本地点歌记录", size=12, color=self.muted,
@@ -179,7 +188,7 @@ class ReportCanvas(QWidget):
         if not favorites:
             return
         gap = 14
-        width = (rect.width() - gap * (len(favorites) - 1)) / len(favorites)
+        width = (rect.width() - gap * 2) / 3
         for index, song in enumerate(favorites):
             card = QRectF(rect.left() + index * (width + gap), rect.top(), width, rect.height())
             fill = self.soft if index == 0 else self.card
@@ -285,8 +294,8 @@ class ReportCanvas(QWidget):
         pypy = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") != "wd")
         wd = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") == "wd")
         total = pypy + wd
-        center = QPointF(rect.center().x(), rect.top() + 142)
-        radius = min(62, rect.width() / 5)
+        center = QPointF(rect.center().x(), rect.top() + (142 if rect.height() >= 280 else 105))
+        radius = min(62 if rect.height() >= 280 else 48, rect.width() / 5)
         ring = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.setPen(QPen(self.soft, 18))

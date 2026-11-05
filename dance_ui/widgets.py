@@ -9,7 +9,7 @@ from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QRectF, QSize, Qt, QPoint, QPointF, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QScrollArea, QSizePolicy,
+    QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
 )
 
@@ -73,6 +73,10 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         border-radius: {radius}px;
     }}
     QFrame[hero="true"] {{ background: {rgba(accent, .10)}; }}
+    QFrame#noticeBanner {{ border-radius: 8px; border: 1px solid {border}; }}
+    QFrame#noticeBanner[noticeTone="error"] {{ background: rgba(205,78,94,24); color: #C64D5C; }}
+    QFrame#noticeBanner[noticeTone="success"] {{ background: rgba(43,166,92,18); color: {text}; }}
+    QFrame#noticeBanner[noticeTone="info"] {{ background: {rgba(accent, .08)}; color: {text}; }}
     QWidget#header {{
         background: {rgba(theme['nav_background'], theme['nav_opacity'])};
         border-bottom: 1px solid {border};
@@ -99,6 +103,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         background: {rgba(theme['nav_active_background'], theme['nav_active_opacity'])};
         border-bottom-color: {accent}; font-weight: 650;
     }}
+    QPushButton[nav="true"][compact="true"] {{ padding-left: {px(11)}px; padding-right: {px(11)}px; }}
     QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
     QPushButton[danger="true"] {{ color: #c04c5b; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
@@ -280,6 +285,63 @@ class TextHalo(QGraphicsEffect):
         painter.drawPixmap(offset, pixmap)
 
 
+class NoticeBanner(QFrame):
+    close_requested = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("noticeBanner")
+        self._raw = ""
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 10, 16, 10)
+        layout.setSpacing(6)
+        top = QHBoxLayout()
+        top.setSpacing(10)
+        self.message = label("", wrap=True)
+        self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        top.addWidget(self.message, 1)
+        self.details_button = QPushButton("技术详情")
+        self.details_button.setProperty("link", True)
+        self.details_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.details_button.clicked.connect(self._toggle_details)
+        top.addWidget(self.details_button)
+        self.close_button = QPushButton("×")
+        self.close_button.setProperty("link", True)
+        self.close_button.setAccessibleName("关闭通知")
+        self.close_button.clicked.connect(self.close_requested)
+        top.addWidget(self.close_button)
+        layout.addLayout(top)
+        self.details = label("", muted=True, wrap=True)
+        self.details.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.details.hide()
+        layout.addWidget(self.details)
+
+    def set_notice(self, message, raw="", *, error=False, busy=False):
+        self._raw = str(raw or message)
+        self.message.setText(str(message))
+        self.details.setText(self._raw)
+        self.details.hide()
+        self.details_button.setText("技术详情")
+        self.details_button.setVisible(bool(self._raw and self._raw != str(message)))
+        self.setProperty("noticeTone", "error" if error else "info" if busy else "success")
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def _toggle_details(self):
+        visible = not self.details.isVisible()
+        self.details.setVisible(visible)
+        self.details_button.setText("收起详情" if visible else "技术详情")
+
+    def text(self):
+        return self.message.text()
+
+    def rawText(self):
+        return self._raw
+
+    def clear(self):
+        self.set_notice("")
+
+
 class Card(QFrame):
     def __init__(self, parent=None, *, hero=False):
         super().__init__(parent)
@@ -324,7 +386,7 @@ def section_title(title: str, description: str = "") -> QWidget:
     box.addWidget(label(title, heading=True))
     box.addStretch()
     if description:
-        box.addWidget(label(description, muted=True))
+        box.addWidget(label(description, muted=True, wrap=True))
     return row
 
 

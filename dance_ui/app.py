@@ -23,7 +23,7 @@ from .pages import Pages, button, row
 from .play_stats import PlayStatsPage
 from .theme import ThemeStore
 from .windows_taskbar import set_windows_application_identity
-from .widgets import Backdrop, SegmentedSwitch, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
+from .widgets import Backdrop, NoticeBanner, SegmentedSwitch, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
 
 
 STATES = {
@@ -34,6 +34,20 @@ STATES = {
     "cooldown": ("放松视频", "warning"),
 }
 SOURCE_NAMES = {"cdn": "CDN", "youtube": "YouTube", "wannadance": "WannaDance", "external": "外部源"}
+
+
+def friendly_message(message):
+    raw = str(message)
+    rules = (
+        ("InitError_Init_HmdNotFound", "未检测到 SteamVR 头显。连接设备并启动 SteamVR 后会自动重试。"),
+        ("InitError_Init_NoLogPath", "SteamVR 无法创建运行日志。请确认程序 exe 使用纯英文名称，再重新启动。"),
+        ("WinError 32", "文件正被 VRChat 或其他程序占用，请稍后重试；技术详情中列出了具体文件。"),
+        ("HTTP 429", "服务器暂时限制了请求频率，请降低并行下载数并稍后重试。"),
+        ("WinError 10013", "本地 80 / 443 端口不可用。请关闭占用端口的程序，并确认已用管理员身份运行。"),
+        ("PermissionError", "目录或文件权限不足，请检查保存位置，或改用管理员身份运行。"),
+        ("WinError 5", "目录或文件权限不足，请检查保存位置，或改用管理员身份运行。"),
+    )
+    return next((friendly for marker, friendly in rules if marker in raw), raw)
 
 
 def _version_newer(latest, current):
@@ -106,8 +120,8 @@ class MainWindow(QMainWindow, Pages):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
         self.build_header(outer)
-        self.banner = label("", wrap=True)
-        self.banner.setContentsMargins(26, 10, 26, 10)
+        self.banner = NoticeBanner()
+        self.banner.close_requested.connect(lambda: self.clear_notice(self._banner_generation))
         self.banner.hide()
         outer.addWidget(self.banner)
         self.stack = QStackedWidget()
@@ -198,6 +212,16 @@ class MainWindow(QMainWindow, Pages):
         self.service_button = button("启动服务", self.toggle_service)
         box.addWidget(self.service_button)
         outer.addWidget(header)
+
+    def resizeEvent(self, event):
+        if hasattr(self, "nav_buttons"):
+            compact = event.size().width() < 1000
+            for nav in self.nav_buttons:
+                if nav.property("compact") != compact:
+                    nav.setProperty("compact", compact)
+                    nav.style().unpolish(nav)
+                    nav.style().polish(nav)
+        super().resizeEvent(event)
 
     def build_logs_and_footer(self, outer):
         self.logs_panel = QWidget()
@@ -325,6 +349,7 @@ class MainWindow(QMainWindow, Pages):
         active = sum(item.get("status") == "active" for item in tasks)
         self.download_count.setText(f"{active} 项进行中" if active else "暂无进行中的任务")
         self.download_empty.setVisible(not tasks)
+        self.downloads_card.setVisible(bool(tasks))
         self.clear_history_button.setVisible(any(item.get("status") != "active" for item in tasks))
         self.download_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         self.download_table.setColumnWidth(1, max(220, round(240 * self.store.preferences["scale"] / 100)))
@@ -387,7 +412,7 @@ class MainWindow(QMainWindow, Pages):
         self.service_button.setEnabled(phase not in ("starting", "stopping"))
         if self._runtime.get("error"):
             self.notify(str(self._runtime["error"]), error=True)
-        elif previous_warning and self.banner.text() == previous_warning:
+        elif previous_warning and self.banner.rawText() == previous_warning:
             self.banner.clear()
             self.banner.hide()
         self.render_cooldown()
@@ -861,11 +886,12 @@ class MainWindow(QMainWindow, Pages):
     def notify(self, message, *, error=False, persistent=False):
         self._banner_generation += 1
         generation = self._banner_generation
-        self.banner.setText(message)
-        self.banner.setStyleSheet("background:rgba(205,78,94,24);color:#C64D5C;" if error else "")
-        self.banner.setVisible(bool(message))
+        raw = str(message)
+        friendly = friendly_message(raw) if error else raw
+        self.banner.set_notice(friendly, raw, error=error, busy=raw.startswith("正在"))
+        self.banner.setVisible(bool(raw))
         if error:
-            self.append_log("[界面] " + message)
+            self.append_log("[界面] " + raw)
         if not error and not persistent:
             QTimer.singleShot(6500, lambda: self.clear_notice(generation))
 
@@ -903,8 +929,8 @@ class MainWindow(QMainWindow, Pages):
             name, state = STATES.get(current.get("state_code"), (current.get("state", "待解析"), "muted"))
             set_status(self.song_state, name, state)
         else:
-            self.song_title.setText("等待房间队列")
-            self.song_meta.setText("进入 PyPyDance / WannaDance 房间后，这里会显示最近检测到的队列首曲。")
+            self.song_title.setText("等待进入跳舞房")
+            self.song_meta.setText("进入 PyPyDance / WannaDance 房间后，这里会显示当前歌曲、点歌人和缓存位置。")
             set_status(self.song_state, "等待检测")
         upcoming = self._queue[1:]
         self.queue_table.setRowCount(len(upcoming))
@@ -1067,7 +1093,7 @@ class MainWindow(QMainWindow, Pages):
             return
         self.notify(message, error=True)
         if operation == "steamvr_startup":
-            self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + message)
+            self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + friendly_message(message))
             self.render_steamvr_controls()
         elif operation.startswith("apply_"):
             self.apply_hints[operation.removeprefix("apply_")].setText("保存失败，更改仍保留")

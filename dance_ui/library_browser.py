@@ -8,7 +8,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
-    QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QTableWidget,
+    QHBoxLayout, QHeaderView, QLineEdit, QMessageBox, QProgressBar, QTableWidget,
     QTableWidgetItem, QVBoxLayout,
 )
 
@@ -73,6 +73,11 @@ class LibraryBrowser(QDialog):
 
         self.summary = label("正在扫描…", muted=True)
         box.addWidget(self.summary)
+        self.loading = QProgressBar()
+        self.loading.setRange(0, 0)
+        self.loading.setTextVisible(False)
+        self.loading.hide()
+        box.addWidget(self.loading)
         self.missing_label = label("", muted=True, wrap=True)
         self.missing_label.hide()
         box.addWidget(self.missing_label)
@@ -160,6 +165,7 @@ class LibraryBrowser(QDialog):
         else:
             self._pending.discard(operation)
         blocked = bool(self._pending)
+        self.loading.setVisible(blocked)
         for widget in (self.refresh_button, self.missing_button,
                        self.delete_button, self.source):
             widget.setEnabled(not blocked)

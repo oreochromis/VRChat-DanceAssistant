@@ -353,7 +353,7 @@ class AppearancePage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(10)
         top = QHBoxLayout()
-        label = QLabel("当前主题")
+        label = QLabel("主题预设")
         label.setProperty("strong", True)
         top.addWidget(label)
         top.addStretch(1)
@@ -382,7 +382,7 @@ class AppearancePage(QWidget):
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
         right.addLayout(actions)
-        right.addWidget(_muted("浅色与深色可分别编辑。复制主题可保留当前方案。"))
+        right.addWidget(_muted("先选择预设；需要微调时，再展开下方的背景、颜色等分组。"))
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
 
@@ -435,7 +435,7 @@ class AppearancePage(QWidget):
         self._row(section, title, field, hint)
 
     def _build_background(self) -> None:
-        section = self._section("背景", "使用纯色或自己的图片；所有变化都会即时应用到窗口。", "background", expanded=True)
+        section = self._section("背景", "使用纯色或自己的图片；所有变化都会即时应用到窗口。", "background")
         self._color(section, "background_color", "背景底色")
         self._slider(section, "background_opacity", "底色不透明度", "调节底色与主题基础底色的混合程度")
         images = QWidget()
@@ -465,7 +465,7 @@ class AppearancePage(QWidget):
         self._slider(section, "overlay_opacity", "遮罩不透明度", "给背景叠加颜色，帮助内容保持清晰")
 
     def _build_colors(self) -> None:
-        section = self._section("常用颜色", "先调整强调色与文字，建立清晰一致的阅读层级。", "colors", expanded=True)
+        section = self._section("常用颜色", "先调整强调色与文字，建立清晰一致的阅读层级。", "colors")
         self._color(section, "accent", "强调色", "主要操作、进度与选中状态")
         self._color(section, "text_primary", "主要文字")
         self._color(section, "text_secondary", "辅助文字", "说明、单位和次要信息")

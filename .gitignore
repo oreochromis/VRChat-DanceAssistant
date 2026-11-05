@@ -11,6 +11,7 @@ htmlcov/
 build/
 dist/
 release/
+backups/
 build-reports/
 *.spec
 !VRChat PyPyDance助手.spec

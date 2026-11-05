@@ -19,7 +19,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEventLoop, QTimer, Qt
+    from PySide6.QtCore import QEventLoop, QTimer, Qt, QDate
     from PySide6.QtGui import QFont, QFontDatabase, QImage
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QProgressBar
@@ -196,6 +196,19 @@ class UIIntegrationTests(unittest.TestCase):
         for mocked in self.core_mocks.values():
             mocked.assert_not_called()
 
+    def test_error_notice_has_friendly_summary_and_expandable_raw_details(self):
+        window, _, _ = self.make_window()
+        raw = "无法访问 SteamVR 启动设置：InitError_Init_HmdNotFound"
+        window.notify(raw, error=True)
+        self.assertIn("未检测到 SteamVR 头显", window.banner.text())
+        self.assertEqual(window.banner.rawText(), raw)
+        self.assertIn(raw, window.logs.toPlainText())
+        QTest.mouseClick(window.banner.details_button, Qt.MouseButton.LeftButton)
+        self.assertTrue(window.banner.details.isVisible())
+        self.assertEqual(window.banner.details.text(), raw)
+        QTest.mouseClick(window.banner.close_button, Qt.MouseButton.LeftButton)
+        self.assertFalse(window.banner.isVisible())
+
     def test_stats_page_loads_demo_history_only_when_opened(self):
         window, controller, _ = self.make_window()
         stats = window.play_stats_page
@@ -207,6 +220,15 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("84 次点歌", stats.summary.text())
         self.assertTrue(stats.export_button.isEnabled())
         self.assertTrue(stats.report_button.isEnabled())
+        self.assertFalse(stats.loading.isVisible())
+        self.assertEqual(stats.filter_columns, 4)
+        window.resize(850, 720)
+        QApplication.processEvents()
+        self.assertEqual(stats.filter_columns, 2)
+        self.assertTrue(window.nav_buttons[0].property("compact"))
+        window.resize(1100, 850)
+        QApplication.processEvents()
+        self.assertEqual(stats.filter_columns, 4)
         stats.source.setCurrentIndex(stats.source.findData("wd"))
         self.assertEqual(stats.table.rowCount(), 1)
         self.assertEqual(stats.table.item(0, 3).text(), "7152")
@@ -219,7 +241,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(stats.report_button.isEnabled())
 
     def test_play_report_renders_and_exports_high_resolution_png(self):
-        window, _, _ = self.make_window()
+        window, _, store = self.make_window()
         stats = window.play_stats_page
         window.navigate(2)
         stats.open_report()
@@ -235,9 +257,21 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(image.isNull())
         self.assertEqual(image.width(), report.canvas.width() * 2)
         self.assertGreater(image.height(), 2000)
+        full_height = report.canvas._report_height(900)
         report.close()
         QApplication.processEvents()
         self.assertIsNone(stats._report)
+
+        from dance_ui.play_report import ReportCanvas
+        year = QDate.currentDate().year()
+        sparse = ReportCanvas({
+            "total": 1, "songs": [{"rank": 1, "id": 1, "kind": "pypy", "name": "Single", "count": 1}],
+            "players": [], "months": [{"month": f"{year}-01", "count": 1}], "active_days": 1,
+        }, QDate(year, 1, 1), QDate.currentDate(), "PyPyDance", store.active)
+        self.assertLess(sparse._report_height(900), full_height)
+        sparse.resize(900, sparse._report_height(900))
+        self.assertFalse(sparse.grab().isNull())
+        sparse.close()
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)
@@ -704,10 +738,12 @@ class UIIntegrationTests(unittest.TestCase):
 
     def test_unknown_download_size_failure_and_cancellation_are_distinct(self):
         window, controller, _ = self.make_window(publish=False)
+        self.assertFalse(window.downloads_card.isVisible())
         for task in ("active", "failed", "cancelled"):
             controller.event.emit("download_start", {"task_id": task, "filename": task + ".mp4"})
             controller.event.emit("progress", {"task_id": task, "filename": task + ".mp4", "done": 1024 * 1024, "total": 0})
         self.wait_until(lambda: window.download_table.rowCount() == 3)
+        self.assertTrue(window.downloads_card.isVisible())
         row = self.download_row(window, "active.mp4")
         progress_cell = window.download_table.cellWidget(row, 1)
         progress = progress_cell.findChild(QProgressBar)
@@ -969,6 +1005,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(store.preferences["logs_expanded"])
         QTest.mouseClick(window.nav_buttons[4], Qt.MouseButton.LeftButton)
         editor = window.appearance_page
+        self.assertTrue(all(not section.body.isVisible() for section in editor._sections))
         logs = editor._preference_fields["logs_expanded"]
         self.assertTrue(logs.isChecked())
         old_row_height = window.queue_table.verticalHeader().defaultSectionSize()
