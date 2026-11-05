@@ -184,10 +184,10 @@ class UIIntegrationTests(unittest.TestCase):
                 return row
         self.fail("Download was not displayed: " + filename)
 
-    def test_all_four_navigation_buttons_open_their_page(self):
+    def test_all_five_navigation_buttons_open_their_page(self):
         window, controller, _ = self.make_window()
-        self.assertEqual([button.text() for button in window.nav_buttons], ["运行", "存储", "设置", "外观"])
-        self.assertEqual(window.stack.count(), 4)
+        self.assertEqual([button.text() for button in window.nav_buttons], ["运行", "存储", "统计", "设置", "外观"])
+        self.assertEqual(window.stack.count(), 5)
         for index, button in enumerate(window.nav_buttons):
             QTest.mouseClick(button, Qt.MouseButton.LeftButton)
             self.assertEqual(window.stack.currentIndex(), index)
@@ -195,6 +195,17 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertTrue(window.stack.currentWidget().isVisible())
         for mocked in self.core_mocks.values():
             mocked.assert_not_called()
+
+    def test_stats_page_loads_demo_history_only_when_opened(self):
+        window, _, _ = self.make_window()
+        stats = window.play_stats_page
+        self.assertEqual(stats.table.rowCount(), 0)
+        window.navigate(2)
+        self.assertEqual(stats.table.rowCount(), 3)
+        self.assertIn("84 次点歌", stats.summary.text())
+        stats.source.setCurrentIndex(stats.source.findData("wd"))
+        self.assertEqual(stats.table.rowCount(), 1)
+        self.assertEqual(stats.table.item(0, 3).text(), "7152")
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)
@@ -464,17 +475,17 @@ class UIIntegrationTests(unittest.TestCase):
             raise ValueError("IP 地址格式无效")
 
         self.allow_core("update_config", reject)
-        QTest.mouseClick(window.nav_buttons[2], Qt.MouseButton.LeftButton)
+        QTest.mouseClick(window.nav_buttons[3], Qt.MouseButton.LeftButton)
         QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
         self.wait_until(entered.is_set)
-        self.assertFalse(window.stack.widget(2).isEnabled())
+        self.assertFalse(window.stack.widget(3).isEnabled())
         self.assertIn("保存", window.apply_hints["settings"].text())
         release.set()
         self.wait_until(lambda: not controller.busy("apply_settings"))
         self.assertEqual(window.preferred_ip.text(), "an-invalid-draft")
         self.assertEqual(self.config, before)
         self.assertTrue(window._dirty["settings"])
-        self.assertTrue(window.stack.widget(2).isEnabled())
+        self.assertTrue(window.stack.widget(3).isEnabled())
         self.assertTrue(window.apply_buttons["settings"].isEnabled())
         self.assertNotIn("正在", window.apply_hints["settings"].text())
         self.assertIn("失败", window.apply_hints["settings"].text())
@@ -515,7 +526,7 @@ class UIIntegrationTests(unittest.TestCase):
         custom.write_bytes(b"personal video")
         controller.apply_config({"cooldown_file": str(custom)}, "settings")
         self.assertEqual(window.cooldown_file_label.text(), str(custom))
-        window.navigate(2)
+        window.navigate(3)
         QTest.mouseClick(window.default_cooldown_button, Qt.MouseButton.LeftButton)
         self.assertEqual(window.cooldown_path.text(), "")
         self.assertTrue(window._dirty["settings"])
@@ -561,7 +572,7 @@ class UIIntegrationTests(unittest.TestCase):
             "phase": "idle", "available": self.config["cooldown_file"] == selected,
         })
         controller.event.emit("state", {"running": True, "phase": "running", "warnings": []})
-        window.navigate(2)
+        window.navigate(3)
         window.cooldown_path.setText(selected)
         QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
         self.wait_until(lambda: not controller.busy("apply_settings") and not window._dirty["settings"])
@@ -839,7 +850,7 @@ class UIIntegrationTests(unittest.TestCase):
         finally:
             backdrop.close()
 
-    def test_demo_smoke_report_checks_four_pages_svg_and_temporary_background_without_saving(self):
+    def test_demo_smoke_report_checks_five_pages_svg_and_temporary_background_without_saving(self):
         from dance_ui.smoke import inspect_demo
 
         window, _, store = self.make_window()
@@ -855,11 +866,11 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report["checks"], [
             "demo_mode", "bundled_cooldown_video", "application_icon_resources", "application_window_icon",
             "builtin_light_theme", "pillow_generated_background",
-            "embedded_svg_icons", "four_page_navigation_and_rendering",
+            "embedded_svg_icons", "five_page_navigation_and_rendering",
         ])
         self.assertEqual(report["bundled_cooldown_video"]["relative_path"], "assets/default_cooldown.mp4")
         self.assertLessEqual(report["bundled_cooldown_video"]["size_bytes"], 5 * 1024 * 1024)
-        self.assertEqual(window.stack.currentIndex(), 3)
+        self.assertEqual(window.stack.currentIndex(), 4)
         self.assertIsNone(window.backdrop.image)
         self.assertEqual(window.backdrop.theme, original_theme)
         self.assertEqual(store.active, original_theme)
@@ -924,7 +935,7 @@ class UIIntegrationTests(unittest.TestCase):
         window, controller, store = self.make_window()
         QTest.mouseClick(window.logs_toggle, Qt.MouseButton.LeftButton)
         self.assertTrue(store.preferences["logs_expanded"])
-        QTest.mouseClick(window.nav_buttons[3], Qt.MouseButton.LeftButton)
+        QTest.mouseClick(window.nav_buttons[4], Qt.MouseButton.LeftButton)
         editor = window.appearance_page
         logs = editor._preference_fields["logs_expanded"]
         self.assertTrue(logs.isChecked())

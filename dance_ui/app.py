@@ -20,6 +20,7 @@ from . import __version__
 from .appearance import AppearancePage
 from .controller import CoreController
 from .pages import Pages, button, row
+from .play_stats import PlayStatsPage
 from .theme import ThemeStore
 from .windows_taskbar import set_windows_application_identity
 from .widgets import Backdrop, SegmentedSwitch, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
@@ -87,7 +88,6 @@ class MainWindow(QMainWindow, Pages):
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
-        self._play_stats = None  # 点歌统计窗口（非模态单例）
         self.setWindowTitle("VRChat 跳舞房助手" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
@@ -114,6 +114,8 @@ class MainWindow(QMainWindow, Pages):
         self.stack.setStyleSheet("QStackedWidget {background: transparent;}")
         self.stack.addWidget(self.build_run_page())
         self.stack.addWidget(self.build_storage_page())
+        self.play_stats_page = PlayStatsPage(self)
+        self.stack.addWidget(self.play_stats_page)
         self.stack.addWidget(self.build_settings_page())
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
                                   self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
@@ -175,7 +177,7 @@ class MainWindow(QMainWindow, Pages):
         box.setSpacing(5)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
-        for index, title in enumerate(("运行", "存储", "设置", "外观")):
+        for index, title in enumerate(("运行", "存储", "统计", "设置", "外观")):
             nav = button(title, lambda checked=False, i=index: self.navigate(i))
             nav.setProperty("nav", True)
             nav.setCheckable(True)
@@ -236,7 +238,9 @@ class MainWindow(QMainWindow, Pages):
         self.nav_buttons[index].setChecked(True)
         if index == 1:
             self.controller.refresh_stats()
-        elif index == 3:
+        elif index == 2:
+            self.play_stats_page.refresh()
+        elif index == 4:
             self.appearance_page.refresh()
 
     def set_ui_mode(self, mode):
@@ -613,16 +617,6 @@ class MainWindow(QMainWindow, Pages):
         self._library_browser.raise_()
         self._library_browser.activateWindow()
 
-    def open_play_stats(self):
-        from .play_stats import PlayStatsDialog
-        if self._play_stats is not None:
-            self._play_stats.close()
-            self._play_stats = None
-        self._play_stats = PlayStatsDialog(self)
-        self._play_stats.show()
-        self._play_stats.raise_()
-        self._play_stats.activateWindow()
-
     def clear_cache(self):
         if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -643,7 +637,7 @@ class MainWindow(QMainWindow, Pages):
 
     def toggle_cooldown(self):
         if not self._cooldown.get("available"):
-            self.navigate(2)
+            self.navigate(3)
             self.cooldown_path.setFocus()
             return
         self.controller.cooldown()
@@ -1101,7 +1095,7 @@ class MainWindow(QMainWindow, Pages):
             self.render_steamvr_controls()
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
-            self.stack.widget(1 if section == "storage" else 2).setEnabled(not busy)
+            self.stack.widget(1 if section == "storage" else 3).setEnabled(not busy)
             self.apply_buttons[section].setEnabled(not busy and self._dirty[section])
             if busy:
                 self.apply_hints[section].setText("正在保存…")

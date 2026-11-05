@@ -241,7 +241,7 @@ class _ThemePreview(QWidget):
         nav = QRectF(12, 12, self.width() - 24, 26)
         painter.setBrush(self._color(theme["nav_background"], theme["nav_opacity"]))
         painter.drawRoundedRect(nav, 5, 5)
-        tab_width = (self.width() - 36) / 4
+        tab_width = (self.width() - 36) / 5
         selected = QRectF(17, 16, tab_width, 18)
         small_font = QFont(self.font())
         small_font.setPixelSize(min(12, max(9, round(self.width() / 22))))
@@ -251,7 +251,7 @@ class _ThemePreview(QWidget):
         painter.setPen(self._color(theme["nav_active_text"]))
         painter.drawText(selected, Qt.AlignmentFlag.AlignCenter, "运行")
         painter.setPen(self._color(theme["nav_text"]))
-        for index, label in enumerate(("存储", "设置", "外观"), start=1):
+        for index, label in enumerate(("存储", "统计", "设置", "外观"), start=1):
             painter.drawText(QRectF(17 + index * tab_width, 16, tab_width, 18), Qt.AlignmentFlag.AlignCenter, label)
         card = QRectF(12, 48, self.width() - 24, self.height() - 61)
         painter.setPen(QPen(self._color(theme["border_color"], theme["border_opacity"]), min(3, theme["border_width"])))

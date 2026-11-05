@@ -108,8 +108,8 @@ def inspect_demo(window) -> dict:
                 raise ValueError("Qt could not decode the embedded SVG: " + name)
         report["checks"].append("embedded_svg_icons")
         titles = [button.text() for button in window.nav_buttons]
-        if titles != ["运行", "存储", "设置", "外观"] or window.stack.count() != 4:
-            raise ValueError("The expected four pages were not created.")
+        if titles != ["运行", "存储", "统计", "设置", "外观"] or window.stack.count() != 5:
+            raise ValueError("The expected five pages were not created.")
         for index, button in enumerate(window.nav_buttons):
             button.click()
             QApplication.processEvents()
@@ -117,7 +117,7 @@ def inspect_demo(window) -> dict:
                 raise ValueError("Navigation did not show page " + titles[index])
             if window.grab().isNull():
                 raise ValueError("Qt could not render page " + titles[index])
-        report["checks"].append("four_page_navigation_and_rendering")
+        report["checks"].append("five_page_navigation_and_rendering")
         report["status"] = "passed"
     except Exception:
         report["error"] = traceback.format_exc()

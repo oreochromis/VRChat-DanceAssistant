@@ -1,4 +1,4 @@
-"""点歌统计窗口：按日期范围统计点歌排行（可做年度报告），支持导出 CSV。"""
+"""点歌统计页面：按日期范围统计点歌排行（可做年度报告），支持导出 CSV。"""
 from __future__ import annotations
 
 import csv
@@ -6,12 +6,12 @@ from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QDialog, QFileDialog, QHBoxLayout, QMessageBox,
-    QSizePolicy, QTableWidgetItem, QVBoxLayout,
+    QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QMessageBox,
+    QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .pages import button
-from .widgets import label, table
+from .widgets import Card, label, page, section_title, table
 
 _KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
 _KIND_LABELS = {"pypy": "PyPyDance", "wd": "WannaDance"}
@@ -28,23 +28,21 @@ def _fmt_time(ts) -> str:
         return "—"
 
 
-class PlayStatsDialog(QDialog):
-    """独立非模态窗口：日期范围 + 来源筛选的点歌排行。"""
+class PlayStatsPage(QWidget):
+    """日期范围 + 来源筛选的点歌排行，进入页面时加载数据。"""
 
     def __init__(self, window):
         super().__init__(window)
-        self._window = window
         self.controller = window.controller
         self._songs = []
 
-        self.setWindowTitle("点歌统计")
-        self.setWindowFlag(Qt.WindowType.Window, True)
-        self.resize(880, 600)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        area, _, box = page()
+        outer.addWidget(area)
+        box.addWidget(section_title("统计", "按日期查看点歌排行，导出年度总结"))
 
-        box = QVBoxLayout(self)
-        box.setContentsMargins(20, 16, 20, 16)
-        box.setSpacing(10)
-
+        card = Card()
         top = QHBoxLayout()
         top.setSpacing(8)
         self.source = QComboBox()
@@ -67,15 +65,17 @@ class PlayStatsDialog(QDialog):
         top.addWidget(button("近 30 天", self._preset_month))
         top.addWidget(button("全部", self._preset_all))
         top.addStretch()
-        box.addLayout(top)
+        card.box.addLayout(top)
 
-        self.summary = label("正在读取点歌历史…", muted=True, wrap=True)
-        box.addWidget(self.summary)
+        self.summary = label("进入统计页面后自动读取点歌历史。", muted=True, wrap=True)
+        card.box.addWidget(self.summary)
 
         self.table = table(["排名", "次数", "歌名", "编号", "来源", "最常点歌人", "最近点歌"], 2)
+        self.table.setAccessibleName("点歌排行")
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.table.setMinimumHeight(320)
         self.table.setSortingEnabled(True)
-        box.addWidget(self.table, 1)
+        card.box.addWidget(self.table, 1)
 
         actions = QHBoxLayout()
         actions.addWidget(label(
@@ -83,13 +83,12 @@ class PlayStatsDialog(QDialog):
             "同一首歌离开队列后再次入队会记为新的一次。", muted=True, wrap=True), 1)
         self.export_button = button("导出 CSV…", self._export_csv)
         actions.addWidget(self.export_button)
-        box.addLayout(actions)
+        card.box.addLayout(actions)
+        box.addWidget(card)
+        box.addStretch()
 
         self.controller.result.connect(self._on_result)
         self.controller.error.connect(self._on_error)
-        self.refresh()
-
-    # ---------------- 日期预设 ----------------
 
     def _preset_year(self):
         today = QDate.currentDate()
@@ -104,8 +103,6 @@ class PlayStatsDialog(QDialog):
     def _preset_all(self):
         self.start.setDate(QDate(2000, 1, 1))
         self.end.setDate(QDate.currentDate())
-
-    # ---------------- 数据 ----------------
 
     def refresh(self):
         start_date, end_date = self.start.date(), self.end.date()
@@ -189,13 +186,3 @@ class PlayStatsDialog(QDialog):
     def _on_error(self, operation, message):
         if operation == "play_history_stats":
             self.summary.setText(f"读取点歌历史失败: {message}")
-
-    def closeEvent(self, event):
-        for signal, slot in ((self.controller.result, self._on_result),
-                             (self.controller.error, self._on_error)):
-            try:
-                signal.disconnect(slot)
-            except (RuntimeError, TypeError):
-                pass
-        self._window._play_stats = None
-        super().closeEvent(event)

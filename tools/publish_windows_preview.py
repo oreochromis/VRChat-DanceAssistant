@@ -31,7 +31,7 @@ TITLE = f"VRChat 跳舞房助手 {__version__}（Windows 正式版）"
 PUBLISH_MARKER = "[publish-release]"
 REQUIRED_SMOKE_CHECKS = {
     "demo_mode", "builtin_light_theme", "pillow_generated_background",
-    "embedded_svg_icons", "four_page_navigation_and_rendering",
+    "embedded_svg_icons", "five_page_navigation_and_rendering",
     "openvr_library_loaded_without_initialization",
     "bundled_cooldown_video",
     "application_icon_resources", "application_window_icon", "windows_executable_icon",
