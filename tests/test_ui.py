@@ -213,9 +213,18 @@ class UIIntegrationTests(unittest.TestCase):
         window, _, store = self.make_window()
         from dance_ui.widgets import stylesheet
         css = stylesheet(store.active, store.preferences)
-        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #5F6E86;', css)
+        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #58667D;', css)
         self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
         self.assertIn('QPushButton[danger="true"] { color: #A93649;', css)
+
+    def test_mid_tone_custom_accent_keeps_self_painted_controls_readable(self):
+        window, _, store = self.make_window()
+        from dance_ui.theme import contrast_ratio, theme_contrast_warnings
+        store.change({"accent": "#777777"})
+        window.apply_appearance()
+        colors = window.mode_switch._colors
+        self.assertGreaterEqual(contrast_ratio(colors["on_thumb"].name(), colors["thumb"].name()), 4.5)
+        self.assertEqual(theme_contrast_warnings(store.active, store.preferences), [])
 
     def test_mouse_wheel_does_not_change_combo_selection(self):
         window, _, _ = self.make_window()
@@ -947,13 +956,14 @@ class UIIntegrationTests(unittest.TestCase):
             "background_image": "backgrounds/previous-packaged-image.png",
         })
         original = store.path.read_bytes()
+        corrected_accent = store.active["accent"]
         for _ in range(3):
             window.apply_appearance()
             QApplication.processEvents()
             self.assertIsNone(window.backdrop.image)
             self.assertFalse(window.grab().isNull())
         self.assertEqual(store.active_id, theme_id)
-        self.assertEqual(store.active["accent"], "#B5A5E0")
+        self.assertEqual(store.active["accent"], corrected_accent)
         self.assertEqual(store.warnings, [])
         self.assertEqual(store.path.read_bytes(), original)
         backdrop = Backdrop()

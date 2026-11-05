@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import resources_rc  # noqa: F401 -- registers the bundled control icons
-from .theme import BUILTIN_THEMES
+from .theme import BUILTIN_THEMES, readable_on
 
 
 def rgba(hex_color: str, alpha: float = 1.0) -> str:
@@ -23,11 +23,7 @@ def rgba(hex_color: str, alpha: float = 1.0) -> str:
 
 
 def on_color(value: str) -> str:
-    color = QColor(value)
-    channels = [c / 255 for c in (color.red(), color.green(), color.blue())]
-    linear = [c / 12.92 if c <= .04045 else ((c + .055) / 1.055) ** 2.4 for c in channels]
-    luminance = sum(a * b for a, b in zip(linear, (.2126, .7152, .0722)))
-    return "#182132" if luminance > .179 else "#FFFFFF"
+    return readable_on(value)
 
 
 def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
@@ -48,6 +44,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     gradient_coords = {"diagonal": "0, 0, 1, 1", "horizontal": "0, 0, 1, 0",
                        "vertical": "0, 0, 0, 1"}[theme["gradient_direction"]]
     check_icon = "check-dark.svg" if on_color(accent) != "#FFFFFF" else "check-light.svg"
+    arrow_tone = "light" if on_color(theme["input_background"]) == "#FFFFFF" else "dark"
     tones = {
         "success": (theme["success_color"], rgba(theme["success_color"], .10)),
         "warning": (theme["warning_color"], rgba(theme["warning_color"], .11)),
@@ -129,12 +126,12 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QSpinBox, QDoubleSpinBox {{ padding-right: {px(28)}px; }}
     QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(25)}px; border: none; background: transparent; }}
     QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: {px(25)}px; border: none; background: transparent; }}
-    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(:/controls/up.svg); width: {px(10)}px; height: {px(7)}px; }}
-    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(:/controls/down.svg); width: {px(10)}px; height: {px(7)}px; }}
+    QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(:/controls/up-{arrow_tone}.svg); width: {px(10)}px; height: {px(7)}px; }}
+    QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(:/controls/down-{arrow_tone}.svg); width: {px(10)}px; height: {px(7)}px; }}
     QComboBox::drop-down, QDateEdit::drop-down {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(28)}px; border: none; background: transparent; }}
-    QComboBox::down-arrow, QDateEdit::down-arrow {{ image: url(:/controls/down.svg); width: {px(10)}px; height: {px(7)}px; }}
+    QComboBox::down-arrow, QDateEdit::down-arrow {{ image: url(:/controls/down-{arrow_tone}.svg); width: {px(10)}px; height: {px(7)}px; }}
     QLineEdit:disabled, QDateEdit:disabled, QComboBox:disabled {{ color: {muted}; background: {subtle}; }}
-    QComboBox QAbstractItemView {{ background: {theme['card_background']}; color: {text}; selection-background-color: {accent}; }}
+    QComboBox QAbstractItemView {{ background: {theme['card_background']}; color: {text}; selection-background-color: {accent}; selection-color: {on_color(accent)}; }}
     QCalendarWidget {{ background: {theme['card_background']}; border: 1px solid {border}; }}
     QCalendarWidget QWidget, QCalendarWidget QTableView {{ background: {theme['card_background']}; color: {text}; }}
     QCalendarWidget QWidget#qt_calendar_navigationbar {{
@@ -175,7 +172,9 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         min-height: 8px; max-height: 8px;
     }}
     QProgressBar::chunk {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 {accent}, stop: 1 {theme['secondary_accent']}); border-radius: 4px; }}
-    QPlainTextEdit {{ background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 8)}px; padding: 8px; }}
+    QPlainTextEdit {{ background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 8)}px; padding: 8px; selection-background-color: {accent}; selection-color: {theme['primary_button_text']}; }}
+    QMenu {{ background: {theme['card_background']}; color: {text}; border: 1px solid {border}; padding: 5px; }}
+    QMenu::item:selected {{ background: {theme['table_selection_background']}; color: {text}; }}
     QSlider::groove:horizontal {{ height: 5px; background: {rgba(theme['text_secondary'], .20)}; border-radius: 2px; }}
     QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}
     QSlider::handle:horizontal {{ width: 15px; margin: -5px 0; background: {accent}; border: 2px solid {theme['card_background']}; border-radius: 8px; }}

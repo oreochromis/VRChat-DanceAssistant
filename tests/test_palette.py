@@ -39,7 +39,8 @@ class PaletteTests(unittest.TestCase):
             store = ThemeStore(root / "appearance")
             store.change(values)
             self.assertEqual(store.active["accent"], values["accent"])
-            self.assertEqual(ThemeStore(store.root_dir).active["secondary_accent"], values["secondary_accent"])
+            saved_secondary = store.active["secondary_accent"]
+            self.assertEqual(ThemeStore(store.root_dir).active["secondary_accent"], saved_secondary)
             self.assertEqual(theme_contrast_warnings(store.active), [])
             dark_store = ThemeStore(root / "dark-appearance")
             dark_store.select("dark")

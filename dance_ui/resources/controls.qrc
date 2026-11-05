@@ -4,5 +4,9 @@
     <file>check-dark.svg</file>
     <file>up.svg</file>
     <file>down.svg</file>
+    <file>up-dark.svg</file>
+    <file>up-light.svg</file>
+    <file>down-dark.svg</file>
+    <file>down-light.svg</file>
   </qresource>
 </RCC>

@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dance_ui import theme as theme_module
-from dance_ui.theme import BUILTIN_THEMES, DEFAULT_PREFERENCES, ThemeError, ThemeStore
+from dance_ui.theme import BUILTIN_THEMES, DEFAULT_PREFERENCES, ThemeError, ThemeStore, ensure_theme_contrast
 
 
 def small_png():
@@ -83,7 +83,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         original_bytes = path.read_bytes()
         store = ThemeStore(path.parent)
         self.assertEqual(store.active_id, raw["active_theme"])
-        self.assertEqual(store.themes, raw["themes"])
+        self.assertEqual(store.themes, [ensure_theme_contrast(theme) for theme in raw["themes"]])
         self.assertEqual(store.preferences, {**raw["preferences"], "home_style": "simple"})
         self.assertEqual(path.read_bytes(), original_bytes)
         store.save()
@@ -116,21 +116,22 @@ class ThemeUpgradeTests(unittest.TestCase):
         path = self.write_document(self.root / "previous", raw)
         original = path.read_bytes()
         store = ThemeStore(path.parent)
-        self.assertEqual(store.active, dict(self.previous, builtin=False))
+        self.assertEqual(store.active, ensure_theme_contrast(dict(self.previous, builtin=False)))
         self.assertEqual(store.preferences, {**raw["preferences"], "home_style": "simple"})
         self.assertIsNone(store.background_path())
-        self.assertEqual(store.warnings, [])
+        self.assertIn("已自动修正低对比度配色，原始文件仍保留。", store.warnings)
         self.assertEqual(path.read_bytes(), original)
-        # Repeated loads must not warn, reset the selection or discard the
-        # missing reference, so a later import can recover the user's wallpaper.
+        # Repeated loads must not reset the selection or discard the missing
+        # reference, so a later import can recover the user's wallpaper.
         for _ in range(3):
             reopened = ThemeStore(path.parent)
             self.assertEqual(reopened.active, store.active)
-            self.assertEqual(reopened.warnings, [])
+            self.assertIn("已自动修正低对比度配色，原始文件仍保留。", reopened.warnings)
             self.assertIsNone(reopened.background_path())
         store.change({"accent": "#102030"})
+        saved_accent = store.active["accent"]
         reopened = ThemeStore(path.parent)
-        self.assertEqual(reopened.active["accent"], "#102030")
+        self.assertEqual(reopened.active["accent"], saved_accent)
         self.assertEqual(reopened.active["background_image"], self.previous["background_image"])
         self.assertEqual(reopened.active["card_opacity"], 0.66)
 
@@ -143,7 +144,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         self.assertEqual(store.active_id, "light")
         self.assertNotIn(self.previous["id"], {theme["id"] for theme in store.themes})
         self.assertTrue(store.undo())
-        self.assertEqual(store.active, dict(self.previous, builtin=False))
+        self.assertEqual(store.active, ensure_theme_contrast(dict(self.previous, builtin=False)))
         self.assertEqual(ThemeStore(path.parent).active, store.active)
         with self.assertRaises(ThemeError):
             store.delete("light")
@@ -173,11 +174,11 @@ class ThemeUpgradeTests(unittest.TestCase):
         image.write_bytes(data)
         store = ThemeStore(path.parent)
         self.assertEqual(store.background_path(), image)
-        self.assertEqual(store.active["accent"], self.previous["accent"])
+        self.assertEqual(store.active["accent"], ensure_theme_contrast(self.previous)["accent"])
         self.assertEqual(image.read_bytes(), data)
         image.unlink()
         self.assertIsNone(store.background_path())
-        self.assertEqual(ThemeStore(path.parent).warnings, [])
+        self.assertIn("已自动修正低对比度配色，原始文件仍保留。", ThemeStore(path.parent).warnings)
 
     def test_personal_background_import_remains_managed_and_survives_reopen(self):
         source = self.root / "my-background.png"
@@ -202,7 +203,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         with patch("dance_ui.theme.os.replace", side_effect=OSError("disk full")):
             with self.assertRaises(OSError):
                 store.change({"accent": "#102030"})
-        self.assertEqual(store.active, dict(self.previous, builtin=False))
+        self.assertEqual(store.active, ensure_theme_contrast(dict(self.previous, builtin=False)))
         self.assertEqual(store.path.read_bytes(), original)
         self.assertFalse(store.can_undo)
         self.assertEqual(list(store.root_dir.glob(".appearance-*.tmp")), [])
@@ -219,8 +220,9 @@ class ThemeUpgradeTests(unittest.TestCase):
             store = namespace["ThemeStore"](self.root / "windows-user-data")
             self.assertEqual(store.active, BUILTIN_THEMES["light"])
             store.change({"accent": "#ABCDEF"})
+            saved_accent = store.active["accent"]
             reopened = namespace["ThemeStore"](store.root_dir)
-            self.assertEqual(reopened.active["accent"], "#ABCDEF")
+            self.assertEqual(reopened.active["accent"], saved_accent)
             self.assertIsNone(reopened.background_path())
             self.assertEqual(reopened.warnings, [])
         self.assertEqual(list(package.iterdir()), [module_path])

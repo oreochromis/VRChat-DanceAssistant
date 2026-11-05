@@ -87,7 +87,7 @@ BUILTIN_THEMES = {
         "nav_background": "#FFFFFF", "nav_opacity": 0.82, "nav_text": "#657189",
         "nav_active_background": "#5865D8", "nav_active_opacity": 0.13,
         "nav_active_text": "#414FB8", "text_primary": "#172133",
-        "text_secondary": "#5F6E86", "card_background": "#FFFFFF",
+        "text_secondary": "#58667D", "card_background": "#FFFFFF",
         "card_opacity": 0.94, "border_color": "#DDE2EB", "border_opacity": 0.8,
     },
     "dark": {
@@ -157,6 +157,11 @@ def contrast_ratio(first: str, second: str) -> float:
     return (high + .05) / (low + .05)
 
 
+def readable_on(background: str) -> str:
+    return ("#182132" if contrast_ratio("#182132", background) >= contrast_ratio("#FFFFFF", background)
+            else "#FFFFFF")
+
+
 def _blend_colors(foreground: str, background: str, opacity: float) -> str:
     def rgb(value):
         value = normalize_color(value).lstrip("#")
@@ -167,17 +172,26 @@ def _blend_colors(foreground: str, background: str, opacity: float) -> str:
                          for a, b in zip(first, second))
 
 
-def theme_contrast_warnings(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> list[str]:
+def theme_contrast_issues(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     background = theme["background_color"]
     card = theme["card_background"]
     gradient = _blend_colors(theme["background_gradient"], background, theme["background_gradient_opacity"])
     nav = _blend_colors(theme["nav_background"], background, theme["nav_opacity"])
     nav_active = _blend_colors(theme["nav_active_background"], nav, theme["nav_active_opacity"])
-    warnings = []
+    dark = readable_on(background) == "#FFFFFF"
+    state_color = "#FFFFFF" if dark else "#182B49"
+    switch_track = _blend_colors(state_color, nav, 18 / 255 if dark else 10 / 255)
+    disabled = _blend_colors(state_color, theme["button_background"], 12 / 255 if dark else 7 / 255)
+    disabled_input = _blend_colors(state_color, theme["input_background"], 12 / 255 if dark else 7 / 255)
+    primary_disabled = _blend_colors(theme["accent"], theme["button_background"], .30)
+    pressed = _blend_colors(theme["accent"], theme["button_background"], .20)
+    issues = []
 
     def check(label, foreground, surface, threshold=4.5):
-        if contrast_ratio(theme[foreground], surface) < threshold:
-            warnings.append(label + "与背景对比度偏低")
+        color = theme.get(foreground, foreground)
+        if contrast_ratio(color, surface) < threshold:
+            issues.append({"label": label + "与背景对比度偏低", "key": foreground if foreground in theme else None,
+                           "foreground": color, "background": surface, "threshold": threshold})
 
     for label, foreground in (("主要文字", "text_primary"), ("辅助文字", "text_secondary")):
         check(label + "（卡片）", foreground, card)
@@ -186,9 +200,19 @@ def theme_contrast_warnings(theme: Mapping[str, Any], preferences: Mapping[str, 
     check("输入框文字", "text_primary", theme["input_background"])
     check("导航文字", "nav_text", nav)
     check("导航选中项文字", "nav_active_text", nav_active)
+    check("模式拨杆未选中文字", "text_secondary", switch_track)
+    check("模式拨杆选中文字", readable_on(theme["accent"]), theme["accent"])
+    check("页脚工具文字", "text_secondary", nav)
     check("普通按钮文字", "button_text", theme["button_background"])
     check("悬停按钮文字", "button_text", theme["button_hover_background"])
+    check("按下按钮文字", "button_text", pressed)
+    check("禁用按钮文字", "text_secondary", disabled, 3.0)
+    check("禁用输入控件文字", "text_secondary", disabled_input, 3.0)
+    check("禁用主按钮文字", "text_secondary", primary_disabled, 3.0)
     check("主要按钮文字", "primary_button_text", theme["accent"])
+    check("复选框勾选标记", readable_on(theme["accent"]), theme["accent"], 3.0)
+    check("日历选中日期", readable_on(theme["accent"]), theme["accent"])
+    check("下拉框箭头", readable_on(theme["input_background"]), theme["input_background"], 3.0)
     check("表头文字", "table_header_text", theme["table_header_background"])
     check("表格选中行文字", "text_primary", theme["table_selection_background"])
     check("排名与高亮数字", "highlight", card, 3.0)
@@ -197,15 +221,123 @@ def theme_contrast_warnings(theme: Mapping[str, Any], preferences: Mapping[str, 
                        ("错误状态", "error_color"), ("信息状态", "info_color")):
         check(label + "标签", key, _blend_colors(theme[key], card, .10))
         check("运行" + label, key, nav)
-    check("错误通知文字", "text_primary", _blend_colors(theme["error_color"], background, .10))
-    check("成功通知文字", "text_primary", _blend_colors(theme["success_color"], background, .08))
-    check("信息通知文字", "text_primary", _blend_colors(theme["accent"], background, .08))
+    for label, key, opacity in (("错误", "error_color", .10), ("成功", "success_color", .08),
+                                ("信息", "accent", .08)):
+        surface = _blend_colors(theme[key], background, opacity)
+        check(label + "通知文字", "text_primary", surface)
+        check(label + "通知详情", "text_secondary", surface)
     hero_backgrounds = [theme["accent"]]
     if theme["hero_gradient_opacity"] > 0 or (preferences or {}).get("home_style") == "vivid":
         hero_backgrounds.extend((theme["secondary_accent"], theme["hero_gradient"]))
     for surface in hero_backgrounds:
         check("主视觉文字", "primary_button_text", surface, 3.0)
-    return warnings
+    return issues
+
+
+def theme_contrast_warnings(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> list[str]:
+    return [issue["label"] for issue in theme_contrast_issues(theme, preferences)]
+
+
+def _relative_luminance(value: str) -> float:
+    color = normalize_color(value).lstrip("#")
+    channels = [int(color[index:index + 2], 16) / 255 for index in (0, 2, 4)]
+    linear = [channel / 12.92 if channel <= .04045 else ((channel + .055) / 1.055) ** 2.4
+              for channel in channels]
+    return sum(channel * weight for channel, weight in zip(linear, (.2126, .7152, .0722)))
+
+
+def _move_to_luminance(color: str, low: float, high: float) -> str:
+    luminance = _relative_luminance(color)
+    if low <= luminance <= high:
+        return color
+    target = "#FFFFFF" if luminance < low else "#000000"
+    candidate = color
+    for step in range(1, 41):
+        candidate = _blend_colors(target, color, step / 40)
+        if low <= _relative_luminance(candidate) <= high:
+            return candidate
+    return candidate
+
+
+def _ensure_foreground(color: str, surfaces: list[str], threshold: float) -> str:
+    def minimum(candidate):
+        return min(contrast_ratio(candidate, surface) for surface in surfaces)
+    if minimum(color) >= threshold:
+        return color
+    target = "#000000" if minimum("#000000") >= minimum("#FFFFFF") else "#FFFFFF"
+    best, best_ratio = color, minimum(color)
+    for step in range(1, 101):
+        candidate = _blend_colors(target, color, step / 100)
+        ratio = minimum(candidate)
+        if ratio > best_ratio:
+            best, best_ratio = candidate, ratio
+        if ratio >= threshold:
+            return candidate
+    return best
+
+
+def ensure_theme_contrast(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    result = copy.deepcopy(dict(theme))
+    light = result.get("base", "light") == "light"
+    surface_fields = (
+        "background_color", "background_gradient", "nav_background",
+        "card_background", "button_background", "button_hover_background", "input_background",
+        "table_header_background", "table_selection_background",
+    )
+    for key in surface_fields:
+        result[key] = _move_to_luminance(result[key], .65, 1.0) if light else _move_to_luminance(result[key], 0.0, .10)
+    result["accent"] = _ensure_foreground(result["accent"], [result["card_background"]], 4.5)
+    hero_active = result["hero_gradient_opacity"] > 0 or (preferences or {}).get("home_style") == "vivid"
+    luminance = _relative_luminance(result["accent"])
+    if .16 < luminance < .30 and contrast_ratio(readable_on(result["accent"]), result["accent"]) < 4.5:
+        result["accent"] = _move_to_luminance(result["accent"], .30, 1.0) if luminance >= .23 else _move_to_luminance(result["accent"], 0.0, .16)
+    if hero_active:
+        bright_accent = _relative_luminance(result["accent"]) >= .30
+        for key in ("secondary_accent", "hero_gradient"):
+            result[key] = (_move_to_luminance(result[key], .30, 1.0) if bright_accent
+                           else _move_to_luminance(result[key], 0.0, .16))
+    for _ in range(8):
+        issues = theme_contrast_issues(result, preferences)
+        if not issues:
+            break
+        groups = {}
+        for issue in issues:
+            if issue["key"]:
+                groups.setdefault(issue["key"], []).append(issue)
+        if not groups:
+            break
+        for key, group in groups.items():
+            result[key] = _ensure_foreground(result[key], [issue["background"] for issue in group],
+                                             max(issue["threshold"] for issue in group))
+    for _ in range(4):
+        remaining = theme_contrast_issues(result, preferences)
+        if not remaining:
+            break
+        for key in {issue["key"] for issue in remaining if issue["key"]}:
+            result[key] = BUILTIN_THEMES[result.get("base", "light")][key]
+    luminance = _relative_luminance(result["accent"])
+    if .16 < luminance < .35 and contrast_ratio(readable_on(result["accent"]), result["accent"]) < 4.5:
+        result["accent"] = (_move_to_luminance(result["accent"], .35, 1.0) if luminance >= .25
+                            else _move_to_luminance(result["accent"], 0.0, .16))
+    luminance = _relative_luminance(result["accent"])
+    if .16 < luminance < .35 and contrast_ratio(readable_on(result["accent"]), result["accent"]) < 4.5:
+        result["accent"] = (_move_to_luminance(result["accent"], .35, 1.0) if luminance >= .25
+                            else _move_to_luminance(result["accent"], 0.0, .16))
+    result["accent"] = _ensure_foreground(result["accent"], [result["card_background"]], 4.5)
+    hero_surfaces = [result["accent"]]
+    if hero_active:
+        hero_surfaces.extend((result["secondary_accent"], result["hero_gradient"]))
+    result["primary_button_text"] = _ensure_foreground(
+        readable_on(result["accent"]), hero_surfaces, 4.5)
+    for _ in range(3):
+        remaining = theme_contrast_issues(result, preferences)
+        if not remaining:
+            break
+        for key in {issue["key"] for issue in remaining if issue["key"]}:
+            issues = [issue for issue in remaining if issue["key"] == key]
+            result[key] = _ensure_foreground(result[key], [issue["background"] for issue in issues],
+                                             max(issue["threshold"] for issue in issues))
+    return result
 
 
 def _number(value: Any, key: str) -> float:
@@ -431,6 +563,10 @@ class ThemeStore:
                         theme[key] = _theme_value(key, item[key])
                     except (ThemeError, TypeError):
                         self.warnings.append("已恢复无效的主题设置：" + key)
+            corrected = ensure_theme_contrast(theme)
+            if corrected != theme and "已自动修正低对比度配色，原始文件仍保留。" not in self.warnings:
+                self.warnings.append("已自动修正低对比度配色，原始文件仍保留。")
+            theme = corrected
             loaded.append(theme)
             ids.add(theme_id)
         for index, (theme_id, theme) in enumerate(self._provided_themes.items()):
@@ -499,6 +635,10 @@ class ThemeStore:
         self._write(self._state)
 
     def _commit(self, candidate: dict[str, Any]) -> bool:
+        unchanged = {theme["id"]: theme for theme in self._state["themes"]}
+        for index, theme in enumerate(candidate["themes"]):
+            if unchanged.get(theme["id"]) != theme:
+                candidate["themes"][index] = ensure_theme_contrast(theme, candidate["preferences"])
         if candidate == self._state:
             return False
         self._write(candidate)

@@ -1,7 +1,9 @@
 """Appearance persistence tests: no Qt import and no system/cache-service writes."""
 
 import base64
+import copy
 import json
+import random
 import struct
 import tempfile
 import unittest
@@ -10,8 +12,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dance_ui.theme import (
-    ThemeStore, ThemeError, BUILTIN_THEMES, DEFAULT_PREFERENCES,
-    MAX_IMAGE_BYTES, theme_contrast_warnings,
+    ThemeStore, ThemeError, BUILTIN_THEMES, COLOR_FIELDS, DEFAULT_PREFERENCES,
+    MAX_IMAGE_BYTES, ensure_theme_contrast, theme_contrast_warnings,
 )
 
 
@@ -53,14 +55,16 @@ class ThemeStoreTests(unittest.TestCase):
 
     def test_builtin_edits_persist_independently(self):
         self.store.change({"accent": "abc", "radius": 7})
+        saved_light = self.store.active["accent"]
         self.store.select("dark")
         self.assertEqual(self.store.active["accent"], BUILTIN_THEMES["dark"]["accent"])
         self.store.change({"accent": "#123456"})
+        saved_dark = self.store.active["accent"]
         reopened = ThemeStore(self.store.root_dir)
         self.assertEqual(reopened.active_id, "dark")
-        self.assertEqual(reopened.active["accent"], "#123456")
+        self.assertEqual(reopened.active["accent"], saved_dark)
         reopened.select("light")
-        self.assertEqual(reopened.active["accent"], "#AABBCC")
+        self.assertEqual(reopened.active["accent"], saved_light)
         self.assertEqual(reopened.active["radius"], 7)
 
     def test_preferences_survive_theme_changes_and_resets(self):
@@ -215,14 +219,16 @@ class ThemeStoreTests(unittest.TestCase):
             self.store.change({"gradient_direction": "sideways"})
         self.assertEqual(self.store.path.read_bytes(), before)
 
-    def test_contrast_warnings_are_non_destructive(self):
+    def test_contrast_protection_corrects_instead_of_saving_unreadable_text(self):
         self.assertEqual(theme_contrast_warnings(self.store.active), [])
         self.store.change({"text_primary": "#FFFFFF", "card_background": "#FFFFFF"})
-        self.assertIn("主要文字（卡片）与背景对比度偏低", theme_contrast_warnings(self.store.active))
-        self.assertEqual(self.store.active["text_primary"], "#FFFFFF")
+        self.assertNotEqual(self.store.active["text_primary"], "#FFFFFF")
+        self.assertEqual(theme_contrast_warnings(self.store.active), [])
+        self.assertEqual(theme_contrast_warnings(ThemeStore(self.store.root_dir).active), [])
 
     def test_all_text_roles_are_checked(self):
-        self.store.change({
+        theme = self.store.active
+        theme.update({
             "nav_active_text": "#FFFFFF", "nav_active_background": "#FFFFFF", "nav_active_opacity": 1,
             "text_secondary": "#FFFFFF", "card_background": "#FFFFFF",
             "button_text": "#FFFFFF", "button_background": "#FFFFFF",
@@ -230,10 +236,20 @@ class ThemeStoreTests(unittest.TestCase):
             "success_color": "#FFFFFF", "highlight": "#FFFFFF",
             "accent": "#FFFFFF", "primary_button_text": "#FFFFFF",
         })
-        warnings = theme_contrast_warnings(self.store.active, {"home_style": "vivid"})
+        warnings = theme_contrast_warnings(theme, {"home_style": "vivid"})
         for label in ("导航选中项文字", "辅助文字（卡片）", "普通按钮文字", "表头文字",
                       "成功状态标签", "排名与高亮数字", "主视觉文字"):
             self.assertIn(label + "与背景对比度偏低", warnings)
+
+    def test_random_extreme_themes_are_corrected_to_readable_combinations(self):
+        randomizer = random.Random(20261106)
+        for base in ("light", "dark"):
+            for case in range(100):
+                with self.subTest(base=base, case=case):
+                    theme = copy.deepcopy(BUILTIN_THEMES[base])
+                    theme.update({key: f"#{randomizer.randrange(0x1000000):06X}" for key in COLOR_FIELDS})
+                    corrected = ensure_theme_contrast(theme)
+                    self.assertEqual(theme_contrast_warnings(corrected), [])
 
     def test_returned_values_cannot_mutate_store(self):
         self.store.active["accent"] = "#000000"

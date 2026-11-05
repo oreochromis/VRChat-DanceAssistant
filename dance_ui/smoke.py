@@ -103,7 +103,8 @@ def inspect_demo(window) -> dict:
         finally:
             window.apply_appearance()
             QApplication.processEvents()
-        for name in ("check-light", "check-dark", "up", "down"):
+        for name in ("check-light", "check-dark", "up", "down",
+                     "up-dark", "up-light", "down-dark", "down-light"):
             if QPixmap(":/controls/" + name + ".svg").isNull():
                 raise ValueError("Qt could not decode the embedded SVG: " + name)
         report["checks"].append("embedded_svg_icons")

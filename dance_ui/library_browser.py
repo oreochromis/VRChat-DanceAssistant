@@ -18,7 +18,6 @@ from .widgets import bytes_text, label
 _KINDS = (("pypy", "PyPyDance 曲库"), ("wd", "WannaDance 曲库"))
 _OPS = ("library_scan", "library_missing", "library_delete")
 _FLAG_ROLE = Qt.ItemDataRole.UserRole + 1  # 行类型标记：None=本地文件，"missing"/"dead"=缺失行
-_MISSING_COLOR = QColor(Qt.GlobalColor.gray)
 
 
 class _SortItem(QTableWidgetItem):
@@ -177,8 +176,7 @@ class LibraryBrowser(QDialog):
         self._songs = []
         self.summary.setText("未设置曲库目录或目录不存在，请先在「存储」页配置并应用更改。")
 
-    @staticmethod
-    def _row_items(sid, name, size_text, size_key, time_text, time_key, flag=None):
+    def _row_items(self, sid, name, size_text, size_key, time_text, time_key, flag=None):
         item_id = _SortItem(str(sid))
         item_id.setData(Qt.ItemDataRole.UserRole, sid)
         item_id.setData(_FLAG_ROLE, flag)
@@ -190,7 +188,7 @@ class LibraryBrowser(QDialog):
         items = [item_id, item_name, item_size, item_time]
         if flag:
             for item in items:
-                item.setForeground(_MISSING_COLOR)
+                item.setForeground(QColor(self._window.store.active["text_secondary"]))
                 item.setToolTip("已确认下架（服务器无此文件）" if flag == "dead"
                                 else "缺失：本地没有该文件")
         return items
