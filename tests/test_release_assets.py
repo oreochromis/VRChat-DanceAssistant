@@ -556,11 +556,17 @@ class ReleaseAssetTests(unittest.TestCase):
             self.assertEqual(publisher.main(), 0)
             gh.assert_not_called()
 
+    def test_demo_launcher_reuses_launcher_and_enters_demo(self):
+        root = Path(__file__).resolve().parents[1]
+        content = (root / "演示.bat").read_text(encoding="utf-8")
+        self.assertIn('call "启动.bat" --demo %*', content)
+        self.assertIn('"启动.bat", "演示.bat"', (root / "build_windows.ps1").read_text(encoding="utf-8"))
+
     def test_packager_excludes_presets_and_records_user_feedback_separately(self):
         bundle = self.assets / "VRChatDanceAssistant"
         for name in (
             "VRChatDanceAssistant.exe", "_internal/python312.dll", "README.md", "LICENSE",
-            "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md", "启动.bat",
+            "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md", "启动.bat", "演示.bat",
         ):
             target = bundle / name
             target.parent.mkdir(parents=True, exist_ok=True)
