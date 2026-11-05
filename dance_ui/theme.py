@@ -109,55 +109,6 @@ BUILTIN_THEMES = {
         "hero_gradient": "#6CD5DF",
     },
 }
-_PRESETS = {
-    "arcade": ("街机糖果", "light", {
-        "accent": "#24BFD0", "secondary_accent": "#8A68D8", "highlight": "#E9B949",
-        "background_color": "#F2FBFA", "background_gradient": "#E5E1FF",
-        "background_gradient_opacity": .55, "hero_gradient_opacity": .38,
-        "card_background": "#FFFEFA", "nav_active_background": "#24BFD0",
-        "nav_active_text": "#168C9D", "text_primary": "#203B4A", "text_secondary": "#587583",
-        "button_hover_background": "#E2F8F4", "table_header_background": "#EDF7F5",
-        "primary_button_text": "#12333D", "table_header_text": "#526172",
-        "table_selection_background": "#DDF4EF", "border_color": "#C9E9E4",
-        "success_color": "#19A974", "warning_color": "#B7791F", "error_color": "#D95774",
-    }),
-    "soda": ("夏日汽水", "light", {
-        "accent": "#28A9C7", "secondary_accent": "#67C89B", "highlight": "#F0A34A",
-        "background_color": "#F0FAFC", "background_gradient": "#E8F8ED",
-        "background_gradient_opacity": .65, "hero_gradient": "#67C89B", "hero_gradient_opacity": .32,
-        "nav_active_background": "#28A9C7", "nav_active_text": "#187F9B",
-        "text_primary": "#173B4B", "text_secondary": "#557987", "border_color": "#C6E6EA",
-        "button_hover_background": "#E0F5F1", "table_header_background": "#E7F5F5",
-        "primary_button_text": "#12333D", "table_header_text": "#526172",
-        "table_selection_background": "#DDF3ED", "info_color": "#268FCE",
-    }),
-    "neon": ("霓虹夜景", "dark", {
-        "accent": "#67E8F9", "secondary_accent": "#B78CFF", "highlight": "#F5D76E",
-        "background_color": "#0D1220", "background_gradient": "#251847",
-        "background_gradient_opacity": .55, "hero_gradient": "#B78CFF", "hero_gradient_opacity": .42,
-        "card_background": "#171E31", "nav_background": "#11182A", "nav_active_background": "#67E8F9",
-        "nav_active_text": "#BFF7FF", "text_primary": "#EAF7FF", "text_secondary": "#9BAFC8",
-        "button_background": "#222B43", "button_hover_background": "#303B5A",
-        "input_background": "#1D263C", "table_header_background": "#202A40",
-        "table_selection_background": "#293B58", "border_color": "#344765",
-    }),
-    "cream": ("奶油浅色", "light", {
-        "accent": "#D98E8A", "secondary_accent": "#8FB9A8", "highlight": "#D9A441",
-        "background_color": "#FFF9F0", "background_gradient": "#F4E9F1",
-        "background_gradient_opacity": .45, "hero_gradient": "#8FB9A8", "hero_gradient_opacity": .24,
-        "card_background": "#FFFCF8", "nav_background": "#FFFDF9", "nav_active_background": "#D98E8A",
-        "nav_active_text": "#A96165", "text_primary": "#493B3B", "text_secondary": "#857373",
-        "button_background": "#FFFDF9", "button_text": "#493B3B", "button_hover_background": "#F8E9E4",
-        "primary_button_text": "#382F33", "table_header_text": "#526172",
-        "input_background": "#FFFDF9", "table_header_background": "#F8F1E9",
-        "table_selection_background": "#F5E6E2", "border_color": "#E9D9CF",
-    }),
-}
-PRESET_THEMES = {
-    key: {**copy.deepcopy(BUILTIN_THEMES[base]), **values,
-          "id": "preset_" + key, "name": name, "builtin": False, "base": base}
-    for key, (name, base, values) in _PRESETS.items()
-}
 THEME_GROUPS = {
     "background": (
         "background_color", "background_opacity", "background_image", "image_fit",
@@ -428,9 +379,6 @@ class ThemeStore:
                 base = "light"
             theme = copy.deepcopy(self._provided_themes.get(theme_id, BUILTIN_THEMES[base]))
             theme.update(id=theme_id, builtin=theme_id in self._provided_themes, base=base)
-            preset_id = item.get("preset_id")
-            if not theme["builtin"] and isinstance(preset_id, str) and preset_id.removeprefix("preset_") in PRESET_THEMES:
-                theme["preset_id"] = preset_id.removeprefix("preset_")
             name = item.get("name", theme["name"])
             theme["name"] = name.strip()[:60] if isinstance(name, str) and name.strip() else "未命名主题"
             for key in THEME_FIELDS:
@@ -574,7 +522,6 @@ class ThemeStore:
         self.end_edit()
         current = self.active
         theme = current if copy_current else copy.deepcopy(BUILTIN_THEMES[current["base"]])
-        theme.pop("preset_id", None)
         new_id = "theme_" + uuid.uuid4().hex[:16]
         proposed = name if name is not None else (current["name"] + " 副本" if copy_current else "新主题")
         # Automatically generated names may need shortening after a long rename.
@@ -582,35 +529,6 @@ class ThemeStore:
         theme.update(id=new_id, name=self._unique_name(self._name(proposed)), builtin=False)
         candidate = copy.deepcopy(self._state)
         candidate["themes"].append(theme)
-        candidate["active_theme"] = new_id
-        self._commit(candidate)
-        return new_id
-
-    def apply_preset(self, preset_id: str) -> str:
-        key = preset_id.removeprefix("preset_")
-        if key not in PRESET_THEMES:
-            raise ThemeError("没有找到这个配色预设。")
-        self.end_edit()
-        preset = PRESET_THEMES[key]
-        candidate = copy.deepcopy(self._state)
-        existing = None
-        legacy_name = re.compile(r"^" + re.escape(preset["name"]) + r"(?: [2-9][0-9]*)?$")
-        for theme in candidate["themes"]:
-            if theme.get("preset_id") == key or (not theme.get("preset_id") and legacy_name.fullmatch(theme["name"])):
-                existing = theme
-                break
-        source = existing or self.active
-        theme = copy.deepcopy(preset)
-        for field in ("background_image", "image_fit", "image_opacity", "image_blur"):
-            theme[field] = source[field]
-        if existing is None:
-            new_id = "theme_" + uuid.uuid4().hex[:16]
-            theme.update(id=new_id, name=self._unique_name(theme["name"]), builtin=False, preset_id=key)
-            candidate["themes"].append(theme)
-        else:
-            new_id = existing["id"]
-            theme.update(id=new_id, name=existing["name"], builtin=False, preset_id=key)
-            candidate["themes"][candidate["themes"].index(existing)] = theme
         candidate["active_theme"] = new_id
         self._commit(candidate)
         return new_id
@@ -687,8 +605,7 @@ class ThemeStore:
     def reset_current(self) -> bool:
         self.end_edit()
         active = self.active
-        defaults = self._provided_themes.get(active["id"], PRESET_THEMES.get(
-            active.get("preset_id"), BUILTIN_THEMES[active["base"]]))
+        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
         return self.change({key: defaults[key] for key in THEME_FIELDS})
 
     def reset_group(self, group: str) -> bool:
@@ -696,8 +613,7 @@ class ThemeStore:
             raise ThemeError("未识别的设置分组。")
         self.end_edit()
         active = self.active
-        defaults = self._provided_themes.get(active["id"], PRESET_THEMES.get(
-            active.get("preset_id"), BUILTIN_THEMES[active["base"]]))
+        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
         return self.change({key: defaults[key] for key in THEME_GROUPS[group]})
 
     def reset_preferences(self) -> bool:

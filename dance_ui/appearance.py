@@ -13,10 +13,7 @@ from PySide6.QtWidgets import (
     QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication,
 )
 
-from .theme import (
-    PRESET_THEMES, ThemeStore, ThemeError, NUMBER_RANGES, normalize_color,
-    theme_contrast_warnings,
-)
+from .theme import ThemeStore, ThemeError, NUMBER_RANGES, normalize_color, theme_contrast_warnings
 
 
 def _muted(text: str, parent: QWidget | None = None) -> QLabel:
@@ -711,9 +708,6 @@ class AppearancePage(QWidget):
                 self.theme_combo.clear()
                 for theme in self.store.themes:
                     self.theme_combo.addItem(theme["name"], theme["id"])
-                self.theme_combo.insertSeparator(self.theme_combo.count())
-                for key, preset in PRESET_THEMES.items():
-                    self.theme_combo.addItem(preset["name"] + " · 配色预设", "preset:" + key)
                 self.theme_combo.setCurrentIndex(self.theme_combo.findData(active["id"]))
             with QSignalBlocker(self.name_edit):
                 self.name_edit.setText(active["name"])
@@ -729,11 +723,7 @@ class AppearancePage(QWidget):
             return
         theme_id = self.theme_combo.itemData(index)
         if self._flush_pending():
-            if isinstance(theme_id, str) and theme_id.startswith("preset:"):
-                self._perform(lambda: self.store.apply_preset(theme_id[7:]), refresh=True,
-                              message="预设已应用；同一预设会复用已有主题，背景图片仍然保留。")
-            else:
-                self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
+            self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
 
     def _rename(self) -> None:
         if self._refreshing:

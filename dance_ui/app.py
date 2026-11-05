@@ -23,7 +23,7 @@ from .pages import Pages, button, row
 from .play_stats import PlayStatsPage
 from .theme import ThemeStore
 from .windows_taskbar import set_windows_application_identity
-from .widgets import Backdrop, NoticeBanner, SegmentedSwitch, TextHalo, app_icon, bytes_text, label, set_status, status_label, stylesheet
+from .widgets import Backdrop, NoticeBanner, SegmentedSwitch, TextHalo, app_icon, bytes_text, install_combo_wheel_filter, label, set_status, status_label, stylesheet
 
 
 STATES = {
@@ -70,6 +70,7 @@ class MainWindow(QMainWindow, Pages):
 
     def __init__(self, controller: CoreController, store: ThemeStore):
         super().__init__()
+        install_combo_wheel_filter(QApplication.instance())
         self.controller, self.store = controller, store
         self.controller.configure_steamvr(store.root_dir)
         from .cdn_favorites import CDNFavorites

@@ -6,10 +6,10 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QRectF, QSize, Qt, QPoint, QPointF, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QObject, QPoint, QPointF, Signal
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
+    QComboBox, QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
 )
 
@@ -305,6 +305,20 @@ class TextHalo(QGraphicsEffect):
         shadow_pixmap.setDevicePixelRatio(dpr)
         painter.drawPixmap(QPointF(offset.x() - margin / dpr, offset.y() - margin / dpr), shadow_pixmap)
         painter.drawPixmap(offset, pixmap)
+
+
+class ComboWheelFilter(QObject):
+    def eventFilter(self, obj, event):
+        if isinstance(obj, QComboBox) and event.type() == QEvent.Type.Wheel and not obj.view().isVisible():
+            event.ignore()
+            return True
+        return super().eventFilter(obj, event)
+
+
+def install_combo_wheel_filter(app):
+    if getattr(app, "_dance_combo_wheel_filter", None) is None:
+        app._dance_combo_wheel_filter = ComboWheelFilter(app)
+        app.installEventFilter(app._dance_combo_wheel_filter)
 
 
 class NoticeBanner(QFrame):

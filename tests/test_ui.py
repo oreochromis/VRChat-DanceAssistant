@@ -217,6 +217,19 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
         self.assertIn('QPushButton[danger="true"] { color: #BD4355;', css)
 
+    def test_mouse_wheel_does_not_change_combo_selection(self):
+        window, _, _ = self.make_window()
+        from PySide6.QtCore import QPoint, QPointF
+        from PySide6.QtGui import QWheelEvent
+        combo = window.appearance_page.theme_combo
+        combo.setCurrentIndex(0)
+        event = QWheelEvent(QPointF(8, 8), QPointF(8, 8), QPoint(0, 0), QPoint(0, -120),
+                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                            Qt.ScrollPhase.NoScrollPhase, False)
+        QApplication.sendEvent(combo, event)
+        self.assertEqual(combo.currentIndex(), 0)
+        self.assertFalse(event.isAccepted())
+
     def test_session_metrics_use_distinct_semantic_colors(self):
         window, _, _ = self.make_window()
         self.assertEqual(window.session_hits.text(), "本地命中 12 首")
@@ -1031,16 +1044,16 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("button_hover_background", editor._fields)
         self.assertIn("gradient_direction", editor._fields)
         self.assertFalse(hasattr(editor, "preset_combo"))
-        editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("preset:arcade"))
-        self.wait_until(lambda: window.backdrop.theme.get("accent") == "#24BFD0")
+        preset_entries = [editor.theme_combo.itemData(index) for index in range(editor.theme_combo.count())
+                          if str(editor.theme_combo.itemData(index)).startswith("preset:")]
+        self.assertEqual(preset_entries, [])
+        original_count = len(store.themes)
+        editor._copy()
+        self.wait_until(lambda: store.active_id != "light")
         self.assertFalse(store.active["builtin"])
+        self.assertEqual(len(store.themes), original_count + 1)
         self.assertIn("light", {theme["id"] for theme in store.themes})
         self.assertFalse(editor.contrast_status.isVisible())
-        self.assertEqual(window.backdrop.theme["secondary_accent"], "#8A68D8")
-        generated_id, theme_count = store.active_id, len(store.themes)
-        editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("preset:arcade"))
-        self.assertEqual(store.active_id, generated_id)
-        self.assertEqual(len(store.themes), theme_count)
         editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("dark"))
         self.wait_until(lambda: window.backdrop.theme.get("id") == "dark")
         self.assertTrue(store.preferences["logs_expanded"])

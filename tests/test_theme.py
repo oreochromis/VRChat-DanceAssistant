@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dance_ui.theme import (
-    ThemeStore, ThemeError, BUILTIN_THEMES, PRESET_THEMES, DEFAULT_PREFERENCES,
+    ThemeStore, ThemeError, BUILTIN_THEMES, DEFAULT_PREFERENCES,
     MAX_IMAGE_BYTES, theme_contrast_warnings,
 )
 
@@ -177,44 +177,6 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(self.store.active["radius"], BUILTIN_THEMES["light"]["radius"])
         self.store.undo()
         self.assertEqual(self.store.active["card_opacity"], 0.3)
-
-    def test_presets_create_custom_themes_and_preserve_background(self):
-        reference = self.store.import_background(self.source())
-        original_id = self.store.active_id
-        for key, preset in PRESET_THEMES.items():
-            theme_id = self.store.apply_preset(key)
-            self.assertNotEqual(theme_id, original_id)
-            self.assertFalse(self.store.active["builtin"])
-            self.assertEqual(self.store.active["accent"], preset["accent"])
-            self.assertEqual(self.store.active["background_image"], reference)
-            self.assertEqual(self.store.background_path().name, reference.removeprefix("backgrounds/"))
-            self.assertEqual(theme_contrast_warnings(self.store.active), [])
-            self.assertEqual(ThemeStore(self.store.root_dir).active_id, theme_id)
-        self.assertEqual(BUILTIN_THEMES["light"]["accent"], "#5865D8")
-        theme_count = len(self.store.themes)
-        for key in PRESET_THEMES:
-            first = self.store.apply_preset(key)
-            second = self.store.apply_preset(key)
-            self.assertEqual(first, second)
-            self.assertEqual(len(self.store.themes), theme_count)
-            self.assertEqual(ThemeStore(self.store.root_dir).active["preset_id"], key)
-        with self.assertRaises(ThemeError):
-            self.store.apply_preset("missing")
-
-    def test_legacy_preset_name_is_reused_and_copy_is_unbound(self):
-        theme_id = self.store.apply_preset("arcade")
-        raw = json.loads(self.store.path.read_text(encoding="utf-8"))
-        generated = next(theme for theme in raw["themes"] if theme["id"] == theme_id)
-        del generated["preset_id"]
-        generated["name"] = "街机糖果 2"
-        self.store.path.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
-        reopened = ThemeStore(self.store.root_dir)
-        self.assertEqual(reopened.apply_preset("arcade"), theme_id)
-        self.assertEqual(len(reopened.themes), len(raw["themes"]))
-        copied = reopened.create(copy_current=True)
-        self.assertNotIn("preset_id", reopened.active)
-        self.assertEqual(reopened.apply_preset("arcade"), theme_id)
-        self.assertNotEqual(copied, theme_id)
 
     def test_theme_export_import_roundtrip_excludes_background_reference(self):
         self.store.import_background(self.source())
