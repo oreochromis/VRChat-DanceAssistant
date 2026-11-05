@@ -87,6 +87,7 @@ class MainWindow(QMainWindow, Pages):
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
+        self._play_stats = None  # 点歌统计窗口（非模态单例）
         self.setWindowTitle("VRChat 跳舞房助手" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
@@ -611,6 +612,16 @@ class MainWindow(QMainWindow, Pages):
         self._library_browser.show()
         self._library_browser.raise_()
         self._library_browser.activateWindow()
+
+    def open_play_stats(self):
+        from .play_stats import PlayStatsDialog
+        if self._play_stats is not None:
+            self._play_stats.close()
+            self._play_stats = None
+        self._play_stats = PlayStatsDialog(self)
+        self._play_stats.show()
+        self._play_stats.raise_()
+        self._play_stats.activateWindow()
 
     def clear_cache(self):
         if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",

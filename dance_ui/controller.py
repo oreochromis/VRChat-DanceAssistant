@@ -359,6 +359,27 @@ class CoreController(QObject):
             return
         self._run("diagnostics", core.collect_diagnostics)
 
+    def play_history_stats(self, start_ts, end_ts, kind):
+        if self.demo:
+            songs = [
+                {"rank": 1, "id": 3528, "kind": "pypy", "name": "恋爱循环", "count": 42,
+                 "top_player": "小林", "first_ts": start_ts, "last_ts": end_ts - 1},
+                {"rank": 2, "id": 1837, "kind": "pypy", "name": "极乐净土", "count": 30,
+                 "top_player": "Momo", "first_ts": start_ts, "last_ts": end_ts - 1},
+                {"rank": 3, "id": 7152, "kind": "wd", "name": "示例 WannaDance 曲", "count": 12,
+                 "top_player": "Akira", "first_ts": start_ts, "last_ts": end_ts - 1},
+            ]
+            if kind:
+                songs = [s for s in songs if s["kind"] == kind]
+                for index, song in enumerate(songs, 1):
+                    song["rank"] = index
+            self.result.emit("play_history_stats", {
+                "total": sum(s["count"] for s in songs), "songs": songs,
+                "players": [{"player": "小林", "count": 42}, {"player": "Momo", "count": 30}],
+                "earliest": start_ts})
+            return
+        self._run("play_history_stats", lambda: core.play_history_stats(start_ts, end_ts, kind or None))
+
     def cooldown(self):
         if self.demo:
             if not self._demo_running:

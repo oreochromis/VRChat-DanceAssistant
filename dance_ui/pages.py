@@ -61,8 +61,11 @@ class Pages:
         hero.box.addWidget(top)
         self.song_meta = label("进入 PyPyDance / WannaDance 房间后，这里会显示最近检测到的队列首曲。", muted=True, wrap=True)
         hero.box.addWidget(self.song_meta)
+        session_row, session_box = row()
         self.session_stats = label("本次会话：本地命中 0 首 · 回源 0 首 · 节省流量 0 MB", muted=True, wrap=True)
-        hero.box.addWidget(self.session_stats)
+        session_box.addWidget(self.session_stats, 1)
+        session_box.addWidget(button("点歌统计…", self.open_play_stats, link=True))
+        hero.box.addWidget(session_row)
         box.addWidget(hero)
 
         cooldown = Card()

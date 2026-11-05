@@ -237,6 +237,82 @@ class CoreTests(unittest.TestCase):
                 self.dc.set_storage_mode("portable")
             self.assertEqual(self.dc.get_storage_mode(), "roaming")
 
+    def _history_lines(self):
+        path = Path(self.dc.history_path())
+        if not path.is_file():
+            return []
+        return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    def test_record_queue_snapshot_dedupes_and_recounts(self):
+        queue = [{"songNum": 3528, "videoName": "Song A", "playerName": "Alice"}]
+        self.dc.record_queue_snapshot(queue)
+        self.dc.record_queue_snapshot(queue)  # 同一快照重复出现不重复记
+        self.dc.record_queue_snapshot(queue + [{"songNum": 7152, "videoName": "Song B", "playerName": "Bob"}])
+        lines = self._history_lines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual({e["id"] for e in lines}, {3528, 7152})
+        self.assertTrue(all(e["kind"] == "pypy" for e in lines))
+        # 离开队列后再次入队 = 新的一次点歌
+        self.dc.record_queue_snapshot([])
+        self.dc.record_queue_snapshot(queue)
+        self.assertEqual(len(self._history_lines()), 3)
+        # None 表示这批日志没有队列行，不应清空上一帧快照
+        self.dc.record_queue_snapshot(None)
+        self.dc.record_queue_snapshot(queue)
+        self.assertEqual(len(self._history_lines()), 3)
+
+    def test_record_queue_snapshot_marks_wd_and_skips_invalid(self):
+        self.dc.record_queue_snapshot([
+            {"songNum": 1001, "videoName": "T", "playerName": "P", "wd": True},
+            {"songNum": 0, "videoName": "bad", "playerName": "P"},
+            {"songNum": "x", "videoName": "bad", "playerName": "P"},
+            "not-a-dict",
+        ])
+        lines = self._history_lines()
+        self.assertEqual(len(lines), 1)
+        self.assertEqual(lines[0]["kind"], "wd")
+        self.assertEqual(lines[0]["id"], 1001)
+
+    def test_play_history_stats_aggregation(self):
+        entries = [
+            {"ts": 1000.0, "kind": "pypy", "id": 1, "name": "Song A", "player": "Alice"},
+            {"ts": 2000.0, "kind": "pypy", "id": 1, "name": "", "player": "Alice"},
+            {"ts": 3000.0, "kind": "wd", "id": 2, "name": "Song B", "player": "Alice"},
+            {"ts": 9000.0, "kind": "pypy", "id": 3, "name": "Song C", "player": "Bob"},
+        ]
+        with open(self.dc.history_path(), "w", encoding="utf-8") as f:
+            for e in entries:
+                f.write(json.dumps(e) + "\n")
+            f.write("not json at all\n")  # 损坏行应跳过
+        stats = self.dc.play_history_stats()
+        self.assertEqual(stats["total"], 4)
+        self.assertEqual(stats["earliest"], 1000.0)
+        top = stats["songs"][0]
+        self.assertEqual((top["rank"], top["id"], top["count"]), (1, 1, 2))
+        self.assertEqual(top["name"], "Song A")  # 后续空名不覆盖已知名
+        self.assertEqual(top["top_player"], "Alice")
+        # 次数相同按首次点歌时间排序
+        self.assertEqual([s["id"] for s in stats["songs"]], [1, 2, 3])
+        self.assertEqual(stats["players"], [{"player": "Alice", "count": 3},
+                                            {"player": "Bob", "count": 1}])
+        # 时间范围过滤（end 不含）
+        ranged = self.dc.play_history_stats(start_ts=2500.0, end_ts=9500.0)
+        self.assertEqual(ranged["total"], 2)
+        self.assertEqual({s["id"] for s in ranged["songs"]}, {2, 3})
+        self.assertEqual(ranged["earliest"], 1000.0)  # 最早记录不受范围影响
+        # 来源过滤
+        wd_only = self.dc.play_history_stats(kind="wd")
+        self.assertEqual(wd_only["total"], 1)
+        self.assertEqual(wd_only["songs"][0]["kind"], "wd")
+        # 无记录时为空统计
+        (self.root / "play_history.jsonl").unlink()
+        empty = self.dc.play_history_stats()
+        self.assertEqual(empty["total"], 0)
+        self.assertIsNone(empty["earliest"])
+
+    def test_play_history_jsonl_migrates_with_storage_files(self):
+        self.assertIn("play_history.jsonl", self.dc._STORAGE_FILES)
+
     def test_wd_queue_inserts_current_song_from_update_state(self):
         # WannaDance 的 queue info 开播即把当前歌曲移出队列，需从 UpdateState 行插回队首
         lines = [

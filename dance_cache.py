@@ -138,7 +138,8 @@ def mapping_path():
     return os.path.join(data_dir(), MAPPING_FILENAME)
 
 
-_STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json")
+_STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
+                  "play_history.jsonl")
 
 
 def set_storage_mode(mode):
@@ -394,6 +395,116 @@ def _note_session_miss(filename):
         _session_miss_files.add(filename)
         _session_misses += 1
     _emit_session()
+
+
+# ---------------- 点歌历史（排行/年度报告的原始数据，JSONL 逐行追加） ----------------
+
+HISTORY_FILENAME = "play_history.jsonl"
+
+_history_lock = threading.Lock()
+_history_last_keys = set()  # 上一帧队列的 (kind, id, player) 集合，用于 diff 出"新点"的歌
+
+
+def history_path():
+    return os.path.join(data_dir(), HISTORY_FILENAME)
+
+
+def record_queue_snapshot(items):
+    """从队列快照 diff 出新入队的歌曲，逐行追加到 play_history.jsonl。
+    同一首歌在队列里停留期间重复出现的快照不会重复记；离开队列后再次入队
+    （重听/重点）会再记一条。items 为 None 表示这批日志没有队列行，不处理。"""
+    global _history_last_keys
+    if items is None:
+        return
+    keys = set()
+    entries = []
+    now = time.time()
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        sid = it.get("songNum", 0)
+        if not (isinstance(sid, int) and not isinstance(sid, bool) and sid > 0):
+            continue
+        kind = "wd" if it.get("wd") else "pypy"
+        player = str(it.get("playerName") or "").strip()
+        key = (kind, sid, player)
+        if key in keys:
+            continue
+        keys.add(key)
+        entries.append({"ts": now, "kind": kind, "id": sid,
+                        "name": str(it.get("videoName") or "").strip(),
+                        "player": player})
+    with _history_lock:
+        fresh = [e for e in entries if (e["kind"], e["id"], e["player"]) not in _history_last_keys]
+        _history_last_keys = keys
+        if not fresh:
+            return
+        try:
+            os.makedirs(data_dir(), exist_ok=True)
+            with open(history_path(), "a", encoding="utf-8") as f:
+                for e in fresh:
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        except OSError as e:
+            log(f"点歌历史写入失败: {e}")
+
+
+def play_history_stats(start_ts=None, end_ts=None, kind=None):
+    """聚合点歌历史。start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"。
+    返回 {"total", "songs": [{rank, id, kind, name, count, top_player, first_ts, last_ts}],
+          "players": [{player, count}], "earliest": 最早一条记录的时间戳或 None}。
+    损坏行跳过；文件不存在返回空统计。"""
+    counts = {}
+    players = {}
+    total = 0
+    earliest = None
+    try:
+        with open(history_path(), "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        lines = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+            ts = float(entry["ts"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if earliest is None or ts < earliest:
+            earliest = ts
+        if start_ts is not None and ts < start_ts:
+            continue
+        if end_ts is not None and ts >= end_ts:
+            continue
+        sid = entry.get("id")
+        if isinstance(sid, bool) or not isinstance(sid, int):
+            continue
+        ekind = entry.get("kind") if entry.get("kind") in ("pypy", "wd") else "pypy"
+        if kind and ekind != kind:
+            continue
+        total += 1
+        key = (ekind, sid)
+        slot = counts.setdefault(key, {"id": sid, "kind": ekind, "name": "", "count": 0,
+                                       "players": {}, "first_ts": ts, "last_ts": ts})
+        slot["count"] += 1
+        name = str(entry.get("name") or "").strip()
+        if name and name != "?":
+            slot["name"] = name
+        player = str(entry.get("player") or "").strip()
+        if player:
+            slot["players"][player] = slot["players"].get(player, 0) + 1
+            players[player] = players.get(player, 0) + 1
+        slot["first_ts"] = min(slot["first_ts"], ts)
+        slot["last_ts"] = max(slot["last_ts"], ts)
+    songs = sorted(counts.values(), key=lambda s: (-s["count"], s["first_ts"]))
+    for rank, slot in enumerate(songs, 1):
+        slot["rank"] = rank
+        slot["top_player"] = max(slot["players"].items(), key=lambda kv: kv[1])[0] if slot["players"] else ""
+        del slot["players"]
+    top_players = sorted(({"player": p, "count": c} for p, c in players.items()),
+                         key=lambda x: (-x["count"], x["player"]))
+    return {"total": total, "songs": songs, "players": top_players, "earliest": earliest}
 
 
 # ---------------- 配置 ----------------
@@ -3307,6 +3418,7 @@ class LogWatcher(threading.Thread):
 
     def _on_queue(self, items):
         global _last_queue_items
+        record_queue_snapshot(items)
         with _queue_lock:
             _last_queue_items = copy.deepcopy(items or [])
         if not items:
