@@ -139,7 +139,7 @@ def mapping_path():
 
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
-                  "play_history.jsonl")
+                  "play_history.jsonl", "vrcx-settings.json")
 
 
 def set_storage_mode(mode):

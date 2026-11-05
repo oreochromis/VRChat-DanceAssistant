@@ -386,6 +386,28 @@ class CoreController(QObject):
             return
         self._run("play_history_stats", lambda: core.play_history_stats(start_ts, end_ts, kind or None))
 
+    def vrcx_stats(self, start_ts, end_ts, path=None):
+        if self.demo:
+            self.result.emit("vrcx_stats", {
+                "path": "演示 VRCX 数据", "friend_count": 2, "matched_friends": 2,
+                "friends": [
+                    {"user_id": "demo-1", "name": "小林", "seconds": 45000, "sessions": 18,
+                     "last_ts": end_ts - 86400},
+                    {"user_id": "demo-2", "name": "Momo", "seconds": 18900, "sessions": 9,
+                     "last_ts": end_ts - 172800},
+                ], "start_ts": start_ts, "end_ts": end_ts, "demo": True,
+            })
+            return
+
+        def read():
+            from . import vrcx_stats as vrcx
+            source = vrcx.resolve_vrcx_path(path)
+            result = vrcx.read_co_room_stats(source, start_ts, end_ts)
+            vrcx.save_vrcx_path(source)
+            return result
+
+        self._run("vrcx_stats", read)
+
     def cooldown(self):
         if self.demo:
             if not self._demo_running:

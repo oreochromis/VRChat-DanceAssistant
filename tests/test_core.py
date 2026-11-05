@@ -316,6 +316,7 @@ class CoreTests(unittest.TestCase):
 
     def test_play_history_jsonl_migrates_with_storage_files(self):
         self.assertIn("play_history.jsonl", self.dc._STORAGE_FILES)
+        self.assertIn("vrcx-settings.json", self.dc._STORAGE_FILES)
 
     def test_wd_queue_inserts_current_song_from_update_state(self):
         # WannaDance 的 queue info 开播即把当前歌曲移出队列，需从 UpdateState 行插回队首

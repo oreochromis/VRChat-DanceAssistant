@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPai
 from PySide6.QtWidgets import QDialog, QFileDialog, QFrame, QHBoxLayout, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from .pages import button
+from .vrcx_stats import format_duration
 from .widgets import label
 
 
@@ -39,6 +40,8 @@ class ReportCanvas(QWidget):
         self.songs = sorted(self.data.get("songs") or [],
                             key=lambda song: (-int(song.get("count", 0)), int(song.get("rank", 0))))
         self.players = list(self.data.get("players") or [])
+        vrcx = self.data.get("vrcx") or {}
+        self.vrcx_friends = list(vrcx.get("friends") or []) if isinstance(vrcx, dict) else []
         self.months = sorted((item for item in (self.data.get("months") or [])
                               if isinstance(item, dict) and item.get("month")),
                              key=lambda item: item["month"])
@@ -76,7 +79,10 @@ class ReportCanvas(QWidget):
         if len(self.songs) > 3:
             height += 100 + min(len(self.songs), 10) * 44 + 24
         height += 310 if len(self.months) > 1 else 230
-        return height + 24 + 112 + 52 + 28
+        height += 24
+        if self.vrcx_friends:
+            height += 130
+        return height + 52 + 28
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -120,9 +126,12 @@ class ReportCanvas(QWidget):
         else:
             self._draw_sources(painter, QRectF(margin, charts_y, content, 230))
             charts_y += 230
-        closing_y = charts_y + 24
-        self._draw_closing(painter, QRectF(margin, closing_y, content, 112))
-        _text(painter, QRectF(margin, closing_y + 126, content, 30),
+        footer_y = charts_y + 36
+        if self.vrcx_friends:
+            friend_y = charts_y + 24
+            self._draw_vrcx_friend(painter, QRectF(margin, friend_y, content, 112))
+            footer_y = friend_y + 126
+        _text(painter, QRectF(margin, footer_y, content, 30),
               "VRChat 跳舞房助手  ·  数据来自本地点歌记录", size=12, color=self.muted,
               align=Qt.AlignmentFlag.AlignCenter)
 
@@ -334,21 +343,20 @@ class ReportCanvas(QWidget):
             _text(painter, QRectF(x + 16, legend_y - 4, (rect.width() - 48) / 2 - 16, 24),
                   f"{name} {count}", size=10, color=self.muted)
 
-    def _draw_closing(self, painter, rect):
-        self._card(painter, rect, self.soft)
-        top = self.players[0] if self.players else {"player": "匿名舞者", "count": 0}
-        _text(painter, QRectF(rect.left() + 24, rect.top() + 14, rect.width() * .5, 22),
-              "最常一起点歌的人", size=12, color=self.muted)
+    def _draw_vrcx_friend(self, painter, rect):
+        self._card(painter, rect)
+        friend = self.vrcx_friends[0]
+        _text(painter, QRectF(rect.left() + 24, rect.top() + 14, rect.width() * .55, 22),
+              "最常与你同房的好友", size=12, color=self.muted)
         painter.setFont(_font(24, QFont.Weight.DemiBold))
-        name = _elided(painter, top.get("player") or "匿名舞者", rect.width() * .5 - 24)
-        _text(painter, QRectF(rect.left() + 24, rect.top() + 39, rect.width() * .5, 38),
+        name = _elided(painter, friend.get("name") or "未知好友", rect.width() * .52)
+        _text(painter, QRectF(rect.left() + 24, rect.top() + 39, rect.width() * .52, 38),
               name, size=24, color=self.text, weight=QFont.Weight.DemiBold)
-        _text(painter, QRectF(rect.left() + 24, rect.bottom() - 30, rect.width() * .5, 20),
-              f"一起贡献了 {top.get('count', 0)} 次点歌", size=12, color=self.accent)
-        _text(painter, QRectF(rect.right() - rect.width() * .42, rect.top() + 30, rect.width() * .42 - 24, 52),
-              "下一首，也还是想和你一起跳。", size=17, color=self.text,
-              weight=QFont.Weight.Medium, align=Qt.AlignmentFlag.AlignRight)
-
+        _text(painter, QRectF(rect.left() + 24, rect.bottom() - 30, rect.width() * .6, 20),
+              f"累计同房 {friend.get('sessions', 0)} 次 · 来自 VRCX 本地记录", size=12, color=self.secondary)
+        _text(painter, QRectF(rect.right() - 310, rect.top() + 31, 286, 50),
+              format_duration(friend.get("seconds", 0)), size=25, color=self.highlight,
+              weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight)
 
 class PlayReportDialog(QDialog):
     def __init__(self, owner, data, start, end, source, theme):

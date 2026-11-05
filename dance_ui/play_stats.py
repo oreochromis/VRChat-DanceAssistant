@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
 )
 
 from .pages import button, field
+from .vrcx_stats import format_duration, resolve_vrcx_path
 from .widgets import Card, label, page, section_title, table
 
 _KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
@@ -38,6 +39,7 @@ class PlayStatsPage(QWidget):
         self._songs = []
         self._report_data = None
         self._report = None
+        self._vrcx_data = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -126,6 +128,35 @@ class PlayStatsPage(QWidget):
         self.report_button.setEnabled(False)
         report_row.addWidget(self.report_button)
         box.addLayout(report_row)
+
+        vrcx_card = Card()
+        heading = QHBoxLayout()
+        heading.addWidget(label("好友同房时长", subheading=True))
+        heading.addStretch()
+        self.vrcx_choose_button = button("选择数据库", self.choose_vrcx_database, link=True)
+        self.vrcx_read_button = button("读取 VRCX 统计", self.read_vrcx_stats, primary=True)
+        heading.addWidget(self.vrcx_choose_button)
+        heading.addWidget(self.vrcx_read_button)
+        vrcx_card.box.addLayout(heading)
+        vrcx_card.box.addWidget(label(
+            "按当前日期范围统计你与本机 VRCX 好友在同一房间的时间。只读本地数据，不读取账号凭据。",
+            muted=True, wrap=True))
+        self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)
+        self.vrcx_path.setToolTip(self.vrcx_path.text())
+        vrcx_card.box.addWidget(self.vrcx_path)
+        self.vrcx_loading = QProgressBar()
+        self.vrcx_loading.setRange(0, 0)
+        self.vrcx_loading.setTextVisible(False)
+        self.vrcx_loading.hide()
+        vrcx_card.box.addWidget(self.vrcx_loading)
+        self.vrcx_summary = label("尚未读取。VRCX 未运行或没有记录的时段无法统计。", muted=True, wrap=True)
+        vrcx_card.box.addWidget(self.vrcx_summary)
+        self.vrcx_table = table(["排名", "好友", "同房时长", "同房次数", "最近同房"], 1)
+        self.vrcx_table.setAccessibleName("好友同房时长排行")
+        self.vrcx_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
+        self.vrcx_table.hide()
+        vrcx_card.box.addWidget(self.vrcx_table)
+        box.addWidget(vrcx_card)
         box.addStretch()
 
         self.controller.result.connect(self._on_result)
@@ -159,12 +190,73 @@ class PlayStatsPage(QWidget):
         self.start.setDate(QDate(2000, 1, 1))
         self.end.setDate(QDate.currentDate())
 
+    def read_vrcx_stats(self, path=None):
+        start_date, end_date = self.start.date(), self.end.date()
+        if start_date > end_date:
+            self.vrcx_summary.setText("开始日期晚于结束日期，请调整后再读取。")
+            return
+        self.vrcx_loading.show()
+        self.vrcx_read_button.setEnabled(False)
+        self.vrcx_choose_button.setEnabled(False)
+        self.vrcx_summary.setText("正在只读分析 VRCX 房间记录…")
+        self.controller.vrcx_stats(_day_start(start_date), _day_start(end_date) + 86400, path)
+
+    def choose_vrcx_database(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 VRCX 数据库", str(resolve_vrcx_path().parent),
+            "VRCX 数据库 (*.sqlite3 *.db);;SQLite 数据库 (*.sqlite *.sqlite3 *.db)")
+        if path:
+            self.read_vrcx_stats(path)
+
+    def _show_vrcx_stats(self, result):
+        self.vrcx_loading.hide()
+        self.vrcx_read_button.setEnabled(True)
+        self.vrcx_choose_button.setEnabled(True)
+        self._vrcx_data = result
+        self.vrcx_path.setText("数据库：" + str(result.get("path") or "未知"))
+        self.vrcx_path.setToolTip(str(result.get("path") or ""))
+        friends = list(result.get("friends") or [])
+        if friends:
+            top = friends[0]
+            self.vrcx_summary.setText(
+                f"最常与你同房的好友：{top.get('name') or '未知'} · {format_duration(top.get('seconds', 0))}"
+                f"；共统计到 {len(friends)} 位好友。")
+        else:
+            self.vrcx_summary.setText("该日期范围没有可统计的好友同房记录；VRCX 未运行的时段无法补齐。")
+        self.vrcx_table.setSortingEnabled(False)
+        self.vrcx_table.setRowCount(0)
+        for friend in friends[:10]:
+            row_index = self.vrcx_table.rowCount()
+            self.vrcx_table.insertRow(row_index)
+            values = (row_index + 1, friend.get("name") or "未知",
+                      format_duration(friend.get("seconds", 0)), friend.get("sessions", 0),
+                      _fmt_time(friend.get("last_ts")))
+            for column, value in enumerate(values):
+                item = QTableWidgetItem()
+                if isinstance(value, int):
+                    item.setData(Qt.ItemDataRole.DisplayRole, value)
+                else:
+                    item.setText(str(value))
+                self.vrcx_table.setItem(row_index, column, item)
+        self.vrcx_table.setVisible(bool(friends))
+        if friends:
+            row_height = max(36, self.vrcx_table.verticalHeader().defaultSectionSize())
+            height = self.vrcx_table.horizontalHeader().sizeHint().height() + min(len(friends), 10) * row_height + 4
+            self.vrcx_table.setFixedHeight(height)
+        self.vrcx_table.setSortingEnabled(True)
+
     def refresh(self):
         start_date, end_date = self.start.date(), self.end.date()
         if start_date > end_date:
             self.loading.hide()
             self.summary.setText("开始日期晚于结束日期，请调整日期范围。")
             return
+        start_ts, end_ts = _day_start(start_date), _day_start(end_date) + 86400
+        if self._vrcx_data and (self._vrcx_data.get("start_ts") != start_ts
+                                or self._vrcx_data.get("end_ts") != end_ts):
+            self._vrcx_data = None
+            self.vrcx_table.hide()
+            self.vrcx_summary.setText("日期范围已变化，请重新读取 VRCX 统计。")
         self.summary.setText("正在读取点歌历史…")
         self.loading.show()
         self.export_button.setEnabled(False)
@@ -174,6 +266,9 @@ class PlayStatsPage(QWidget):
             self.source.currentData())
 
     def _on_result(self, operation, result):
+        if operation == "vrcx_stats" and isinstance(result, dict):
+            self._show_vrcx_stats(result)
+            return
         if operation != "play_history_stats" or not isinstance(result, dict):
             return
         self.loading.hide()
@@ -232,8 +327,11 @@ class PlayStatsPage(QWidget):
         from .play_report import PlayReportDialog
         if self._report is not None:
             self._report.close()
+        report_data = dict(self._report_data)
+        if self._vrcx_data:
+            report_data["vrcx"] = self._vrcx_data
         self._report = PlayReportDialog(
-            self, self._report_data, self.start.date(), self.end.date(),
+            self, report_data, self.start.date(), self.end.date(),
             self.source.currentText(), self._main.store.active)
         self._report.show()
         self._report.raise_()
@@ -266,6 +364,11 @@ class PlayStatsPage(QWidget):
         QMessageBox.information(self, "导出 CSV", f"已导出 {len(self._songs)} 行到:\n{path}")
 
     def _on_error(self, operation, message):
-        if operation == "play_history_stats":
+        if operation == "vrcx_stats":
+            self.vrcx_loading.hide()
+            self.vrcx_read_button.setEnabled(True)
+            self.vrcx_choose_button.setEnabled(True)
+            self.vrcx_summary.setText(f"读取 VRCX 统计失败：{message}")
+        elif operation == "play_history_stats":
             self.loading.hide()
             self.summary.setText(f"读取点歌历史失败: {message}")

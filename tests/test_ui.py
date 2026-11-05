@@ -303,6 +303,25 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(sparse.grab().isNull())
         sparse.close()
 
+    def test_vrcx_demo_stats_reach_table_and_report(self):
+        window, _, _ = self.make_window()
+        stats = window.play_stats_page
+        window.navigate(2)
+        self.assertTrue(stats.vrcx_table.isHidden())
+        QTest.mouseClick(stats.vrcx_read_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(stats.vrcx_table.rowCount(), 2)
+        self.assertEqual(stats.vrcx_table.item(0, 0).text(), "1")
+        self.assertIn("小林", stats.vrcx_summary.text())
+        self.assertIn("12 小时 30 分钟", stats.vrcx_summary.text())
+        self.assertFalse(stats.vrcx_loading.isVisible())
+        stats.open_report()
+        report = stats._report
+        self.assertEqual(report.canvas.vrcx_friends[0]["name"], "小林")
+        self.assertFalse(hasattr(report.canvas, "_draw_closing"))
+        self.assertFalse(report.canvas.grab().isNull())
+        report.close()
+        QApplication.processEvents()
+
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)
         original_settings = copy.deepcopy(self.config)
