@@ -428,6 +428,9 @@ class ThemeStore:
                 base = "light"
             theme = copy.deepcopy(self._provided_themes.get(theme_id, BUILTIN_THEMES[base]))
             theme.update(id=theme_id, builtin=theme_id in self._provided_themes, base=base)
+            preset_id = item.get("preset_id")
+            if not theme["builtin"] and isinstance(preset_id, str) and preset_id.removeprefix("preset_") in PRESET_THEMES:
+                theme["preset_id"] = preset_id.removeprefix("preset_")
             name = item.get("name", theme["name"])
             theme["name"] = name.strip()[:60] if isinstance(name, str) and name.strip() else "未命名主题"
             for key in THEME_FIELDS:
@@ -571,6 +574,7 @@ class ThemeStore:
         self.end_edit()
         current = self.active
         theme = current if copy_current else copy.deepcopy(BUILTIN_THEMES[current["base"]])
+        theme.pop("preset_id", None)
         new_id = "theme_" + uuid.uuid4().hex[:16]
         proposed = name if name is not None else (current["name"] + " 副本" if copy_current else "新主题")
         # Automatically generated names may need shortening after a long rename.
@@ -587,14 +591,26 @@ class ThemeStore:
         if key not in PRESET_THEMES:
             raise ThemeError("没有找到这个配色预设。")
         self.end_edit()
-        current = self.active
-        theme = copy.deepcopy(PRESET_THEMES[key])
-        for field in ("background_image", "image_fit", "image_opacity", "image_blur"):
-            theme[field] = current[field]
-        new_id = "theme_" + uuid.uuid4().hex[:16]
-        theme.update(id=new_id, name=self._unique_name(theme["name"]), builtin=False)
+        preset = PRESET_THEMES[key]
         candidate = copy.deepcopy(self._state)
-        candidate["themes"].append(theme)
+        existing = None
+        legacy_name = re.compile(r"^" + re.escape(preset["name"]) + r"(?: [2-9][0-9]*)?$")
+        for theme in candidate["themes"]:
+            if theme.get("preset_id") == key or (not theme.get("preset_id") and legacy_name.fullmatch(theme["name"])):
+                existing = theme
+                break
+        source = existing or self.active
+        theme = copy.deepcopy(preset)
+        for field in ("background_image", "image_fit", "image_opacity", "image_blur"):
+            theme[field] = source[field]
+        if existing is None:
+            new_id = "theme_" + uuid.uuid4().hex[:16]
+            theme.update(id=new_id, name=self._unique_name(theme["name"]), builtin=False, preset_id=key)
+            candidate["themes"].append(theme)
+        else:
+            new_id = existing["id"]
+            theme.update(id=new_id, name=existing["name"], builtin=False, preset_id=key)
+            candidate["themes"][candidate["themes"].index(existing)] = theme
         candidate["active_theme"] = new_id
         self._commit(candidate)
         return new_id
@@ -671,7 +687,8 @@ class ThemeStore:
     def reset_current(self) -> bool:
         self.end_edit()
         active = self.active
-        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
+        defaults = self._provided_themes.get(active["id"], PRESET_THEMES.get(
+            active.get("preset_id"), BUILTIN_THEMES[active["base"]]))
         return self.change({key: defaults[key] for key in THEME_FIELDS})
 
     def reset_group(self, group: str) -> bool:
@@ -679,7 +696,8 @@ class ThemeStore:
             raise ThemeError("未识别的设置分组。")
         self.end_edit()
         active = self.active
-        defaults = self._provided_themes.get(active["id"], BUILTIN_THEMES[active["base"]])
+        defaults = self._provided_themes.get(active["id"], PRESET_THEMES.get(
+            active.get("preset_id"), BUILTIN_THEMES[active["base"]]))
         return self.change({key: defaults[key] for key in THEME_GROUPS[group]})
 
     def reset_preferences(self) -> bool:

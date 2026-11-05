@@ -381,7 +381,7 @@ class AppearancePage(QWidget):
         for key, preset in PRESET_THEMES.items():
             self.preset_combo.addItem(preset["name"], key)
         preset_row.addWidget(self.preset_combo, 1)
-        self.apply_preset_button = _button("应用为新主题", self._apply_preset, primary=True)
+        self.apply_preset_button = _button("应用预设", self._apply_preset, primary=True)
         preset_row.addWidget(self.apply_preset_button)
         right.addLayout(preset_row)
         name_row = QHBoxLayout()
@@ -765,7 +765,7 @@ class AppearancePage(QWidget):
         if self._flush_pending():
             preset = self.preset_combo.currentData()
             self._perform(lambda: self.store.apply_preset(preset), refresh=True,
-                          message="已应用为新主题，原主题和所有背景图片仍然保留。")
+                          message="预设已应用；同一预设会复用已有主题，背景图片仍然保留。")
 
     def _export_theme(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "导出主题配色", "dance-theme.json", "主题配色 (*.json)")
