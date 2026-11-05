@@ -101,21 +101,35 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
     QPushButton[danger="true"] {{ color: #c04c5b; }}
-    QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+    QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
         background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 7)}px;
         padding: {px(padding)}px {px(10)}px; min-height: {px(19)}px;
         selection-background-color: {accent}; selection-color: {on_color(accent)};
     }}
-    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border-color: {accent}; }}
+    QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus {{ border-color: {accent}; }}
     QSpinBox, QDoubleSpinBox {{ padding-right: {px(28)}px; }}
     QSpinBox::up-button, QDoubleSpinBox::up-button {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(25)}px; border: none; background: transparent; }}
     QSpinBox::down-button, QDoubleSpinBox::down-button {{ subcontrol-origin: border; subcontrol-position: bottom right; width: {px(25)}px; border: none; background: transparent; }}
     QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{ image: url(:/controls/up.svg); width: {px(10)}px; height: {px(7)}px; }}
     QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {{ image: url(:/controls/down.svg); width: {px(10)}px; height: {px(7)}px; }}
-    QComboBox::drop-down {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(28)}px; border: none; background: transparent; }}
-    QComboBox::down-arrow {{ image: url(:/controls/down.svg); width: {px(10)}px; height: {px(7)}px; }}
-    QLineEdit:disabled, QComboBox:disabled {{ color: {muted}; background: {subtle}; }}
+    QComboBox::drop-down, QDateEdit::drop-down {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(28)}px; border: none; background: transparent; }}
+    QComboBox::down-arrow, QDateEdit::down-arrow {{ image: url(:/controls/down.svg); width: {px(10)}px; height: {px(7)}px; }}
+    QLineEdit:disabled, QDateEdit:disabled, QComboBox:disabled {{ color: {muted}; background: {subtle}; }}
     QComboBox QAbstractItemView {{ background: {theme['card_background']}; color: {text}; selection-background-color: {accent}; }}
+    QCalendarWidget {{ background: {theme['card_background']}; border: 1px solid {border}; }}
+    QCalendarWidget QWidget, QCalendarWidget QTableView {{ background: {theme['card_background']}; color: {text}; }}
+    QCalendarWidget QWidget#qt_calendar_navigationbar {{
+        background: {theme['card_background']}; border: none; border-bottom: 1px solid {border}; padding: {px(4)}px;
+    }}
+    QCalendarWidget QToolButton {{
+        color: {text}; background: transparent; border: none; border-radius: 4px; padding: {px(6)}px; font-weight: 600;
+    }}
+    QCalendarWidget QToolButton:hover {{ background: {rgba(accent, .12)}; }}
+    QCalendarWidget QToolButton:pressed {{ background: {rgba(accent, .20)}; }}
+    QCalendarWidget QTableView {{ outline: none; selection-background-color: {accent}; selection-color: {on_color(accent)}; }}
+    QCalendarWidget QTableView::item {{ border: none; padding: {px(4)}px; color: {text}; }}
+    QCalendarWidget QTableView::item:selected {{ background: {accent}; color: {on_color(accent)}; }}
+    QCalendarWidget QHeaderView::section {{ background: {subtle}; color: {muted}; border: none; padding: {px(5)}px; }}
     QCheckBox {{ spacing: {px(9)}px; padding: {px(3)}px 0; }}
     QCheckBox::indicator {{ width: {px(16)}px; height: {px(16)}px; border: 1px solid {rgba(muted, .6)}; border-radius: 4px; background: {input_bg}; }}
     QCheckBox::indicator:checked {{ image: url(:/controls/{check_icon}); border-color: {accent}; background: {accent}; }}

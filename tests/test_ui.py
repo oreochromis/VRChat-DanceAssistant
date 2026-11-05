@@ -197,15 +197,23 @@ class UIIntegrationTests(unittest.TestCase):
             mocked.assert_not_called()
 
     def test_stats_page_loads_demo_history_only_when_opened(self):
-        window, _, _ = self.make_window()
+        window, controller, _ = self.make_window()
         stats = window.play_stats_page
         self.assertEqual(stats.table.rowCount(), 0)
         window.navigate(2)
         self.assertEqual(stats.table.rowCount(), 3)
+        self.assertEqual(stats.table.item(0, 0).text(), "1")
         self.assertIn("84 次点歌", stats.summary.text())
+        self.assertTrue(stats.export_button.isEnabled())
         stats.source.setCurrentIndex(stats.source.findData("wd"))
         self.assertEqual(stats.table.rowCount(), 1)
         self.assertEqual(stats.table.item(0, 3).text(), "7152")
+        controller.result.emit("play_history_stats", {
+            "total": 0, "songs": [], "players": [], "earliest": None,
+        })
+        self.assertFalse(stats.table.isVisible())
+        self.assertTrue(stats.empty_state.isVisible())
+        self.assertFalse(stats.export_button.isEnabled())
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)

@@ -6,11 +6,11 @@ from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QMessageBox,
+    QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QHBoxLayout, QMessageBox,
     QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from .pages import button
+from .pages import button, field
 from .widgets import Card, label, page, section_title, table
 
 _KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
@@ -40,51 +40,79 @@ class PlayStatsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         area, _, box = page()
         outer.addWidget(area)
-        box.addWidget(section_title("统计", "按日期查看点歌排行，导出年度总结"))
+        box.addWidget(section_title("点歌统计", "回看点歌记录，导出你的年度总结"))
 
-        card = Card()
-        top = QHBoxLayout()
-        top.setSpacing(8)
+        filters = Card()
+        filter_row = QHBoxLayout()
+        filter_row.setSpacing(14)
         self.source = QComboBox()
+        self.source.setMinimumWidth(140)
         for value, text in _KINDS:
             self.source.addItem(text, value)
         self.source.currentIndexChanged.connect(self.refresh)
-        top.addWidget(self.source)
+        filter_row.addWidget(field("来源", self.source))
+
         today = QDate.currentDate()
         self.start = QDateEdit(QDate(today.year(), 1, 1))
         self.end = QDateEdit(today)
         for edit in (self.start, self.end):
             edit.setCalendarPopup(True)
+            edit.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
             edit.setDisplayFormat("yyyy-MM-dd")
+            edit.setMinimumWidth(142)
             edit.dateChanged.connect(self.refresh)
-        top.addWidget(label("从"))
-        top.addWidget(self.start)
-        top.addWidget(label("到"))
-        top.addWidget(self.end)
-        top.addWidget(button("今年", self._preset_year))
-        top.addWidget(button("近 30 天", self._preset_month))
-        top.addWidget(button("全部", self._preset_all))
-        top.addStretch()
-        card.box.addLayout(top)
+            calendar = edit.calendarWidget()
+            calendar.setGridVisible(False)
+            calendar.setFirstDayOfWeek(Qt.DayOfWeek.Monday)
+            calendar.setMinimumSize(320, 240)
+        filter_row.addWidget(field("开始日期", self.start))
+        filter_row.addWidget(field("结束日期", self.end))
+
+        preset_group = QWidget()
+        preset_box = QVBoxLayout(preset_group)
+        preset_box.setContentsMargins(0, 0, 0, 0)
+        preset_box.setSpacing(7)
+        preset_box.addWidget(label("快捷范围"))
+        presets = QHBoxLayout()
+        presets.setSpacing(8)
+        presets.addWidget(button("今年", self._preset_year))
+        presets.addWidget(button("近 30 天", self._preset_month))
+        presets.addWidget(button("全部", self._preset_all))
+        preset_box.addLayout(presets)
+        filter_row.addWidget(preset_group)
+        filter_row.addStretch()
+        filters.box.addLayout(filter_row)
+        box.addWidget(filters)
+
+        results = Card()
+        heading = QHBoxLayout()
+        heading.addWidget(label("点歌排行", subheading=True))
+        heading.addStretch()
+        self.export_button = button("导出 CSV…", self._export_csv)
+        self.export_button.setEnabled(False)
+        heading.addWidget(self.export_button)
+        results.box.addLayout(heading)
 
         self.summary = label("进入统计页面后自动读取点歌历史。", muted=True, wrap=True)
-        card.box.addWidget(self.summary)
+        results.box.addWidget(self.summary)
+
+        self.empty_state = label("这个时间范围还没有点歌记录。\n试试其他日期，或进入跳舞房点几首歌。", muted=True, wrap=True)
+        self.empty_state.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty_state.setMinimumHeight(110)
+        results.box.addWidget(self.empty_state)
 
         self.table = table(["排名", "次数", "歌名", "编号", "来源", "最常点歌人", "最近点歌"], 2)
         self.table.setAccessibleName("点歌排行")
-        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.table.setMinimumHeight(320)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.table.setSortingEnabled(True)
-        card.box.addWidget(self.table, 1)
+        self.table.hide()
+        results.box.addWidget(self.table)
+        box.addWidget(results)
 
-        actions = QHBoxLayout()
-        actions.addWidget(label(
-            "仅统计本软件运行期间检测到的点歌，从首次使用本功能起累积；"
-            "同一首歌离开队列后再次入队会记为新的一次。", muted=True, wrap=True), 1)
-        self.export_button = button("导出 CSV…", self._export_csv)
-        actions.addWidget(self.export_button)
-        card.box.addLayout(actions)
-        box.addWidget(card)
+        box.addWidget(label(
+            "统计本软件运行期间检测到的点歌，从本功能上线起累积；同一首歌离开队列后再次入队会记为新的一次。",
+            muted=True, wrap=True))
         box.addStretch()
 
         self.controller.result.connect(self._on_result)
@@ -121,16 +149,15 @@ class PlayStatsPage(QWidget):
         total = result.get("total", 0)
         players = result.get("players") or []
         if not total:
-            self.summary.setText("该时间范围内没有点歌记录。点歌历史从本功能上线后起记录，"
-                                 "需在服务运行时进入跳舞房才会累积。")
+            self.summary.setText("该时间范围内没有点歌记录。")
         else:
-            text = f"期间共 {total} 次点歌 · {len(self._songs)} 首不同歌曲"
+            text = f"共 {total} 次点歌 · {len(self._songs)} 首不同歌曲"
             if players:
                 top = players[0]
-                text += f" · 点歌最多的人：{top['player']}（{top['count']} 次）"
+                text += f" · 点歌最多：{top['player']}（{top['count']} 次）"
             earliest = result.get("earliest")
             if earliest:
-                text += f"。记录最早始于 {_fmt_time(earliest)}"
+                text += f" · 最早记录 {_fmt_time(earliest)}"
             self.summary.setText(text)
         self._render()
 
@@ -156,6 +183,14 @@ class PlayStatsPage(QWidget):
                     item.setText(str(value))
                 self.table.setItem(row_index, column, item)
         self.table.setSortingEnabled(True)
+        has_songs = bool(self._songs)
+        self.table.setVisible(has_songs)
+        self.empty_state.setVisible(not has_songs)
+        self.export_button.setEnabled(has_songs)
+        if has_songs:
+            row_height = max(36, self.table.verticalHeader().defaultSectionSize())
+            header_height = self.table.horizontalHeader().sizeHint().height()
+            self.table.setFixedHeight(header_height + min(len(self._songs), 8) * row_height + 4)
 
     def _export_csv(self):
         if not self._songs:
