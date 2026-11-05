@@ -60,7 +60,7 @@ THEME_FIELDS = COLOR_FIELDS | frozenset(NUMBER_RANGES) | {
     "background_image", "image_fit", "gradient_direction",
 }
 DEFAULT_PREFERENCES = {"scale": 100, "density": "standard", "logs_expanded": False,
-                       "dismissed_update_version": "", "ui_mode": "simple"}
+                       "dismissed_update_version": "", "ui_mode": "simple", "home_style": "simple"}
 
 _COMMON = {
     "background_image": "", "background_opacity": 1.0,
@@ -236,6 +236,10 @@ def _preference_value(key: str, value: Any) -> Any:
     if key == "ui_mode":
         if value not in ("simple", "advanced"):
             raise ThemeError("界面模式请选择简单或高级。")
+        return value
+    if key == "home_style":
+        if value not in ("simple", "vivid"):
+            raise ThemeError("主页风格请选择简洁或炫酷。")
         return value
     raise ThemeError("未识别的阅读偏好：" + str(key))
 

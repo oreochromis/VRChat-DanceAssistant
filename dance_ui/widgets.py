@@ -7,7 +7,7 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QObject, QPoint, QPointF, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
@@ -80,6 +80,11 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QLabel[metricTone="success"] {{ color: {theme['success_color']}; background: {rgba(theme['success_color'], .09)}; }}
     QLabel[metricTone="warning"] {{ color: {theme['warning_color']}; background: {rgba(theme['warning_color'], .10)}; }}
     QLabel[metricTone="highlight"] {{ color: {text}; background: {rgba(theme['highlight'], .13)}; border: 1px solid {rgba(theme['highlight'], .35)}; }}
+    QFrame[metricCard="true"] {{ min-height: {px(78)}px; }}
+    QFrame[metricCard="true"][metricTone="success"] {{ border-top: 3px solid {theme['success_color']}; }}
+    QFrame[metricCard="true"][metricTone="warning"] {{ border-top: 3px solid {theme['warning_color']}; }}
+    QFrame[metricCard="true"][metricTone="highlight"] {{ border-top: 3px solid {theme['highlight']}; }}
+    QFrame[metricCard="true"][metricTone="secondary"] {{ border-top: 3px solid {theme['secondary_accent']}; }}
     QFrame#noticeBanner {{ border-radius: 8px; border: 1px solid {border}; }}
     QFrame#noticeBanner[noticeTone="error"] {{ background: {rgba(theme['error_color'], .10)}; color: {theme['error_color']}; }}
     QFrame#noticeBanner[noticeTone="success"] {{ background: {rgba(theme['success_color'], .08)}; color: {text}; }}
@@ -387,6 +392,73 @@ class Card(QFrame):
         self.box = QVBoxLayout(self)
         self.box.setContentsMargins(20, 14, 20, 14)
         self.box.setSpacing(10)
+
+
+class HeroCard(Card):
+    def __init__(self):
+        super().__init__(hero=True)
+        self.vivid = False
+        self.theme = None
+
+    def set_vivid(self, theme, vivid):
+        self.theme = theme
+        self.vivid = vivid
+        self.update()
+
+    def paintEvent(self, event):
+        if not self.vivid or not self.theme:
+            super().paintEvent(event)
+            return
+        theme = self.theme
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(1, 1, -1, -1)
+        radius = float(theme["radius"])
+        end = (rect.topRight() if theme["gradient_direction"] == "horizontal" else
+               rect.bottomLeft() if theme["gradient_direction"] == "vertical" else rect.bottomRight())
+        gradient = QLinearGradient(rect.topLeft(), end)
+        gradient.setColorAt(0, QColor(theme["accent"]).darker(115))
+        gradient.setColorAt(.58, QColor(theme["secondary_accent"]))
+        gradient.setColorAt(1, QColor(theme["hero_gradient"]))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(gradient)
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.save()
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        painter.setClipPath(path)
+        decoration = QColor(theme["primary_button_text"])
+        decoration.setAlpha(20)
+        painter.setBrush(decoration)
+        painter.drawEllipse(QRectF(rect.right() - 220, rect.top() - 105, 290, 290))
+        painter.drawEllipse(QRectF(rect.right() - 60, rect.bottom() - 90, 160, 160))
+        decoration.setAlpha(24)
+        painter.setPen(QPen(decoration, 1))
+        for offset in range(-60, 240, 42):
+            painter.drawLine(QPointF(rect.left() + offset, rect.bottom()),
+                             QPointF(rect.left() + offset + 170, rect.top()))
+        painter.restore()
+        painter.setPen(QPen(QColor(theme["border_color"]), max(1, theme["border_width"])))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(rect, radius, radius)
+
+
+class MetricCard(QFrame):
+    def __init__(self, caption, tone):
+        super().__init__()
+        self.setProperty("card", True)
+        self.setProperty("metricCard", True)
+        self.setProperty("metricTone", tone)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 11, 16, 12)
+        layout.setSpacing(2)
+        layout.addWidget(label(caption, muted=True))
+        self.value = label("0")
+        self.value.setProperty("number", True)
+        layout.addWidget(self.value)
+
+    def set_value(self, value):
+        self.value.setText(str(value))
 
 
 def label(text="", *, muted=False, heading=False, subheading=False, wrap=False) -> QLabel:

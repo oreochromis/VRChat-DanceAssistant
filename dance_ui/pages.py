@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __version__
-from .widgets import Card, label, page, section_title, status_label, table
+from .widgets import Card, HeroCard, MetricCard, label, page, section_title, status_label, table
 
 
 def button(text, callback, *, primary=False, link=False):
@@ -50,7 +50,8 @@ class Pages:
     def build_run_page(self):
         area, body, box = page()
         box.addWidget(section_title("现在播放", "当前歌曲、房间队列与缓存状态"))
-        hero = Card(hero=True)
+        self.hero = HeroCard()
+        hero = self.hero
         top, top_box = row()
         self.song_title = label("等待进入跳舞房", wrap=True)
         self.song_title.setProperty("heroTitle", True)
@@ -62,6 +63,19 @@ class Pages:
         self.song_meta = label("进入 PyPyDance / WannaDance 房间后，这里会显示当前歌曲、点歌人和缓存位置。", muted=True, wrap=True)
         hero.box.addWidget(self.song_meta)
         box.addWidget(hero)
+
+        self.vivid_metrics = QWidget()
+        metrics_box = QHBoxLayout(self.vivid_metrics)
+        metrics_box.setContentsMargins(0, 0, 0, 0)
+        metrics_box.setSpacing(12)
+        self.metric_hits = MetricCard("本地命中", "success")
+        self.metric_misses = MetricCard("回源", "warning")
+        self.metric_saved = MetricCard("节省流量", "highlight")
+        self.metric_queue = MetricCard("后续队列", "secondary")
+        for widget in (self.metric_hits, self.metric_misses, self.metric_saved, self.metric_queue):
+            metrics_box.addWidget(widget, 1)
+        self.vivid_metrics.hide()
+        box.addWidget(self.vivid_metrics)
 
         cooldown = Card()
         heading, heading_box = row(label("CoolDown · 休息一下", subheading=True))

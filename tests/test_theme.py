@@ -97,6 +97,15 @@ class ThemeStoreTests(unittest.TestCase):
         with self.assertRaises(ThemeError):
             self.store.change_preferences({"ui_mode": "expert"})
 
+    def test_home_style_defaults_persists_and_validates(self):
+        self.assertEqual(self.store.preferences["home_style"], "simple")
+        self.store.change_preferences({"home_style": "vivid"})
+        self.assertEqual(ThemeStore(self.store.root_dir).preferences["home_style"], "vivid")
+        self.store.select("dark")
+        self.assertEqual(self.store.preferences["home_style"], "vivid")
+        with self.assertRaises(ThemeError):
+            self.store.change_preferences({"home_style": "fancy"})
+
     def test_copy_rename_delete_and_undo_keep_original(self):
         self.store.change({"accent": "#123456"})
         original = self.store.active
@@ -293,7 +302,8 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(recovered.active["accent"], BUILTIN_THEMES["light"]["accent"])
         self.assertEqual(recovered.active["radius"], 24)
         self.assertEqual(recovered.preferences, {"scale": 100, "density": "compact", "logs_expanded": False,
-                                                 "dismissed_update_version": "", "ui_mode": "advanced"})  # 老存档无 ui_mode 键 -> 高级
+                                                 "dismissed_update_version": "", "ui_mode": "advanced",
+                                                 "home_style": "simple"})  # 老存档无 ui_mode 键 -> 高级
         self.assertEqual(recovered.active_id, "light")
         independent = ThemeStore(self.root / "another-store")
         self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)

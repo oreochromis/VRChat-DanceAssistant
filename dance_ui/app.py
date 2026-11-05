@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal, Slot, QUrl
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QHeaderView,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea,
@@ -294,7 +294,18 @@ class MainWindow(QMainWindow, Pages):
         self.download_table.verticalHeader().setDefaultSectionSize(self._row_height + round(8 * scale))
         self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.queue_table.setColumnWidth(3, round(118 * scale))
+        vivid = preferences.get("home_style", "simple") == "vivid"
+        self.hero.set_vivid(theme, vivid)
+        self.vivid_metrics.setVisible(vivid)
+        self.session_stats.setVisible(not vivid)
+        title_color = theme["primary_button_text"] if vivid else ""
+        self.song_title.setStyleSheet("color:" + title_color if vivid else "")
+        self.song_meta.setStyleSheet("color:" + title_color if vivid else "")
+        self.song_state.setStyleSheet(
+            f"color:{title_color}; background:rgba(255,255,255,38); border-radius:6px; padding:5px 9px;"
+            if vivid else "")
         self.render_downloads()
+        self.render_queue()
         self.resize_tables()
         self.logs_panel.setVisible(preferences["logs_expanded"])
         self.logs_toggle.setText("收起日志" if preferences["logs_expanded"] else "查看日志")
@@ -877,9 +888,14 @@ class MainWindow(QMainWindow, Pages):
                 self.append_log(f"已设置不再提醒版本 {tag}；该版本的更新信息仍可在 设置 → 更新 中查看。")
 
     def render_session(self, data):
-        self.session_hits.setText(f"本地命中 {data.get('hits', 0)} 首")
-        self.session_misses.setText(f"回源 {data.get('misses', 0)} 首")
-        self.session_saved.setText(f"节省流量 {bytes_text(data.get('saved_mb', 0) * 1024**2)}")
+        hits, misses = data.get("hits", 0), data.get("misses", 0)
+        saved = bytes_text(data.get("saved_mb", 0) * 1024**2)
+        self.session_hits.setText(f"本地命中 {hits} 首")
+        self.session_misses.setText(f"回源 {misses} 首")
+        self.session_saved.setText(f"节省流量 {saved}")
+        self.metric_hits.set_value(f"{hits} 首")
+        self.metric_misses.set_value(f"{misses} 首")
+        self.metric_saved.set_value(saved)
 
     def append_log(self, message):
         self.logs.appendPlainText(str(message))
@@ -935,8 +951,15 @@ class MainWindow(QMainWindow, Pages):
             set_status(self.song_state, "等待检测")
         upcoming = self._queue[1:]
         self.queue_table.setRowCount(len(upcoming))
+        vivid = self.store.preferences.get("home_style", "simple") == "vivid"
         for index, song in enumerate(upcoming):
-            self.queue_table.setItem(index, 0, self.cell(f"{index + 1:02}"))
+            number = self.cell(f"{index + 1:02}")
+            if vivid:
+                number.setForeground(QBrush(QColor(self.store.active["secondary_accent"])))
+                font = number.font()
+                font.setBold(True)
+                number.setFont(font)
+            self.queue_table.setItem(index, 0, number)
             self.queue_table.setItem(index, 1, self.cell(song.get("name", "未命名歌曲")))
             self.queue_table.setItem(index, 2, self.cell(song.get("player", "未知")))
             name, state = STATES.get(song.get("state_code"), (song.get("state", "待解析"), "muted"))
@@ -944,6 +967,7 @@ class MainWindow(QMainWindow, Pages):
             badge.setToolTip(str(song.get("error") or name))
             self.queue_table.setCellWidget(index, 3, badge)
         self.queue_count.setText(f"{len(upcoming)} 首排队中" if upcoming else "尚无排队歌曲")
+        self.metric_queue.set_value(f"{len(upcoming)} 首")
         self.queue_empty.setVisible(not upcoming)
         self.resize_tables()
 

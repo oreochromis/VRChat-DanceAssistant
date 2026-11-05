@@ -84,13 +84,13 @@ class ThemeUpgradeTests(unittest.TestCase):
         store = ThemeStore(path.parent)
         self.assertEqual(store.active_id, raw["active_theme"])
         self.assertEqual(store.themes, raw["themes"])
-        self.assertEqual(store.preferences, raw["preferences"])
+        self.assertEqual(store.preferences, {**raw["preferences"], "home_style": "simple"})
         self.assertEqual(path.read_bytes(), original_bytes)
         store.save()
         reopened = ThemeStore(path.parent)
         self.assertEqual(reopened.active, store.active)
         self.assertEqual(reopened.themes, store.themes)
-        self.assertEqual(reopened.preferences, raw["preferences"])
+        self.assertEqual(reopened.preferences, {**raw["preferences"], "home_style": "simple"})
 
     def test_sparse_documents_restore_builtin_defaults_without_inserting_preview(self):
         cases = (
@@ -117,7 +117,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         original = path.read_bytes()
         store = ThemeStore(path.parent)
         self.assertEqual(store.active, dict(self.previous, builtin=False))
-        self.assertEqual(store.preferences, raw["preferences"])
+        self.assertEqual(store.preferences, {**raw["preferences"], "home_style": "simple"})
         self.assertIsNone(store.background_path())
         self.assertEqual(store.warnings, [])
         self.assertEqual(path.read_bytes(), original)
@@ -157,7 +157,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         store.reset_current()
         self.assertEqual(store.active, dict(BUILTIN_THEMES["light"],
                                           id=previous["id"], name=previous["name"], builtin=False))
-        self.assertEqual(store.preferences, raw["preferences"])
+        self.assertEqual(store.preferences, {**raw["preferences"], "home_style": "simple"})
         self.assertTrue(store.undo())
         self.assertEqual(store.active, previous)
 

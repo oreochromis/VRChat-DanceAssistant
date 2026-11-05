@@ -565,6 +565,13 @@ class AppearancePage(QWidget):
         density.currentIndexChanged.connect(lambda index: self._change_preferences({"density": density.itemData(index)}) if index >= 0 else None)
         self._preference_fields["density"] = density
         self._row(section, "信息密度", density, "选择列表与面板的留白程度")
+        home_style = QComboBox()
+        for text, value in (("简洁", "simple"), ("炫酷 · 报告式主视觉", "vivid")):
+            home_style.addItem(text, value)
+        home_style.setAccessibleName("主页风格")
+        home_style.currentIndexChanged.connect(lambda index: self._change_preferences({"home_style": home_style.itemData(index)}) if index >= 0 else None)
+        self._preference_fields["home_style"] = home_style
+        self._row(section, "主页风格", home_style, "简洁保留当前布局；炫酷启用渐变装饰与大数字卡片")
         logs = QCheckBox("默认展开")
         logs.setAccessibleName("诊断日志默认展开")
         logs.toggled.connect(lambda checked: self._change_preferences({"logs_expanded": checked}))
