@@ -139,7 +139,7 @@ class PlayStatsPage(QWidget):
         heading.addWidget(self.vrcx_read_button)
         vrcx_card.box.addLayout(heading)
         vrcx_card.box.addWidget(label(
-            "按当前日期范围统计你与本机 VRCX 好友在同一房间的时间。只读本地数据，不读取账号凭据。",
+            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的同房时间。只读本地数据，不读取账号凭据。",
             muted=True, wrap=True))
         self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)
         self.vrcx_path.setToolTip(self.vrcx_path.text())

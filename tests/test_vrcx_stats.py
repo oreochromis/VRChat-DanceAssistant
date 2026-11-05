@@ -28,16 +28,19 @@ class VRCXStatsTests(unittest.TestCase):
         self.path = self.root / "VRCX.sqlite3"
         connection = sqlite3.connect(self.path)
         connection.executescript("""
-            CREATE TABLE gamelog_location (id INTEGER PRIMARY KEY, created_at TEXT, location TEXT);
+            CREATE TABLE gamelog_location (id INTEGER PRIMARY KEY, created_at TEXT, location TEXT, world_id TEXT);
             CREATE TABLE gamelog_join_leave (id INTEGER PRIMARY KEY, created_at TEXT, type TEXT,
                 display_name TEXT, location TEXT, user_id TEXT, time INTEGER);
             CREATE TABLE usr_test_friend_log_current (user_id TEXT PRIMARY KEY, display_name TEXT);
         """)
-        connection.executemany("INSERT INTO gamelog_location(created_at,location) VALUES(?,?)", [
-            (iso(9), "room-A"), (iso(12), "room-B"), (iso(14), "room-C"),
+        pypy, wd = sorted(vrcx_stats.DANCE_WORLD_IDS)
+        connection.executemany("INSERT INTO gamelog_location(created_at,location,world_id) VALUES(?,?,?)", [
+            (iso(9), "room-A", pypy), (iso(12), "room-B", wd), (iso(14), "room-C", pypy),
+            (iso(16), "room-other", "wrld_other"), (iso(17), "room-D", pypy),
         ])
         connection.executemany("INSERT INTO usr_test_friend_log_current VALUES(?,?)", [
             ("friend-1", "当前昵称一"), ("friend-2", "当前昵称二"), ("friend-3", "当前昵称三"),
+            ("friend-4", "其他地图好友"),
         ])
         events = [
             ("friend-1", "旧昵称", "OnPlayerJoined", iso(9, 30), "room-A"),
@@ -48,6 +51,7 @@ class VRCXStatsTests(unittest.TestCase):
             ("friend-2", "旧昵称二", "OnPlayerJoined", iso(10, 46), "room-A"),
             ("friend-2", "旧昵称二", "OnPlayerLeft", iso(10, 50), "room-A"),
             ("friend-3", "旧昵称三", "OnPlayerJoined", iso(12, 30), "room-B"),
+            ("friend-4", "其他地图好友", "OnPlayerJoined", iso(16, 30), "room-other"),
             ("not-friend", "路人", "OnPlayerJoined", iso(10, 30), "room-A"),
             ("not-friend", "路人", "OnPlayerLeft", iso(11, 30), "room-A"),
             ("friend-1", "缺房间", "OnPlayerJoined", iso(11, 40), ""),
@@ -79,6 +83,10 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read(end=15)
         third = next(item for item in result["friends"] if item["user_id"] == "friend-3")
         self.assertEqual(third["seconds"], 5400)
+
+    def test_non_dance_worlds_are_excluded(self):
+        result = self.read(end=18)
+        self.assertNotIn("friend-4", {item["user_id"] for item in result["friends"]})
 
     def test_date_range_and_missing_records_are_handled(self):
         partial = vrcx_stats.read_co_room_stats(self.path, ts(10), ts(10) + 15 * 60)

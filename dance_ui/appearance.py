@@ -360,7 +360,7 @@ class AppearancePage(QWidget):
         right = QVBoxLayout()
         right.setSpacing(10)
         top = QHBoxLayout()
-        label = QLabel("主题预设")
+        label = QLabel("主题")
         label.setProperty("strong", True)
         top.addWidget(label)
         top.addStretch(1)
@@ -371,6 +371,16 @@ class AppearancePage(QWidget):
         self.theme_combo.setAccessibleName("选择主题")
         self.theme_combo.currentIndexChanged.connect(self._select_theme)
         right.addWidget(self.theme_combo)
+        home_row = QHBoxLayout()
+        home_row.addWidget(QLabel("主页风格"))
+        home_style = QComboBox()
+        for text, value in (("简洁", "simple"), ("炫酷 · 报告式主视觉", "vivid")):
+            home_style.addItem(text, value)
+        home_style.setAccessibleName("主页风格")
+        home_style.currentIndexChanged.connect(lambda index: self._change_preferences({"home_style": home_style.itemData(index)}) if index >= 0 else None)
+        self._preference_fields["home_style"] = home_style
+        home_row.addWidget(home_style, 1)
+        right.addLayout(home_row)
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("名称"))
         self.name_edit = QLineEdit()
@@ -394,7 +404,7 @@ class AppearancePage(QWidget):
         sharing.addWidget(_button("导出配色", self._export_theme))
         sharing.addStretch(1)
         right.addLayout(sharing)
-        right.addWidget(_muted("先选择预设；需要微调时，再展开下方的背景、颜色等分组。"))
+        right.addWidget(_muted("选择主题和主页风格；需要微调时，再展开下方的背景、颜色等分组。"))
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
 
@@ -565,13 +575,6 @@ class AppearancePage(QWidget):
         density.currentIndexChanged.connect(lambda index: self._change_preferences({"density": density.itemData(index)}) if index >= 0 else None)
         self._preference_fields["density"] = density
         self._row(section, "信息密度", density, "选择列表与面板的留白程度")
-        home_style = QComboBox()
-        for text, value in (("简洁", "simple"), ("炫酷 · 报告式主视觉", "vivid")):
-            home_style.addItem(text, value)
-        home_style.setAccessibleName("主页风格")
-        home_style.currentIndexChanged.connect(lambda index: self._change_preferences({"home_style": home_style.itemData(index)}) if index >= 0 else None)
-        self._preference_fields["home_style"] = home_style
-        self._row(section, "主页风格", home_style, "简洁保留当前布局；炫酷启用渐变装饰与大数字卡片")
         logs = QCheckBox("默认展开")
         logs.setAccessibleName("诊断日志默认展开")
         logs.toggled.connect(lambda checked: self._change_preferences({"logs_expanded": checked}))

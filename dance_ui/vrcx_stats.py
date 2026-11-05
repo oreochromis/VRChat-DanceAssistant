@@ -10,6 +10,10 @@ from pathlib import Path
 import dance_cache as core
 
 SETTINGS_FILENAME = "vrcx-settings.json"
+DANCE_WORLD_IDS = frozenset({
+    "wrld_f20326da-f1ac-45fc-a062-609723b097b1",
+    "wrld_8ac0b9db-17ae-44af-9d20-7d8ab94a9129",
+})
 
 
 def default_vrcx_path() -> Path:
@@ -100,15 +104,15 @@ def _friends(connection, table):
 def _own_intervals(rows, observed_end):
     intervals = {}
     events = []
-    for created_at, location in rows:
+    for created_at, location, world_id in rows:
         try:
-            events.append((_timestamp(created_at), str(location or "")))
+            events.append((_timestamp(created_at), str(location or ""), str(world_id or "")))
         except (ValueError, OverflowError, OSError):
             continue
     events.sort(key=lambda item: item[0])
-    for index, (start, location) in enumerate(events):
+    for index, (start, location, world_id) in enumerate(events):
         end = events[index + 1][0] if index + 1 < len(events) else observed_end
-        if location and end > start:
+        if location and world_id in DANCE_WORLD_IDS and end > start:
             intervals.setdefault(location, []).append((start, end))
     return intervals
 
@@ -179,7 +183,7 @@ def read_co_room_stats(path, start_ts, end_ts):
         friend_table = _friend_table(connection)
         friends = _friends(connection, friend_table)
         location_rows = connection.execute(
-            "SELECT created_at, location FROM gamelog_location ORDER BY created_at, id").fetchall()
+            "SELECT created_at, location, world_id FROM gamelog_location ORDER BY created_at, id").fetchall()
         join_rows = connection.execute(
             "SELECT user_id, display_name, type, created_at, location FROM gamelog_join_leave "
             "ORDER BY created_at, id").fetchall()
