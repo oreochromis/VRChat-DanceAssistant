@@ -139,7 +139,7 @@ def mapping_path():
 
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
-                  "play_history.jsonl", "vrcx-settings.json")
+                  "play_history.jsonl", "played_history.jsonl", "vrcx-settings.json", "vrcx-stats.json")
 
 
 def set_storage_mode(mode):
@@ -400,9 +400,11 @@ def _note_session_miss(filename):
 # ---------------- 点歌历史（排行/年度报告的原始数据，JSONL 逐行追加） ----------------
 
 HISTORY_FILENAME = "play_history.jsonl"
+PLAYED_HISTORY_FILENAME = "played_history.jsonl"
 
 _history_lock = threading.Lock()
 _history_last_keys = set()  # 上一帧队列的 (kind, id, player) 集合，用于 diff 出"新点"的歌
+_last_playing_key = None
 
 
 def history_path():
@@ -446,6 +448,59 @@ def record_queue_snapshot(items):
                     f.write(json.dumps(e, ensure_ascii=False) + "\n")
         except OSError as e:
             log(f"点歌历史写入失败: {e}")
+
+
+def played_history_path():
+    return os.path.join(data_dir(), PLAYED_HISTORY_FILENAME)
+
+
+def record_playing_snapshot(items):
+    """只在队首当前歌曲变化时记录实际播放；空队列允许之后同曲重新计入。"""
+    global _last_playing_key
+    if not items or not isinstance(items[0], dict):
+        _last_playing_key = None
+        return
+    current = items[0]
+    sid = current.get("songNum", 0)
+    if isinstance(sid, bool) or not isinstance(sid, int) or sid <= 0:
+        _last_playing_key = None
+        return
+    kind = "wd" if current.get("wd") else "pypy"
+    player = str(current.get("playerName") or "").strip()
+    key = (kind, sid, player)
+    if key == _last_playing_key:
+        return
+    _last_playing_key = key
+    entry = {"ts": time.time(), "kind": kind, "id": sid,
+             "name": str(current.get("videoName") or "").strip(), "player": player}
+    try:
+        os.makedirs(data_dir(), exist_ok=True)
+        with open(played_history_path(), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError as e:
+        log(f"实际播放记录写入失败: {e}")
+
+
+def self_played_count(start_ts, end_ts, self_names):
+    """统计自己点播且已经实际开始播放的次数；没有自己身份信息时不猜测。"""
+    names = {str(name).strip() for name in (self_names or []) if str(name).strip()}
+    if not names:
+        return 0
+    total = 0
+    try:
+        with open(played_history_path(), "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except OSError:
+        return 0
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            ts = float(entry["ts"])
+        except (ValueError, TypeError, KeyError):
+            continue
+        if start_ts <= ts < end_ts and str(entry.get("player") or "").strip() in names:
+            total += 1
+    return total
 
 
 def play_history_stats(start_ts=None, end_ts=None, kind=None):
@@ -2959,10 +3014,11 @@ _wd_last_queue = None    # WannaDance 最近一次排队列表
 
 
 def _reset_wd_state():
-    """服务停止时清空 WannaDance 队列状态，避免下次启动/换房间后残留上次会话的当前歌曲"""
-    global _wd_current_song, _wd_last_queue
+    """服务停止时清空当前歌曲与实际播放去重状态，避免残留到下次启动"""
+    global _wd_current_song, _wd_last_queue, _last_playing_key
     _wd_current_song = None
     _wd_last_queue = None
+    _last_playing_key = None
 
 
 def extract_queue_items(lines):
@@ -3429,6 +3485,7 @@ class LogWatcher(threading.Thread):
     def _on_queue(self, items):
         global _last_queue_items
         record_queue_snapshot(items)
+        record_playing_snapshot(items)
         with _queue_lock:
             _last_queue_items = copy.deepcopy(items or [])
         if not items:

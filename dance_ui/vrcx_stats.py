@@ -1,15 +1,18 @@
-"""只读 VRCX 本地数据库，计算当前好友与用户在每个房间实例里的同房时长。"""
+"""只读 VRCX 本地数据库，计算当前好友与用户在每个房间实例里的共同游玩时长。"""
 from __future__ import annotations
 
+import copy
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime
 from pathlib import Path
 
 import dance_cache as core
 
 SETTINGS_FILENAME = "vrcx-settings.json"
+STATS_FILENAME = "vrcx-stats.json"
 DANCE_WORLD_IDS = frozenset({
     "wrld_f20326da-f1ac-45fc-a062-609723b097b1",
     "wrld_8ac0b9db-17ae-44af-9d20-7d8ab94a9129",
@@ -42,13 +45,54 @@ def resolve_vrcx_path(path=None) -> Path:
     return saved.resolve()
 
 
-def save_vrcx_path(path) -> None:
+def _update_settings(values) -> None:
     target = Path(core.data_dir()) / SETTINGS_FILENAME
     target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        raw = json.loads(target.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raw = {}
+    except (OSError, ValueError):
+        raw = {}
+    raw.update(values)
     temporary = target.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"path": str(Path(path).resolve())}, ensure_ascii=False, indent=2) + "\n",
-                         encoding="utf-8")
+    temporary.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, target)
+
+
+def save_vrcx_path(path) -> None:
+    _update_settings({"path": str(Path(path).resolve())})
+
+
+def saved_self_name() -> str:
+    try:
+        raw = json.loads((Path(core.data_dir()) / SETTINGS_FILENAME).read_text(encoding="utf-8"))
+        value = raw.get("self_name")
+        return value.strip() if isinstance(value, str) else ""
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
+def save_self_name(name) -> None:
+    _update_settings({"self_name": str(name).strip()})
+
+
+def save_vrcx_stats(result) -> None:
+    payload = copy.deepcopy(result)
+    payload["synced_at"] = time.time()
+    target = Path(core.data_dir()) / STATS_FILENAME
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, target)
+
+
+def load_vrcx_stats():
+    try:
+        result = json.loads((Path(core.data_dir()) / STATS_FILENAME).read_text(encoding="utf-8"))
+        return result if isinstance(result, dict) and isinstance(result.get("friends"), list) else None
+    except (OSError, ValueError, TypeError):
+        return None
 
 
 def _timestamp(value) -> float:
@@ -115,6 +159,22 @@ def _own_intervals(rows, observed_end):
         if location and world_id in DANCE_WORLD_IDS and end > start:
             intervals.setdefault(location, []).append((start, end))
     return intervals
+
+
+def _daily_play_stats(own_intervals, start_ts, end_ts):
+    days = {}
+    for intervals in own_intervals.values():
+        for start, end in intervals:
+            cursor = max(start, start_ts)
+            end = min(end, end_ts)
+            while cursor < end:
+                current = datetime.fromtimestamp(cursor)
+                day_start = datetime(current.year, current.month, current.day).timestamp()
+                segment_end = min(end, day_start + 86400)
+                day = current.strftime("%Y-%m-%d")
+                days[day] = days.get(day, 0) + max(0, segment_end - cursor)
+                cursor = segment_end
+    return [{"day": day, "seconds": round(days[day])} for day in sorted(days)]
 
 
 def _player_intervals(rows, friends, observed_end):
@@ -217,11 +277,17 @@ def read_co_room_stats(path, start_ts, end_ts):
                 "sessions": len(merged), "last_ts": max(end for _, end in merged),
             })
     friends_stats.sort(key=lambda item: (-item["seconds"], item["name"].casefold()))
+    daily_play = _daily_play_stats(own, start_ts, end_ts)
+    self_id = friend_table.removesuffix("_friend_log_current")
+    self_names = sorted({str(row[1]).strip() for row in join_rows
+                         if row[0] == self_id and str(row[1] or "").strip()})
     return {
         "path": str(source), "friends": friends_stats,
         "friend_count": len(friends), "matched_friends": len(friends_stats),
         "skipped_events": skipped, "observed_end": observed_end,
         "start_ts": start_ts, "end_ts": end_ts,
+        "self_names": self_names, "daily_play": daily_play,
+        "total_play_seconds": round(sum(item["seconds"] for item in daily_play)),
     }
 
 

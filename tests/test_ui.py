@@ -296,7 +296,6 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(image.isNull())
         self.assertEqual(image.width(), report.canvas.width() * 2)
         self.assertGreater(image.height(), 2000)
-        full_height = report.canvas._report_height(900)
         report.close()
         QApplication.processEvents()
         self.assertIsNone(stats._report)
@@ -307,7 +306,15 @@ class UIIntegrationTests(unittest.TestCase):
             "total": 1, "songs": [{"rank": 1, "id": 1, "kind": "pypy", "name": "Single", "count": 1}],
             "players": [], "months": [{"month": f"{year}-01", "count": 1}], "active_days": 1,
         }, QDate(year, 1, 1), QDate.currentDate(), "PyPyDance", store.active)
-        self.assertLess(sparse._report_height(900), full_height)
+        rich_data = copy.deepcopy(sparse.data)
+        rich_data["songs"].append({"rank": 2, "id": 2, "kind": "wd", "name": "More", "count": 1})
+        rich_data["vrcx"] = {"daily_play": [
+            {"day": f"{year}-01-01", "seconds": 1800},
+            {"day": f"{year}-01-02", "seconds": 2400},
+        ]}
+        rich = ReportCanvas(rich_data, QDate(year, 1, 1), QDate.currentDate(), "全部来源", store.active)
+        self.assertLess(sparse._report_height(900), rich._report_height(900))
+        rich.close()
         sparse.resize(900, sparse._report_height(900))
         self.assertFalse(sparse.grab().isNull())
         sparse.close()
@@ -317,6 +324,7 @@ class UIIntegrationTests(unittest.TestCase):
         stats = window.play_stats_page
         window.navigate(2)
         self.assertTrue(stats.vrcx_table.isHidden())
+        self.assertEqual(stats.vrcx_read_button.text(), "从VRCX同步最新数据")
         QTest.mouseClick(stats.vrcx_read_button, Qt.MouseButton.LeftButton)
         self.assertEqual(stats.vrcx_table.rowCount(), 2)
         self.assertEqual(stats.vrcx_table.item(0, 0).text(), "1")
@@ -326,6 +334,19 @@ class UIIntegrationTests(unittest.TestCase):
         stats.open_report()
         report = stats._report
         self.assertEqual(report.canvas.vrcx_friends[0]["name"], "小林")
+        self.assertEqual(report.canvas.self_played, 30)
+        self.assertEqual(report.canvas.total_play_seconds, 45000)
+        self.assertEqual(report.canvas.trend_mode, "day")
+        self.assertEqual(len(report.canvas.trend), 10)
+        report.title_edit.setText("我的自定义舞蹈报告")
+        self.assertEqual(report.canvas.title, "我的自定义舞蹈报告")
+        report.summary_combo.setCurrentIndex(report.summary_combo.findData("day"))
+        self.assertEqual(report.canvas.summary_mode, "day")
+        report.trend_combo.setCurrentIndex(report.trend_combo.findData("month"))
+        self.assertEqual(report.canvas.trend_mode, "month")
+        self.assertEqual(sum(item["seconds"] for item in report.canvas.trend), 45000)
+        report.trend_combo.setCurrentIndex(report.trend_combo.findData("year"))
+        self.assertEqual(sum(item["seconds"] for item in report.canvas.trend), 45000)
         self.assertFalse(hasattr(report.canvas, "_draw_closing"))
         self.assertFalse(report.canvas.grab().isNull())
         report.close()

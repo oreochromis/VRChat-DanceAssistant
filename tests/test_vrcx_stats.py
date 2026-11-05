@@ -52,6 +52,8 @@ class VRCXStatsTests(unittest.TestCase):
             ("friend-2", "旧昵称二", "OnPlayerLeft", iso(10, 50), "room-A"),
             ("friend-3", "旧昵称三", "OnPlayerJoined", iso(12, 30), "room-B"),
             ("friend-4", "其他地图好友", "OnPlayerJoined", iso(16, 30), "room-other"),
+            ("usr_test", "本人旧昵称", "OnPlayerJoined", iso(9), "room-A"),
+            ("usr_test", "本人旧昵称", "OnPlayerLeft", iso(11, 50), "room-A"),
             ("not-friend", "路人", "OnPlayerJoined", iso(10, 30), "room-A"),
             ("not-friend", "路人", "OnPlayerLeft", iso(11, 30), "room-A"),
             ("friend-1", "缺房间", "OnPlayerJoined", iso(11, 40), ""),
@@ -88,6 +90,19 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read(end=18)
         self.assertNotIn("friend-4", {item["user_id"] for item in result["friends"]})
 
+    def test_daily_play_self_names_and_sync_result_persistence(self):
+        result = self.read()
+        self.assertEqual(result["total_play_seconds"], 7200)
+        self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 7200}])
+        self.assertEqual(result["self_names"], ["本人旧昵称"])
+        with patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "cached")):
+            vrcx_stats.save_vrcx_stats(result)
+            loaded = vrcx_stats.load_vrcx_stats()
+            self.assertEqual(loaded["friends"], result["friends"])
+            self.assertEqual(loaded["daily_play"], result["daily_play"])
+            self.assertGreater(loaded["synced_at"], 0)
+            self.assertTrue((self.root / "cached" / vrcx_stats.STATS_FILENAME).is_file())
+
     def test_date_range_and_missing_records_are_handled(self):
         partial = vrcx_stats.read_co_room_stats(self.path, ts(10), ts(10) + 15 * 60)
         self.assertEqual(partial["friends"][0]["seconds"], 900)
@@ -101,6 +116,10 @@ class VRCXStatsTests(unittest.TestCase):
             vrcx_stats.save_vrcx_path(self.path)
             self.assertEqual(vrcx_stats.saved_vrcx_path(), self.path)
             self.assertEqual(vrcx_stats.resolve_vrcx_path(), self.path)
+            vrcx_stats.save_self_name("本人名称")
+            self.assertEqual(vrcx_stats.saved_self_name(), "本人名称")
+            vrcx_stats.save_vrcx_path(self.path)
+            self.assertEqual(vrcx_stats.saved_self_name(), "本人名称")
             saved = json.loads((self.root / "settings" / vrcx_stats.SETTINGS_FILENAME).read_text(encoding="utf-8"))
             self.assertEqual(saved["path"], str(self.path))
         with patch.dict(os.environ, {"APPDATA": str(self.root)}):

@@ -6,12 +6,16 @@ from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QMessageBox,
+    QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QLineEdit, QMessageBox,
     QProgressBar, QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
+import dance_cache as core
 from .pages import button, field
-from .vrcx_stats import format_duration, resolve_vrcx_path
+from .vrcx_stats import (
+    format_duration, load_vrcx_stats, resolve_vrcx_path, save_self_name,
+    save_vrcx_stats, saved_self_name,
+)
 from .widgets import Card, label, page, section_title, table
 
 _KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
@@ -131,16 +135,23 @@ class PlayStatsPage(QWidget):
 
         vrcx_card = Card()
         heading = QHBoxLayout()
-        heading.addWidget(label("好友同房时长", subheading=True))
+        heading.addWidget(label("好友共同游玩时长", subheading=True))
         heading.addStretch()
         self.vrcx_choose_button = button("选择数据库", self.choose_vrcx_database, link=True)
-        self.vrcx_read_button = button("读取 VRCX 统计", self.read_vrcx_stats, primary=True)
+        self.vrcx_read_button = button("从VRCX同步最新数据", self.read_vrcx_stats, primary=True)
         heading.addWidget(self.vrcx_choose_button)
         heading.addWidget(self.vrcx_read_button)
         vrcx_card.box.addLayout(heading)
         vrcx_card.box.addWidget(label(
-            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的同房时间。只读本地数据，不读取账号凭据。",
+            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的共同游玩时间。只读本地数据，不读取账号凭据。",
             muted=True, wrap=True))
+        self_row = QHBoxLayout()
+        self_row.addWidget(label("本人显示名称", muted=True))
+        self.self_name_input = QLineEdit(saved_self_name())
+        self.self_name_input.setPlaceholderText("用于“本人点播且已播放”统计，需与游戏内名称一致")
+        self.self_name_input.editingFinished.connect(self._save_self_name)
+        self_row.addWidget(self.self_name_input, 1)
+        vrcx_card.box.addLayout(self_row)
         self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)
         self.vrcx_path.setToolTip(self.vrcx_path.text())
         vrcx_card.box.addWidget(self.vrcx_path)
@@ -151,8 +162,8 @@ class PlayStatsPage(QWidget):
         vrcx_card.box.addWidget(self.vrcx_loading)
         self.vrcx_summary = label("尚未读取。VRCX 未运行或没有记录的时段无法统计。", muted=True, wrap=True)
         vrcx_card.box.addWidget(self.vrcx_summary)
-        self.vrcx_table = table(["排名", "好友", "同房时长", "同房次数", "最近同房"], 1)
-        self.vrcx_table.setAccessibleName("好友同房时长排行")
+        self.vrcx_table = table(["排名", "好友", "共同游玩时长", "共同游玩次数", "最近共同游玩"], 1)
+        self.vrcx_table.setAccessibleName("好友共同游玩时长排行")
         self.vrcx_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.vrcx_table.hide()
         vrcx_card.box.addWidget(self.vrcx_table)
@@ -161,6 +172,10 @@ class PlayStatsPage(QWidget):
 
         self.controller.result.connect(self._on_result)
         self.controller.error.connect(self._on_error)
+        if not self.controller.demo:
+            cached = load_vrcx_stats()
+            if cached:
+                self._show_vrcx_stats(cached)
 
     def resizeEvent(self, event):
         self._layout_filters()
@@ -189,6 +204,13 @@ class PlayStatsPage(QWidget):
     def _preset_all(self):
         self.start.setDate(QDate(2000, 1, 1))
         self.end.setDate(QDate.currentDate())
+
+    def _save_self_name(self):
+        name = self.self_name_input.text().strip()
+        save_self_name(name)
+        if self._vrcx_data and not self._vrcx_data.get("self_names") and name and not self.controller.demo:
+            self._vrcx_data["self_names"] = [name]
+            save_vrcx_stats(self._vrcx_data)
 
     def read_vrcx_stats(self, path=None):
         start_date, end_date = self.start.date(), self.end.date()
@@ -219,10 +241,10 @@ class PlayStatsPage(QWidget):
         if friends:
             top = friends[0]
             self.vrcx_summary.setText(
-                f"最常与你同房的好友：{top.get('name') or '未知'} · {format_duration(top.get('seconds', 0))}"
+                f"最常与你共同游玩的好友：{top.get('name') or '未知'} · {format_duration(top.get('seconds', 0))}"
                 f"；共统计到 {len(friends)} 位好友。")
         else:
-            self.vrcx_summary.setText("该日期范围没有可统计的好友同房记录；VRCX 未运行的时段无法补齐。")
+            self.vrcx_summary.setText("该日期范围没有可统计的好友共同游玩记录；VRCX 未运行的时段无法补齐。")
         self.vrcx_table.setSortingEnabled(False)
         self.vrcx_table.setRowCount(0)
         for friend in friends[:10]:
@@ -251,12 +273,6 @@ class PlayStatsPage(QWidget):
             self.loading.hide()
             self.summary.setText("开始日期晚于结束日期，请调整日期范围。")
             return
-        start_ts, end_ts = _day_start(start_date), _day_start(end_date) + 86400
-        if self._vrcx_data and (self._vrcx_data.get("start_ts") != start_ts
-                                or self._vrcx_data.get("end_ts") != end_ts):
-            self._vrcx_data = None
-            self.vrcx_table.hide()
-            self.vrcx_summary.setText("日期范围已变化，请重新读取 VRCX 统计。")
         self.summary.setText("正在读取点歌历史…")
         self.loading.show()
         self.export_button.setEnabled(False)
@@ -328,8 +344,11 @@ class PlayStatsPage(QWidget):
         if self._report is not None:
             self._report.close()
         report_data = dict(self._report_data)
-        if self._vrcx_data:
+        start_ts, end_ts = _day_start(self.start.date()), _day_start(self.end.date()) + 86400
+        if self._vrcx_data and self._vrcx_data.get("start_ts") == start_ts and self._vrcx_data.get("end_ts") == end_ts:
             report_data["vrcx"] = self._vrcx_data
+        report_data["self_played"] = 30 if self.controller.demo else core.self_played_count(
+            start_ts, end_ts, (report_data.get("vrcx") or {}).get("self_names") or [])
         self._report = PlayReportDialog(
             self, report_data, self.start.date(), self.end.date(),
             self.source.currentText(), self._main.store.active)

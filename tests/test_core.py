@@ -316,7 +316,25 @@ class CoreTests(unittest.TestCase):
 
     def test_play_history_jsonl_migrates_with_storage_files(self):
         self.assertIn("play_history.jsonl", self.dc._STORAGE_FILES)
+        self.assertIn("played_history.jsonl", self.dc._STORAGE_FILES)
         self.assertIn("vrcx-settings.json", self.dc._STORAGE_FILES)
+        self.assertIn("vrcx-stats.json", self.dc._STORAGE_FILES)
+
+    def test_actual_play_history_deduplicates_current_song_and_filters_self(self):
+        first = {"songNum": 1, "videoName": "A", "playerName": "me"}
+        second = {"songNum": 2, "videoName": "B", "playerName": "other"}
+        self.dc.record_playing_snapshot([first])
+        self.dc.record_playing_snapshot([first])
+        self.dc.record_playing_snapshot([second])
+        self.dc.record_playing_snapshot([])
+        self.dc.record_playing_snapshot([first])
+        with open(self.dc.played_history_path(), encoding="utf-8") as f:
+            lines = [json.loads(line) for line in f if line.strip()]
+        self.assertEqual([entry["id"] for entry in lines], [1, 2, 1])
+        now = self.dc.time.time()
+        self.assertEqual(self.dc.self_played_count(now - 2, now + 2, ["me"]), 2)
+        self.assertEqual(self.dc.self_played_count(now - 2, now + 2, []), 0)
+        self.assertEqual(self.dc.self_played_count(now - 2, now + 2, ["other"]), 1)
 
     def test_wd_queue_inserts_current_song_from_update_state(self):
         # WannaDance 的 queue info 开播即把当前歌曲移出队列，需从 UpdateState 行插回队首

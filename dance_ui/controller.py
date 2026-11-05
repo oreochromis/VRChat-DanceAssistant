@@ -388,6 +388,9 @@ class CoreController(QObject):
 
     def vrcx_stats(self, start_ts, end_ts, path=None):
         if self.demo:
+            today = QDate.currentDate()
+            daily_play = [{"day": today.addDays(index - 9).toString("yyyy-MM-dd"),
+                           "seconds": 1800 + index * 600} for index in range(10)]
             self.result.emit("vrcx_stats", {
                 "path": "演示 VRCX 数据", "friend_count": 2, "matched_friends": 2,
                 "friends": [
@@ -396,6 +399,8 @@ class CoreController(QObject):
                     {"user_id": "demo-2", "name": "Momo", "seconds": 18900, "sessions": 9,
                      "last_ts": end_ts - 172800},
                 ], "start_ts": start_ts, "end_ts": end_ts, "demo": True,
+                "self_names": ["小林"], "daily_play": daily_play,
+                "total_play_seconds": sum(item["seconds"] for item in daily_play),
             })
             return
 
@@ -403,7 +408,10 @@ class CoreController(QObject):
             from . import vrcx_stats as vrcx
             source = vrcx.resolve_vrcx_path(path)
             result = vrcx.read_co_room_stats(source, start_ts, end_ts)
+            if not result.get("self_names") and vrcx.saved_self_name():
+                result["self_names"] = [vrcx.saved_self_name()]
             vrcx.save_vrcx_path(source)
+            vrcx.save_vrcx_stats(result)
             return result
 
         self._run("vrcx_stats", read)
