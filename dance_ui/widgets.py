@@ -75,7 +75,11 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         background: {card}; border: {theme['border_width']}px solid {border};
         border-radius: {radius}px;
     }}
-    QFrame[hero="true"] {{ background: qlineargradient(x1: {gradient_coords.split(',')[0]}, y1: {gradient_coords.split(',')[1]}, x2: {gradient_coords.split(',')[2]}, y2: {gradient_coords.split(',')[3]}, stop: 0 {rgba(accent, .10)}, stop: 1 {rgba(theme['hero_gradient'], theme['hero_gradient_opacity'])}); }}
+    QFrame[hero="true"] {{ background: qlineargradient(x1: {gradient_coords.split(',')[0]}, y1: {gradient_coords.split(',')[1]}, x2: {gradient_coords.split(',')[2]}, y2: {gradient_coords.split(',')[3]}, stop: 0 {rgba(accent, .10)}, stop: 0.55 {rgba(theme['secondary_accent'], .08)}, stop: 1 {rgba(theme['hero_gradient'], theme['hero_gradient_opacity'])}); }}
+    QLabel[metricTone] {{ border-radius: 6px; padding: 4px 8px; font-weight: 600; }}
+    QLabel[metricTone="success"] {{ color: {theme['success_color']}; background: {rgba(theme['success_color'], .09)}; }}
+    QLabel[metricTone="warning"] {{ color: {theme['warning_color']}; background: {rgba(theme['warning_color'], .10)}; }}
+    QLabel[metricTone="highlight"] {{ color: {text}; background: {rgba(theme['highlight'], .13)}; border: 1px solid {rgba(theme['highlight'], .35)}; }}
     QFrame#noticeBanner {{ border-radius: 8px; border: 1px solid {border}; }}
     QFrame#noticeBanner[noticeTone="error"] {{ background: {rgba(theme['error_color'], .10)}; color: {theme['error_color']}; }}
     QFrame#noticeBanner[noticeTone="success"] {{ background: {rgba(theme['success_color'], .08)}; color: {text}; }}
@@ -163,7 +167,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         background: {rgba(theme['text_secondary'], .16)}; border: none; border-radius: 4px;
         min-height: 8px; max-height: 8px;
     }}
-    QProgressBar::chunk {{ background: {accent}; border-radius: 4px; }}
+    QProgressBar::chunk {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0, stop: 0 {accent}, stop: 1 {theme['secondary_accent']}); border-radius: 4px; }}
     QPlainTextEdit {{ background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 8)}px; padding: 8px; }}
     QSlider::groove:horizontal {{ height: 5px; background: {rgba(theme['text_secondary'], .20)}; border-radius: 2px; }}
     QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}

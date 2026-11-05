@@ -209,6 +209,15 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.banner.close_button, Qt.MouseButton.LeftButton)
         self.assertFalse(window.banner.isVisible())
 
+    def test_session_metrics_use_distinct_semantic_colors(self):
+        window, _, _ = self.make_window()
+        self.assertEqual(window.session_hits.text(), "本地命中 12 首")
+        self.assertEqual(window.session_misses.text(), "回源 3 首")
+        self.assertIn("1.5 GB", window.session_saved.text())
+        self.assertEqual(window.session_hits.property("metricTone"), "success")
+        self.assertEqual(window.session_misses.property("metricTone"), "warning")
+        self.assertEqual(window.session_saved.property("metricTone"), "highlight")
+
     def test_stats_page_loads_demo_history_only_when_opened(self):
         window, controller, _ = self.make_window()
         stats = window.play_stats_page
@@ -1013,15 +1022,15 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("secondary_accent", editor._fields)
         self.assertIn("button_hover_background", editor._fields)
         self.assertIn("gradient_direction", editor._fields)
-        editor.preset_combo.setCurrentIndex(editor.preset_combo.findData("arcade"))
-        QTest.mouseClick(editor.apply_preset_button, Qt.MouseButton.LeftButton)
+        self.assertFalse(hasattr(editor, "preset_combo"))
+        editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("preset:arcade"))
         self.wait_until(lambda: window.backdrop.theme.get("accent") == "#24BFD0")
         self.assertFalse(store.active["builtin"])
         self.assertIn("light", {theme["id"] for theme in store.themes})
         self.assertFalse(editor.contrast_status.isVisible())
         self.assertEqual(window.backdrop.theme["secondary_accent"], "#8A68D8")
         generated_id, theme_count = store.active_id, len(store.themes)
-        QTest.mouseClick(editor.apply_preset_button, Qt.MouseButton.LeftButton)
+        editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("preset:arcade"))
         self.assertEqual(store.active_id, generated_id)
         self.assertEqual(len(store.themes), theme_count)
         editor.theme_combo.setCurrentIndex(editor.theme_combo.findData("dark"))

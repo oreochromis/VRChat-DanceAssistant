@@ -876,9 +876,9 @@ class MainWindow(QMainWindow, Pages):
                 self.append_log(f"已设置不再提醒版本 {tag}；该版本的更新信息仍可在 设置 → 更新 中查看。")
 
     def render_session(self, data):
-        self.session_stats.setText(
-            f"本次会话：本地命中 {data.get('hits', 0)} 首 · 回源 {data.get('misses', 0)} 首"
-            f" · 节省流量 {bytes_text(data.get('saved_mb', 0) * 1024**2)}")
+        self.session_hits.setText(f"本地命中 {data.get('hits', 0)} 首")
+        self.session_misses.setText(f"回源 {data.get('misses', 0)} 首")
+        self.session_saved.setText(f"节省流量 {bytes_text(data.get('saved_mb', 0) * 1024**2)}")
 
     def append_log(self, message):
         self.logs.appendPlainText(str(message))

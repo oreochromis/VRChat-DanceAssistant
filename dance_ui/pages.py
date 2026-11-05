@@ -109,7 +109,20 @@ class Pages:
         self.downloads_card.hide()
         box.addWidget(self.downloads_card)
 
-        self.session_stats = label("本次会话：本地命中 0 首 · 回源 0 首 · 节省流量 0 MB", muted=True, wrap=True)
+        self.session_stats = QWidget()
+        session_box = QHBoxLayout(self.session_stats)
+        session_box.setContentsMargins(0, 0, 0, 0)
+        session_box.setSpacing(8)
+        session_box.addWidget(label("本次会话", muted=True))
+        self.session_hits = label("本地命中 0 首")
+        self.session_hits.setProperty("metricTone", "success")
+        self.session_misses = label("回源 0 首")
+        self.session_misses.setProperty("metricTone", "warning")
+        self.session_saved = label("节省流量 0 MB")
+        self.session_saved.setProperty("metricTone", "highlight")
+        for widget in (self.session_hits, self.session_misses, self.session_saved):
+            session_box.addWidget(widget)
+        session_box.addStretch()
         box.addWidget(self.session_stats)
         box.addStretch()
         return area

@@ -374,16 +374,6 @@ class AppearancePage(QWidget):
         self.theme_combo.setAccessibleName("选择主题")
         self.theme_combo.currentIndexChanged.connect(self._select_theme)
         right.addWidget(self.theme_combo)
-        preset_row = QHBoxLayout()
-        preset_row.addWidget(QLabel("配色预设"))
-        self.preset_combo = QComboBox()
-        self.preset_combo.setAccessibleName("配色预设")
-        for key, preset in PRESET_THEMES.items():
-            self.preset_combo.addItem(preset["name"], key)
-        preset_row.addWidget(self.preset_combo, 1)
-        self.apply_preset_button = _button("应用预设", self._apply_preset, primary=True)
-        preset_row.addWidget(self.apply_preset_button)
-        right.addLayout(preset_row)
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("名称"))
         self.name_edit = QLineEdit()
@@ -721,6 +711,9 @@ class AppearancePage(QWidget):
                 self.theme_combo.clear()
                 for theme in self.store.themes:
                     self.theme_combo.addItem(theme["name"], theme["id"])
+                self.theme_combo.insertSeparator(self.theme_combo.count())
+                for key, preset in PRESET_THEMES.items():
+                    self.theme_combo.addItem(preset["name"] + " · 配色预设", "preset:" + key)
                 self.theme_combo.setCurrentIndex(self.theme_combo.findData(active["id"]))
             with QSignalBlocker(self.name_edit):
                 self.name_edit.setText(active["name"])
@@ -736,7 +729,11 @@ class AppearancePage(QWidget):
             return
         theme_id = self.theme_combo.itemData(index)
         if self._flush_pending():
-            self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
+            if isinstance(theme_id, str) and theme_id.startswith("preset:"):
+                self._perform(lambda: self.store.apply_preset(theme_id[7:]), refresh=True,
+                              message="预设已应用；同一预设会复用已有主题，背景图片仍然保留。")
+            else:
+                self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
 
     def _rename(self) -> None:
         if self._refreshing:
@@ -760,12 +757,6 @@ class AppearancePage(QWidget):
             if self._perform(lambda: self.store.create(copy_current=True), refresh=True, message="已复制当前主题。"):
                 self.name_edit.setFocus()
                 self.name_edit.selectAll()
-
-    def _apply_preset(self) -> None:
-        if self._flush_pending():
-            preset = self.preset_combo.currentData()
-            self._perform(lambda: self.store.apply_preset(preset), refresh=True,
-                          message="预设已应用；同一预设会复用已有主题，背景图片仍然保留。")
 
     def _export_theme(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "导出主题配色", "dance-theme.json", "主题配色 (*.json)")
