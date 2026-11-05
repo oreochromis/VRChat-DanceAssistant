@@ -209,6 +209,14 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.banner.close_button, Qt.MouseButton.LeftButton)
         self.assertFalse(window.banner.isVisible())
 
+    def test_utility_buttons_use_muted_text_instead_of_accent(self):
+        window, _, store = self.make_window()
+        from dance_ui.widgets import stylesheet
+        css = stylesheet(store.active, store.preferences)
+        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #667289;', css)
+        self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
+        self.assertIn('QPushButton[danger="true"] { color: #BD4355;', css)
+
     def test_session_metrics_use_distinct_semantic_colors(self):
         window, _, _ = self.make_window()
         self.assertEqual(window.session_hits.text(), "本地命中 12 首")

@@ -111,7 +111,9 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         border-bottom-color: {accent}; font-weight: 650;
     }}
     QPushButton[nav="true"][compact="true"] {{ padding-left: {px(11)}px; padding-right: {px(11)}px; }}
-    QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
+    QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {muted}; background: transparent; border: none; padding: {px(3)}px; }}
+    QPushButton[link="true"]:hover, QPushButton[subtle="true"]:hover {{ color: {text}; background: {rgba(muted, .08)}; border: none; }}
+    QPushButton[link="true"]:pressed, QPushButton[subtle="true"]:pressed {{ color: {text}; background: {rgba(muted, .13)}; }}
     QPushButton[danger="true"] {{ color: {theme['error_color']}; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
         background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 7)}px;
