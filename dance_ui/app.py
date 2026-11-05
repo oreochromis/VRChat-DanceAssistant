@@ -400,11 +400,11 @@ class MainWindow(QMainWindow, Pages):
         self.service_status.setText("●  " + title)
         warnings = self._runtime.get("warnings") or []
         self.service_status.setToolTip("当前问题：\n• " + "\n• ".join(warnings) if warnings else "")
-        color = "#A97823" if phase in ("starting", "stopping") or self._runtime_warning else "#20824E" if running else "#8290A6"
-        if running and self.store.active.get("base") == "dark" and not self._runtime_warning:
-            color = "#7CDBA5"
+        theme = self.store.active
+        color = (theme["warning_color"] if phase in ("starting", "stopping") or self._runtime_warning
+                 else theme["success_color"] if running else theme["text_secondary"])
         if phase == "failed":
-            color = "#C64D5C"
+            color = theme["error_color"]
         self.service_status.setStyleSheet("color:" + color + ";")
         self.service_button.setText("启动中…" if phase == "starting" else "停止中…" if phase == "stopping" else "停止服务" if running else "启动服务")
         if not running and self._runtime.get("hosts_restore_pending") and phase not in ("starting", "stopping"):

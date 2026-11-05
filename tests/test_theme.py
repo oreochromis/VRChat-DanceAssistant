@@ -10,7 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from dance_ui.theme import (
-    ThemeStore, ThemeError, BUILTIN_THEMES, DEFAULT_PREFERENCES, MAX_IMAGE_BYTES,
+    ThemeStore, ThemeError, BUILTIN_THEMES, PRESET_THEMES, DEFAULT_PREFERENCES,
+    MAX_IMAGE_BYTES, theme_contrast_warnings,
 )
 
 
@@ -176,6 +177,56 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(self.store.active["radius"], BUILTIN_THEMES["light"]["radius"])
         self.store.undo()
         self.assertEqual(self.store.active["card_opacity"], 0.3)
+
+    def test_presets_create_custom_themes_and_preserve_background(self):
+        reference = self.store.import_background(self.source())
+        original_id = self.store.active_id
+        for key, preset in PRESET_THEMES.items():
+            theme_id = self.store.apply_preset(key)
+            self.assertNotEqual(theme_id, original_id)
+            self.assertFalse(self.store.active["builtin"])
+            self.assertEqual(self.store.active["accent"], preset["accent"])
+            self.assertEqual(self.store.active["background_image"], reference)
+            self.assertEqual(self.store.background_path().name, reference.removeprefix("backgrounds/"))
+            self.assertEqual(theme_contrast_warnings(self.store.active), [])
+            self.assertEqual(ThemeStore(self.store.root_dir).active_id, theme_id)
+        self.assertEqual(BUILTIN_THEMES["light"]["accent"], "#5865D8")
+        with self.assertRaises(ThemeError):
+            self.store.apply_preset("missing")
+
+    def test_theme_export_import_roundtrip_excludes_background_reference(self):
+        self.store.import_background(self.source())
+        self.store.change({"secondary_accent": "#123456", "hero_gradient_opacity": .42,
+                           "gradient_direction": "horizontal", "button_text": "#234567"})
+        path = self.root / "shared-theme.json"
+        self.store.export_theme(path)
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(raw["format"], "vrchat-dance-theme")
+        self.assertNotIn("background_image", raw["theme"])
+        theme_id = self.store.import_theme(path)
+        self.assertEqual(self.store.active_id, theme_id)
+        self.assertEqual(self.store.active["secondary_accent"], "#123456")
+        self.assertEqual(self.store.active["hero_gradient_opacity"], .42)
+        self.assertEqual(self.store.active["gradient_direction"], "horizontal")
+        self.assertEqual(self.store.active["button_text"], "#234567")
+        self.assertEqual(self.store.active["background_image"], "")
+        self.assertEqual(ThemeStore(self.store.root_dir).active["id"], theme_id)
+
+    def test_invalid_theme_import_and_gradient_are_transactional(self):
+        path = self.root / "invalid-theme.json"
+        path.write_text('{"format":"other"}', encoding="utf-8")
+        before = self.store.path.read_bytes()
+        with self.assertRaises(ThemeError):
+            self.store.import_theme(path)
+        with self.assertRaises(ThemeError):
+            self.store.change({"gradient_direction": "sideways"})
+        self.assertEqual(self.store.path.read_bytes(), before)
+
+    def test_contrast_warnings_are_non_destructive(self):
+        self.assertEqual(theme_contrast_warnings(self.store.active), [])
+        self.store.change({"text_primary": "#FFFFFF", "card_background": "#FFFFFF"})
+        self.assertIn("主要文字与背景对比度偏低", theme_contrast_warnings(self.store.active))
+        self.assertEqual(self.store.active["text_primary"], "#FFFFFF")
 
     def test_returned_values_cannot_mutate_store(self):
         self.store.active["accent"] = "#000000"

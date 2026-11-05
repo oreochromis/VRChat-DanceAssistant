@@ -28,12 +28,19 @@ MAX_IMAGE_EDGE = 16_384
 HISTORY_LIMIT = 50
 
 COLOR_FIELDS = frozenset({
-    "accent", "background_color", "overlay_color", "nav_background", "nav_text",
+    "accent", "secondary_accent", "highlight", "background_color", "background_gradient",
+    "hero_gradient", "overlay_color", "nav_background", "nav_text",
     "nav_active_background", "nav_active_text", "text_primary", "text_secondary",
-    "card_background", "border_color", "text_shadow_color",
+    "card_background", "border_color", "text_shadow_color", "success_color",
+    "warning_color", "error_color", "info_color", "button_background", "button_text",
+    "button_hover_background", "primary_button_text", "input_background",
+    "table_header_background", "table_header_text", "table_selection_background",
+    "scrollbar_color",
 })
 NUMBER_RANGES = {
     "background_opacity": (0.0, 1.0),
+    "background_gradient_opacity": (0.0, 1.0),
+    "hero_gradient_opacity": (0.0, 1.0),
     "image_opacity": (0.0, 1.0),
     "image_blur": (0.0, 30.0),
     "overlay_opacity": (0.0, 1.0),
@@ -48,18 +55,30 @@ NUMBER_RANGES = {
     "text_shadow_blur": (0.0, 20.0),
 }
 IMAGE_FITS = ("cover", "contain", "stretch", "center", "tile")
+GRADIENT_DIRECTIONS = ("diagonal", "horizontal", "vertical")
 THEME_FIELDS = COLOR_FIELDS | frozenset(NUMBER_RANGES) | {
-    "background_image", "image_fit",
+    "background_image", "image_fit", "gradient_direction",
 }
 DEFAULT_PREFERENCES = {"scale": 100, "density": "standard", "logs_expanded": False,
                        "dismissed_update_version": "", "ui_mode": "simple"}
 
 _COMMON = {
     "background_image": "", "background_opacity": 1.0,
+    "background_gradient": "#E9ECFF", "background_gradient_opacity": 0.0,
+    "hero_gradient": "#39B8C6", "hero_gradient_opacity": 0.0,
+    "gradient_direction": "diagonal",
     "image_fit": "cover", "image_opacity": 0.35, "image_blur": 0.0,
     "overlay_opacity": 0.0, "border_width": 1.0, "radius": 12.0,
     "text_shadow_color": "#000000", "text_shadow_opacity": 0.0,
     "text_shadow_size": 1.0, "text_shadow_blur": 4.0,
+    "secondary_accent": "#39B8C6", "highlight": "#D9A441",
+    "success_color": "#20824E", "warning_color": "#9B6819",
+    "error_color": "#BD4355", "info_color": "#326FD4",
+    "button_background": "#FFFFFF", "button_text": "#172133",
+    "button_hover_background": "#EDF0FF", "primary_button_text": "#FFFFFF",
+    "input_background": "#FFFFFF", "table_header_background": "#F5F6FA",
+    "table_header_text": "#526172", "table_selection_background": "#E7E9FA",
+    "scrollbar_color": "#9AA6B8",
 }
 BUILTIN_THEMES = {
     "light": {
@@ -79,7 +98,65 @@ BUILTIN_THEMES = {
         "nav_active_text": "#D6DCFF", "text_primary": "#EDF1F8",
         "text_secondary": "#A6B1C7", "card_background": "#1A2130",
         "card_opacity": 0.96, "border_color": "#344052", "border_opacity": 0.65,
+        "secondary_accent": "#6CD5DF", "highlight": "#E7BF78",
+        "success_color": "#7CDBA5", "warning_color": "#E7BF78",
+        "error_color": "#F3A0AD", "info_color": "#9CBDFF",
+        "button_background": "#242D40", "button_text": "#EDF1F8",
+        "button_hover_background": "#303B55", "primary_button_text": "#182132",
+        "input_background": "#202839", "table_header_background": "#202839",
+        "table_header_text": "#A6B1C7", "table_selection_background": "#303B60",
+        "scrollbar_color": "#6E7A90", "background_gradient": "#19243A",
+        "hero_gradient": "#6CD5DF",
     },
+}
+_PRESETS = {
+    "arcade": ("街机糖果", "light", {
+        "accent": "#24BFD0", "secondary_accent": "#8A68D8", "highlight": "#E9B949",
+        "background_color": "#F2FBFA", "background_gradient": "#E5E1FF",
+        "background_gradient_opacity": .55, "hero_gradient_opacity": .38,
+        "card_background": "#FFFEFA", "nav_active_background": "#24BFD0",
+        "nav_active_text": "#168C9D", "text_primary": "#203B4A", "text_secondary": "#587583",
+        "button_hover_background": "#E2F8F4", "table_header_background": "#EDF7F5",
+        "primary_button_text": "#12333D", "table_header_text": "#526172",
+        "table_selection_background": "#DDF4EF", "border_color": "#C9E9E4",
+        "success_color": "#19A974", "warning_color": "#B7791F", "error_color": "#D95774",
+    }),
+    "soda": ("夏日汽水", "light", {
+        "accent": "#28A9C7", "secondary_accent": "#67C89B", "highlight": "#F0A34A",
+        "background_color": "#F0FAFC", "background_gradient": "#E8F8ED",
+        "background_gradient_opacity": .65, "hero_gradient": "#67C89B", "hero_gradient_opacity": .32,
+        "nav_active_background": "#28A9C7", "nav_active_text": "#187F9B",
+        "text_primary": "#173B4B", "text_secondary": "#557987", "border_color": "#C6E6EA",
+        "button_hover_background": "#E0F5F1", "table_header_background": "#E7F5F5",
+        "primary_button_text": "#12333D", "table_header_text": "#526172",
+        "table_selection_background": "#DDF3ED", "info_color": "#268FCE",
+    }),
+    "neon": ("霓虹夜景", "dark", {
+        "accent": "#67E8F9", "secondary_accent": "#B78CFF", "highlight": "#F5D76E",
+        "background_color": "#0D1220", "background_gradient": "#251847",
+        "background_gradient_opacity": .55, "hero_gradient": "#B78CFF", "hero_gradient_opacity": .42,
+        "card_background": "#171E31", "nav_background": "#11182A", "nav_active_background": "#67E8F9",
+        "nav_active_text": "#BFF7FF", "text_primary": "#EAF7FF", "text_secondary": "#9BAFC8",
+        "button_background": "#222B43", "button_hover_background": "#303B5A",
+        "input_background": "#1D263C", "table_header_background": "#202A40",
+        "table_selection_background": "#293B58", "border_color": "#344765",
+    }),
+    "cream": ("奶油浅色", "light", {
+        "accent": "#D98E8A", "secondary_accent": "#8FB9A8", "highlight": "#D9A441",
+        "background_color": "#FFF9F0", "background_gradient": "#F4E9F1",
+        "background_gradient_opacity": .45, "hero_gradient": "#8FB9A8", "hero_gradient_opacity": .24,
+        "card_background": "#FFFCF8", "nav_background": "#FFFDF9", "nav_active_background": "#D98E8A",
+        "nav_active_text": "#A96165", "text_primary": "#493B3B", "text_secondary": "#857373",
+        "button_background": "#FFFDF9", "button_text": "#493B3B", "button_hover_background": "#F8E9E4",
+        "primary_button_text": "#382F33", "table_header_text": "#526172",
+        "input_background": "#FFFDF9", "table_header_background": "#F8F1E9",
+        "table_selection_background": "#F5E6E2", "border_color": "#E9D9CF",
+    }),
+}
+PRESET_THEMES = {
+    key: {**copy.deepcopy(BUILTIN_THEMES[base]), **values,
+          "id": "preset_" + key, "name": name, "builtin": False, "base": base}
+    for key, (name, base, values) in _PRESETS.items()
 }
 THEME_GROUPS = {
     "background": (
@@ -87,11 +164,17 @@ THEME_GROUPS = {
         "image_opacity", "image_blur", "overlay_color", "overlay_opacity",
     ),
     "colors": ("accent", "text_primary", "text_secondary"),
+    "semantic": ("secondary_accent", "highlight", "success_color", "warning_color", "error_color", "info_color"),
+    "gradients": ("background_gradient", "background_gradient_opacity", "hero_gradient",
+                  "hero_gradient_opacity", "gradient_direction"),
     "navigation": (
         "nav_background", "nav_opacity", "nav_text", "nav_active_background",
         "nav_active_opacity", "nav_active_text",
     ),
     "cards": ("card_background", "card_opacity", "border_color", "border_opacity", "border_width", "radius"),
+    "buttons": ("button_background", "button_text", "button_hover_background", "primary_button_text",
+                "input_background"),
+    "tables": ("table_header_background", "table_header_text", "table_selection_background", "scrollbar_color"),
     "text": ("text_shadow_color", "text_shadow_opacity", "text_shadow_size", "text_shadow_blur"),
 }
 
@@ -110,6 +193,28 @@ def normalize_color(value: Any) -> str:
     if not re.fullmatch(r"[0-9a-fA-F]{6}", result):
         raise ThemeError("颜色需要填写 #RGB 或 #RRGGBB 格式的 HEX 色值。")
     return "#" + result.upper()
+
+
+def contrast_ratio(first: str, second: str) -> float:
+    def luminance(value):
+        color = normalize_color(value).lstrip("#")
+        channels = [int(color[index:index + 2], 16) / 255 for index in (0, 2, 4)]
+        linear = [channel / 12.92 if channel <= .04045 else ((channel + .055) / 1.055) ** 2.4
+                  for channel in channels]
+        return sum(value * weight for value, weight in zip(linear, (.2126, .7152, .0722)))
+    high, low = sorted((luminance(first), luminance(second)), reverse=True)
+    return (high + .05) / (low + .05)
+
+
+def theme_contrast_warnings(theme: Mapping[str, Any]) -> list[str]:
+    pairs = (
+        ("主要文字", "text_primary", "card_background"),
+        ("导航文字", "nav_text", "nav_background"),
+        ("主要按钮文字", "primary_button_text", "accent"),
+        ("表头文字", "table_header_text", "table_header_background"),
+    )
+    return [f"{label}与背景对比度偏低" for label, foreground, background in pairs
+            if contrast_ratio(theme[foreground], theme[background]) < 4.5]
 
 
 def _number(value: Any, key: str) -> float:
@@ -147,6 +252,10 @@ def _theme_value(key: str, value: Any) -> Any:
         return value
     if key == "background_image":
         return _image_reference(value)
+    if key == "gradient_direction":
+        if value not in GRADIENT_DIRECTIONS:
+            raise ThemeError("渐变方向无效。")
+        return value
     raise ThemeError("未识别的主题设置：" + str(key))
 
 
@@ -467,6 +576,60 @@ class ThemeStore:
         # Automatically generated names may need shortening after a long rename.
         proposed = proposed[:60] if name is None else proposed
         theme.update(id=new_id, name=self._unique_name(self._name(proposed)), builtin=False)
+        candidate = copy.deepcopy(self._state)
+        candidate["themes"].append(theme)
+        candidate["active_theme"] = new_id
+        self._commit(candidate)
+        return new_id
+
+    def apply_preset(self, preset_id: str) -> str:
+        key = preset_id.removeprefix("preset_")
+        if key not in PRESET_THEMES:
+            raise ThemeError("没有找到这个配色预设。")
+        self.end_edit()
+        current = self.active
+        theme = copy.deepcopy(PRESET_THEMES[key])
+        for field in ("background_image", "image_fit", "image_opacity", "image_blur"):
+            theme[field] = current[field]
+        new_id = "theme_" + uuid.uuid4().hex[:16]
+        theme.update(id=new_id, name=self._unique_name(theme["name"]), builtin=False)
+        candidate = copy.deepcopy(self._state)
+        candidate["themes"].append(theme)
+        candidate["active_theme"] = new_id
+        self._commit(candidate)
+        return new_id
+
+    def export_theme(self, path: str | os.PathLike[str]) -> None:
+        active = self.active
+        theme = {"name": active["name"], "base": active["base"],
+                 **{key: active[key] for key in THEME_FIELDS if key != "background_image"}}
+        Path(path).write_text(json.dumps({
+            "format": "vrchat-dance-theme", "version": 1, "theme": theme,
+        }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    def import_theme(self, path: str | os.PathLike[str]) -> str:
+        source = Path(path)
+        if not source.is_file() or source.stat().st_size > 2 * 1024 * 1024:
+            raise ThemeError("主题文件不存在或过大。")
+        try:
+            raw = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise ThemeError("无法读取主题文件：" + str(error)) from None
+        if not isinstance(raw, dict) or raw.get("format") != "vrchat-dance-theme" or raw.get("version") != 1:
+            raise ThemeError("这不是受支持的跳舞房助手主题文件。")
+        item = raw.get("theme")
+        if not isinstance(item, dict):
+            raise ThemeError("主题文件缺少配色内容。")
+        base = item.get("base", "light")
+        if base not in BUILTIN_THEMES:
+            raise ThemeError("主题基础模式无效。")
+        theme = copy.deepcopy(BUILTIN_THEMES[base])
+        for key in THEME_FIELDS:
+            if key in item and key != "background_image":
+                theme[key] = _theme_value(key, item[key])
+        theme["background_image"] = ""
+        new_id = "theme_" + uuid.uuid4().hex[:16]
+        theme.update(id=new_id, name=self._unique_name(self._name(item.get("name", "导入主题"))), builtin=False)
         candidate = copy.deepcopy(self._state)
         candidate["themes"].append(theme)
         candidate["active_theme"] = new_id

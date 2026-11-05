@@ -13,7 +13,10 @@ from PySide6.QtWidgets import (
     QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication,
 )
 
-from .theme import ThemeStore, ThemeError, NUMBER_RANGES, normalize_color
+from .theme import (
+    PRESET_THEMES, ThemeStore, ThemeError, NUMBER_RANGES, normalize_color,
+    theme_contrast_warnings,
+)
 
 
 def _muted(text: str, parent: QWidget | None = None) -> QLabel:
@@ -316,6 +319,9 @@ class AppearancePage(QWidget):
         self.status.setObjectName("appearanceStatus")
         self.status.setMinimumHeight(22)
         layout.addWidget(self.status)
+        self.contrast_status = _muted("")
+        self.contrast_status.hide()
+        layout.addWidget(self.contrast_status)
         scroll = QScrollArea()
         scroll.setObjectName("appearanceScroll")
         scroll.setWidgetResizable(True)
@@ -333,8 +339,12 @@ class AppearancePage(QWidget):
         self._build_theme_card()
         self._build_background()
         self._build_colors()
+        self._build_semantic()
+        self._build_gradients()
         self._build_navigation()
         self._build_cards()
+        self._build_buttons()
+        self._build_tables()
         self._build_text()
         self._build_preferences()
         self.content_layout.addStretch(1)
@@ -364,6 +374,16 @@ class AppearancePage(QWidget):
         self.theme_combo.setAccessibleName("选择主题")
         self.theme_combo.currentIndexChanged.connect(self._select_theme)
         right.addWidget(self.theme_combo)
+        preset_row = QHBoxLayout()
+        preset_row.addWidget(QLabel("配色预设"))
+        self.preset_combo = QComboBox()
+        self.preset_combo.setAccessibleName("配色预设")
+        for key, preset in PRESET_THEMES.items():
+            self.preset_combo.addItem(preset["name"], key)
+        preset_row.addWidget(self.preset_combo, 1)
+        self.apply_preset_button = _button("应用为新主题", self._apply_preset, primary=True)
+        preset_row.addWidget(self.apply_preset_button)
+        right.addLayout(preset_row)
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("名称"))
         self.name_edit = QLineEdit()
@@ -382,6 +402,11 @@ class AppearancePage(QWidget):
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
         right.addLayout(actions)
+        sharing = QHBoxLayout()
+        sharing.addWidget(_button("导入配色", self._import_theme))
+        sharing.addWidget(_button("导出配色", self._export_theme))
+        sharing.addStretch(1)
+        right.addLayout(sharing)
         right.addWidget(_muted("先选择预设；需要微调时，再展开下方的背景、颜色等分组。"))
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
@@ -444,6 +469,8 @@ class AppearancePage(QWidget):
         image_layout.setSpacing(8)
         image_actions = QHBoxLayout()
         image_actions.addStretch(1)
+        self.palette_button = _button("从背景取色", self._extract_palette)
+        image_actions.addWidget(self.palette_button)
         image_actions.addWidget(_button("导入图片", self._import_background))
         self.clear_image = _button("移除图片", self._remove_background)
         image_actions.addWidget(self.clear_image)
@@ -469,6 +496,44 @@ class AppearancePage(QWidget):
         self._color(section, "accent", "强调色", "主要操作、进度与选中状态")
         self._color(section, "text_primary", "主要文字")
         self._color(section, "text_secondary", "辅助文字", "说明、单位和次要信息")
+
+    def _build_semantic(self) -> None:
+        section = self._section("语义配色", "用于渐变、图表、重点数字和不同状态。", "semantic")
+        self._color(section, "secondary_accent", "辅强调色", "报告渐变、来源图表与装饰")
+        self._color(section, "highlight", "高亮色", "排名与重点数字")
+        self._color(section, "success_color", "成功")
+        self._color(section, "warning_color", "警告")
+        self._color(section, "error_color", "错误")
+        self._color(section, "info_color", "信息")
+
+    def _build_gradients(self) -> None:
+        section = self._section("渐变", "为页面背景、当前歌曲和年度报告添加辅助渐变。", "gradients")
+        self._color(section, "background_gradient", "背景渐变色")
+        self._slider(section, "background_gradient_opacity", "背景渐变强度", "设为 0 可关闭背景渐变")
+        self._color(section, "hero_gradient", "卡片与报告渐变色")
+        self._slider(section, "hero_gradient_opacity", "卡片渐变强度", "设为 0 可关闭辅助渐变")
+        direction = QComboBox()
+        for text, value in (("左上到右下", "diagonal"), ("从左到右", "horizontal"), ("从上到下", "vertical")):
+            direction.addItem(text, value)
+        direction.setAccessibleName("渐变方向")
+        direction.currentIndexChanged.connect(lambda index: self._change({"gradient_direction": direction.itemData(index)}) if index >= 0 else None)
+        self._fields["gradient_direction"] = direction
+        self._row(section, "渐变方向", direction)
+
+    def _build_buttons(self) -> None:
+        section = self._section("按钮与输入框", "分别控制普通按钮、主要按钮和输入控件。", "buttons")
+        self._color(section, "button_background", "普通按钮背景")
+        self._color(section, "button_text", "普通按钮文字")
+        self._color(section, "button_hover_background", "按钮悬停背景")
+        self._color(section, "primary_button_text", "主要按钮文字", "背景使用主强调色")
+        self._color(section, "input_background", "输入框与下拉框背景")
+
+    def _build_tables(self) -> None:
+        section = self._section("表格与滚动条", "调整数据区域的表头、选中行和滚动条。", "tables")
+        self._color(section, "table_header_background", "表头背景")
+        self._color(section, "table_header_text", "表头文字")
+        self._color(section, "table_selection_background", "选中行背景")
+        self._color(section, "scrollbar_color", "滚动条")
 
     def _build_navigation(self) -> None:
         section = self._section("导航", "分别控制导航底色、文字以及选中项。", "navigation")
@@ -597,9 +662,14 @@ class AppearancePage(QWidget):
             self.image_status.setText("当前使用纯色背景")
             self.image_status.setToolTip("")
         self.clear_image.setEnabled(bool(active["background_image"]))
+        self.palette_button.setEnabled(image is not None)
+        self.palette_button.setToolTip("" if image is not None else "请先导入背景图片")
         for key in ("image_fit", "image_opacity", "image_blur"):
             self._fields[key].setEnabled(image is not None)
             self._fields[key].setToolTip("" if image is not None else "请先导入背景图片")
+        warnings = theme_contrast_warnings(active)
+        self.contrast_status.setText("对比度提醒：" + "；".join(warnings) + "。仍可保存，也可使用预设恢复。")
+        self.contrast_status.setVisible(bool(warnings))
         self.preview.update()
 
     def _apply_metrics(self) -> None:
@@ -690,6 +760,37 @@ class AppearancePage(QWidget):
             if self._perform(lambda: self.store.create(copy_current=True), refresh=True, message="已复制当前主题。"):
                 self.name_edit.setFocus()
                 self.name_edit.selectAll()
+
+    def _apply_preset(self) -> None:
+        if self._flush_pending():
+            preset = self.preset_combo.currentData()
+            self._perform(lambda: self.store.apply_preset(preset), refresh=True,
+                          message="已应用为新主题，原主题和所有背景图片仍然保留。")
+
+    def _export_theme(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "导出主题配色", "dance-theme.json", "主题配色 (*.json)")
+        if path:
+            self._perform(lambda: self.store.export_theme(path),
+                          message="主题配色已导出；文件不包含背景图片。")
+
+    def _import_theme(self) -> None:
+        if not self._flush_pending():
+            return
+        path, _ = QFileDialog.getOpenFileName(self, "导入主题配色", str(Path.home()), "主题配色 (*.json)")
+        if path:
+            self._perform(lambda: self.store.import_theme(path), refresh=True,
+                          message="主题配色已导入；背景图片需要单独导入。")
+
+    def _extract_palette(self) -> None:
+        if not self._flush_pending():
+            return
+        image = self.store.background_path()
+        if image is None:
+            self._error("请先导入背景图片，再使用取色。")
+            return
+        from .palette import palette_from_image
+        self._perform(lambda: self.store.change(palette_from_image(image, self.store.active["base"])),
+                      refresh=True, message="已从背景提取协调配色，可继续逐项微调或撤销。")
 
     def _delete(self) -> None:
         if self._flush_pending():

@@ -47,6 +47,11 @@ class ReportCanvas(QWidget):
         self.text = QColor(theme["text_primary"])
         self.muted = QColor(theme["text_secondary"])
         self.accent = QColor(theme["accent"])
+        self.secondary = QColor(theme["secondary_accent"])
+        self.highlight = QColor(theme["highlight"])
+        self.hero_text = QColor(theme["primary_button_text"])
+        self.hero_gradient_opacity = theme["hero_gradient_opacity"]
+        self.gradient_direction = theme["gradient_direction"]
         self.dark = self.background.lightnessF() < .45
         self.soft = QColor(self.accent)
         self.soft.setAlpha(24 if self.dark else 18)
@@ -127,10 +132,12 @@ class ReportCanvas(QWidget):
         painter.drawRoundedRect(rect, 16, 16)
 
     def _draw_hero(self, painter, rect):
-        gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+        end_point = (rect.topRight() if self.gradient_direction == "horizontal" else
+                     rect.bottomLeft() if self.gradient_direction == "vertical" else rect.bottomRight())
+        gradient = QLinearGradient(rect.topLeft(), end_point)
         gradient.setColorAt(0, self.accent.darker(120))
         gradient.setColorAt(.58, self.accent)
-        gradient.setColorAt(1, self.accent.lighter(135))
+        gradient.setColorAt(1, self.secondary if self.hero_gradient_opacity > 0 else self.accent.lighter(135))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(gradient)
         painter.drawRoundedRect(rect, 22, 22)
@@ -138,16 +145,20 @@ class ReportCanvas(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, 22, 22)
         painter.setClipPath(path)
-        painter.setBrush(QColor(255, 255, 255, 18))
+        decoration = QColor(self.hero_text)
+        decoration.setAlpha(18)
+        painter.setBrush(decoration)
         painter.drawEllipse(QRectF(rect.right() - 240, rect.top() - 90, 310, 310))
         painter.drawEllipse(QRectF(rect.right() - 80, rect.bottom() - 100, 180, 180))
-        painter.setPen(QPen(QColor(255, 255, 255, 22), 1))
+        decoration.setAlpha(22)
+        painter.setPen(QPen(decoration, 1))
         for offset in range(-80, 250, 42):
             painter.drawLine(QPointF(rect.left() + offset, rect.bottom()),
                              QPointF(rect.left() + offset + 180, rect.top()))
         painter.restore()
-        white = QColor("#FFFFFF")
-        translucent = QColor(255, 255, 255, 210)
+        white = self.hero_text
+        translucent = QColor(self.hero_text)
+        translucent.setAlpha(210)
         _text(painter, QRectF(rect.left() + 28, rect.top() + 24, rect.width() * .58, 24),
               self.kicker, size=12, color=translucent, weight=QFont.Weight.Medium)
         _text(painter, QRectF(rect.left() + 28, rect.top() + 67, rect.width() * .60, 104),
@@ -198,10 +209,10 @@ class ReportCanvas(QWidget):
             painter.setBrush(self.accent if index == 0 else self.soft)
             painter.drawEllipse(badge)
             _text(painter, badge, f"0{index + 1}", size=14,
-                  color=QColor("#FFFFFF") if index == 0 else self.accent,
+                  color=self.hero_text if index == 0 else self.accent,
                   weight=QFont.Weight.Bold, align=Qt.AlignmentFlag.AlignCenter)
             _text(painter, QRectF(card.right() - 95, card.top() + 20, 77, 30),
-                  f"{song.get('count', 0)} 次", size=17, color=self.accent,
+                  f"{song.get('count', 0)} 次", size=17, color=self.highlight,
                   weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight)
             painter.setFont(_font(18, QFont.Weight.DemiBold))
             painter.setPen(self.text)
@@ -302,7 +313,7 @@ class ReportCanvas(QWidget):
         painter.drawEllipse(ring)
         if total:
             start = 90 * 16
-            for count, color in ((pypy, self.accent), (wd, QColor("#E5A45B"))):
+            for count, color in ((pypy, self.accent), (wd, self.secondary)):
                 if not count:
                     continue
                 span = round(-5760 * count / total)
@@ -315,7 +326,7 @@ class ReportCanvas(QWidget):
               size=11, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
         legend_y = rect.bottom() - 55
         for index, (name, count, color) in enumerate((("PyPyDance", pypy, self.accent),
-                                                     ("WannaDance", wd, QColor("#E5A45B")))):
+                                                     ("WannaDance", wd, self.secondary))):
             x = rect.left() + 24 + index * (rect.width() - 48) / 2
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(color)

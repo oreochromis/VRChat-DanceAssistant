@@ -7,7 +7,7 @@ from typing import Any
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QRectF, QSize, Qt, QPoint, QPointF, Signal
-from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
@@ -43,14 +43,17 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     radius = round(theme["radius"])
     is_dark = QColor(theme["background_color"]).lightnessF() < .45
     subtle = "rgba(255,255,255,12)" if is_dark else "rgba(24,43,73,7)"
-    input_bg = rgba(theme["card_background"], max(.85, theme["card_opacity"]))
+    input_bg = rgba(theme["input_background"], max(.85, theme["card_opacity"]))
+    button_bg = rgba(theme["button_background"], max(.85, theme["card_opacity"]))
+    gradient_coords = {"diagonal": "0, 0, 1, 1", "horizontal": "0, 0, 1, 0",
+                       "vertical": "0, 0, 0, 1"}[theme["gradient_direction"]]
     check_icon = "check-dark.svg" if on_color(accent) != "#FFFFFF" else "check-light.svg"
     tones = {
-        "success": ("#7CDBA5" if is_dark else "#20824E", "rgba(43,166,92,24)"),
-        "warning": ("#E7BF78" if is_dark else "#9B6819", "rgba(211,157,41,25)"),
-        "error": ("#F3A0AD" if is_dark else "#BD4355", "rgba(203,64,89,22)"),
-        "info": ("#9CBDFF" if is_dark else "#326FD4", "rgba(56,119,232,23)"),
-        "muted": ("#B1BDD1" if is_dark else "#687A94", "rgba(125,145,174,18)"),
+        "success": (theme["success_color"], rgba(theme["success_color"], .10)),
+        "warning": (theme["warning_color"], rgba(theme["warning_color"], .11)),
+        "error": (theme["error_color"], rgba(theme["error_color"], .10)),
+        "info": (theme["info_color"], rgba(theme["info_color"], .10)),
+        "muted": (muted, rgba(muted, .08)),
     }
     status_rules = "\n".join(
         f'QLabel[statusTone="{tone}"] {{ color:{colors[0]}; background:{colors[1]}; border:none; border-radius:6px; padding:5px 9px; }}'
@@ -64,7 +67,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QLabel[heading="true"], QLabel[pageTitle="true"] {{ font-size: {px(21)}px; font-weight: 650; }}
     QLabel[subheading="true"] {{ font-size: {px(16)}px; font-weight: 600; }}
     QLabel[strong="true"] {{ font-weight: 600; }}
-    QLabel[danger="true"] {{ color: #c64d5c; }}
+    QLabel[danger="true"] {{ color: {theme['error_color']}; }}
     QToolButton[sectionHeader="true"] {{ background: transparent; border: none; text-align: left; font-size: {px(16)}px; font-weight: 600; padding: 4px 0; }}
     QLabel[heroTitle="true"] {{ font-size: {px(27)}px; font-weight: 700; }}
     QLabel[number="true"] {{ font-size: {px(27)}px; font-weight: 650; }}
@@ -72,10 +75,10 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         background: {card}; border: {theme['border_width']}px solid {border};
         border-radius: {radius}px;
     }}
-    QFrame[hero="true"] {{ background: {rgba(accent, .10)}; }}
+    QFrame[hero="true"] {{ background: qlineargradient(x1: {gradient_coords.split(',')[0]}, y1: {gradient_coords.split(',')[1]}, x2: {gradient_coords.split(',')[2]}, y2: {gradient_coords.split(',')[3]}, stop: 0 {rgba(accent, .10)}, stop: 1 {rgba(theme['hero_gradient'], theme['hero_gradient_opacity'])}); }}
     QFrame#noticeBanner {{ border-radius: 8px; border: 1px solid {border}; }}
-    QFrame#noticeBanner[noticeTone="error"] {{ background: rgba(205,78,94,24); color: #C64D5C; }}
-    QFrame#noticeBanner[noticeTone="success"] {{ background: rgba(43,166,92,18); color: {text}; }}
+    QFrame#noticeBanner[noticeTone="error"] {{ background: {rgba(theme['error_color'], .10)}; color: {theme['error_color']}; }}
+    QFrame#noticeBanner[noticeTone="success"] {{ background: {rgba(theme['success_color'], .08)}; color: {text}; }}
     QFrame#noticeBanner[noticeTone="info"] {{ background: {rgba(accent, .08)}; color: {text}; }}
     QWidget#header {{
         background: {rgba(theme['nav_background'], theme['nav_opacity'])};
@@ -83,14 +86,14 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QWidget#footer {{ background: {rgba(theme['nav_background'], theme['nav_opacity'])}; border-top: 1px solid {border}; }}
     QPushButton {{
-        background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 8)}px;
+        background: {button_bg}; color: {theme['button_text']}; border: 1px solid {border}; border-radius: {min(radius, 8)}px;
         padding: {px(padding)}px {px(14)}px; min-height: {px(18)}px;
     }}
-    QPushButton:hover {{ background: {rgba(accent, .12)}; border-color: {rgba(accent, .50)}; }}
+    QPushButton:hover {{ background: {theme['button_hover_background']}; border-color: {rgba(accent, .50)}; }}
     QPushButton:pressed {{ background: {rgba(accent, .20)}; }}
     QPushButton:focus {{ border-color: {accent}; }}
     QPushButton:disabled {{ color: {muted}; background: {subtle}; border-color: {border}; }}
-    QPushButton[primary="true"] {{ background: {accent}; color: {on_color(accent)}; border-color: {accent}; font-weight: 600; }}
+    QPushButton[primary="true"] {{ background: {accent}; color: {theme['primary_button_text']}; border-color: {accent}; font-weight: 600; }}
     QPushButton[primary="true"]:hover {{ background: {QColor(accent).lighter(110).name()}; }}
     QPushButton[primary="true"]:disabled {{ background: {rgba(accent, .30)}; color: {muted}; border-color: transparent; }}
     QPushButton[nav="true"] {{
@@ -105,11 +108,11 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QPushButton[nav="true"][compact="true"] {{ padding-left: {px(11)}px; padding-right: {px(11)}px; }}
     QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {accent}; background: transparent; border: none; padding: {px(3)}px; }}
-    QPushButton[danger="true"] {{ color: #c04c5b; }}
+    QPushButton[danger="true"] {{ color: {theme['error_color']}; }}
     QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit, QComboBox {{
         background: {input_bg}; border: 1px solid {border}; border-radius: {min(radius, 7)}px;
         padding: {px(padding)}px {px(10)}px; min-height: {px(19)}px;
-        selection-background-color: {accent}; selection-color: {on_color(accent)};
+        selection-background-color: {accent}; selection-color: {theme['primary_button_text']};
     }}
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QDateEdit:focus, QComboBox:focus {{ border-color: {accent}; }}
     QSpinBox, QDoubleSpinBox {{ padding-right: {px(28)}px; }}
@@ -131,7 +134,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     }}
     QCalendarWidget QToolButton:hover {{ background: {rgba(accent, .12)}; }}
     QCalendarWidget QToolButton:pressed {{ background: {rgba(accent, .20)}; }}
-    QCalendarWidget QTableView {{ outline: none; selection-background-color: {accent}; selection-color: {on_color(accent)}; }}
+    QCalendarWidget QTableView {{ outline: none; selection-background-color: {accent}; selection-color: {theme['primary_button_text']}; }}
     QCalendarWidget QTableView::item {{ border: none; padding: {px(4)}px; color: {text}; }}
     QCalendarWidget QTableView::item:selected {{ background: {accent}; color: {on_color(accent)}; }}
     QCalendarWidget QHeaderView::section {{ background: {subtle}; color: {muted}; border: none; padding: {px(5)}px; }}
@@ -141,19 +144,19 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QCheckBox::indicator:disabled {{ border-color: {border}; background: {subtle}; }}
     QScrollArea, QWidget#page, QWidget#pageViewport, QWidget#appearancePage, QWidget#appearanceContent, QWidget#appearanceScroll {{ background: transparent; border: none; }}
     QScrollBar:vertical {{ background: transparent; width: 9px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: {rgba(theme['text_secondary'], .30)}; min-height: 30px; border-radius: 3px; }}
+    QScrollBar::handle:vertical {{ background: {rgba(theme['scrollbar_color'], .55)}; min-height: 30px; border-radius: 3px; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
     QScrollBar:horizontal {{ background: transparent; height: 9px; }}
-    QScrollBar::handle:horizontal {{ background: {rgba(theme['text_secondary'], .30)}; min-width: 30px; border-radius: 3px; }}
+    QScrollBar::handle:horizontal {{ background: {rgba(theme['scrollbar_color'], .55)}; min-width: 30px; border-radius: 3px; }}
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
     QTableWidget {{
         background: transparent; alternate-background-color: {subtle}; border: none;
-        gridline-color: {border}; selection-background-color: {rgba(accent, .13)};
+        gridline-color: {border}; selection-background-color: {theme['table_selection_background']};
         selection-color: {text}; outline: none;
     }}
     QTableWidget::item {{ padding: {px(8)}px; border-bottom: 1px solid {border}; }}
-    QHeaderView, QHeaderView::section {{ background: {subtle}; color: {muted}; border: none; }}
+    QHeaderView, QHeaderView::section {{ background: {theme['table_header_background']}; color: {theme['table_header_text']}; border: none; }}
     QHeaderView::section {{ padding: {px(7)}px {px(8)}px; font-weight: 500; }}
     QTableCornerButton::section {{ background: transparent; border: none; }}
     QProgressBar {{
@@ -211,6 +214,19 @@ class Backdrop(QWidget):
         base = QColor(t.get("background_color", "#f4f7fb"))
         base.setAlphaF(t.get("background_opacity", 1.0))
         painter.fillRect(self.rect(), base)
+        gradient_opacity = t.get("background_gradient_opacity", 0) * t.get("background_opacity", 1.0)
+        if gradient_opacity > 0:
+            direction = t.get("gradient_direction", "diagonal")
+            end = QPointF(self.width(), self.height()) if direction == "diagonal" else (
+                QPointF(self.width(), 0) if direction == "horizontal" else QPointF(0, self.height()))
+            gradient = QLinearGradient(QPointF(0, 0), end)
+            start = QColor(t.get("background_color", "#F3F5F9"))
+            start.setAlphaF(t.get("background_opacity", 1.0))
+            finish = QColor(t.get("background_gradient", "#E9ECFF"))
+            finish.setAlphaF(gradient_opacity)
+            gradient.setColorAt(0, start)
+            gradient.setColorAt(1, finish)
+            painter.fillRect(self.rect(), gradient)
         if self.image is not None and self.width() and self.height():
             fit = t.get("image_fit", "cover")
             key = (self.width(), self.height(), fit, self._image_key)
