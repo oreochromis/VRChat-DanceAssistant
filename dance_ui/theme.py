@@ -71,9 +71,9 @@ _COMMON = {
     "overlay_opacity": 0.0, "border_width": 1.0, "radius": 12.0,
     "text_shadow_color": "#000000", "text_shadow_opacity": 0.0,
     "text_shadow_size": 1.0, "text_shadow_blur": 4.0,
-    "secondary_accent": "#39B8C6", "highlight": "#D9A441",
-    "success_color": "#20824E", "warning_color": "#9B6819",
-    "error_color": "#BD4355", "info_color": "#326FD4",
+    "secondary_accent": "#39B8C6", "highlight": "#A56B12",
+    "success_color": "#1B6B3F", "warning_color": "#83520F",
+    "error_color": "#A93649", "info_color": "#285EBB",
     "button_background": "#FFFFFF", "button_text": "#172133",
     "button_hover_background": "#EDF0FF", "primary_button_text": "#FFFFFF",
     "input_background": "#FFFFFF", "table_header_background": "#F5F6FA",
@@ -87,7 +87,7 @@ BUILTIN_THEMES = {
         "nav_background": "#FFFFFF", "nav_opacity": 0.82, "nav_text": "#657189",
         "nav_active_background": "#5865D8", "nav_active_opacity": 0.13,
         "nav_active_text": "#414FB8", "text_primary": "#172133",
-        "text_secondary": "#667289", "card_background": "#FFFFFF",
+        "text_secondary": "#5F6E86", "card_background": "#FFFFFF",
         "card_opacity": 0.94, "border_color": "#DDE2EB", "border_opacity": 0.8,
     },
     "dark": {
@@ -157,15 +157,55 @@ def contrast_ratio(first: str, second: str) -> float:
     return (high + .05) / (low + .05)
 
 
-def theme_contrast_warnings(theme: Mapping[str, Any]) -> list[str]:
-    pairs = (
-        ("主要文字", "text_primary", "card_background"),
-        ("导航文字", "nav_text", "nav_background"),
-        ("主要按钮文字", "primary_button_text", "accent"),
-        ("表头文字", "table_header_text", "table_header_background"),
-    )
-    return [f"{label}与背景对比度偏低" for label, foreground, background in pairs
-            if contrast_ratio(theme[foreground], theme[background]) < 4.5]
+def _blend_colors(foreground: str, background: str, opacity: float) -> str:
+    def rgb(value):
+        value = normalize_color(value).lstrip("#")
+        return [int(value[index:index + 2], 16) for index in (0, 2, 4)]
+    first, second = rgb(foreground), rgb(background)
+    opacity = min(1.0, max(0.0, float(opacity)))
+    return "#" + "".join(f"{round(a * opacity + b * (1 - opacity)):02X}"
+                         for a, b in zip(first, second))
+
+
+def theme_contrast_warnings(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> list[str]:
+    background = theme["background_color"]
+    card = theme["card_background"]
+    gradient = _blend_colors(theme["background_gradient"], background, theme["background_gradient_opacity"])
+    nav = _blend_colors(theme["nav_background"], background, theme["nav_opacity"])
+    nav_active = _blend_colors(theme["nav_active_background"], nav, theme["nav_active_opacity"])
+    warnings = []
+
+    def check(label, foreground, surface, threshold=4.5):
+        if contrast_ratio(theme[foreground], surface) < threshold:
+            warnings.append(label + "与背景对比度偏低")
+
+    for label, foreground in (("主要文字", "text_primary"), ("辅助文字", "text_secondary")):
+        check(label + "（卡片）", foreground, card)
+        check(label + "（页面）", foreground, background)
+        check(label + "（渐变页面）", foreground, gradient)
+    check("输入框文字", "text_primary", theme["input_background"])
+    check("导航文字", "nav_text", nav)
+    check("导航选中项文字", "nav_active_text", nav_active)
+    check("普通按钮文字", "button_text", theme["button_background"])
+    check("悬停按钮文字", "button_text", theme["button_hover_background"])
+    check("主要按钮文字", "primary_button_text", theme["accent"])
+    check("表头文字", "table_header_text", theme["table_header_background"])
+    check("表格选中行文字", "text_primary", theme["table_selection_background"])
+    check("排名与高亮数字", "highlight", card, 3.0)
+    check("排名编号", "accent", card)
+    for label, key in (("成功状态", "success_color"), ("警告状态", "warning_color"),
+                       ("错误状态", "error_color"), ("信息状态", "info_color")):
+        check(label + "标签", key, _blend_colors(theme[key], card, .10))
+        check("运行" + label, key, nav)
+    check("错误通知文字", "text_primary", _blend_colors(theme["error_color"], background, .10))
+    check("成功通知文字", "text_primary", _blend_colors(theme["success_color"], background, .08))
+    check("信息通知文字", "text_primary", _blend_colors(theme["accent"], background, .08))
+    hero_backgrounds = [theme["accent"]]
+    if theme["hero_gradient_opacity"] > 0 or (preferences or {}).get("home_style") == "vivid":
+        hero_backgrounds.extend((theme["secondary_accent"], theme["hero_gradient"]))
+    for surface in hero_backgrounds:
+        check("主视觉文字", "primary_button_text", surface, 3.0)
+    return warnings
 
 
 def _number(value: Any, key: str) -> float:

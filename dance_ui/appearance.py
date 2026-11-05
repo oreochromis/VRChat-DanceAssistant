@@ -664,8 +664,12 @@ class AppearancePage(QWidget):
         for key in ("image_fit", "image_opacity", "image_blur"):
             self._fields[key].setEnabled(image is not None)
             self._fields[key].setToolTip("" if image is not None else "请先导入背景图片")
-        warnings = theme_contrast_warnings(active)
-        self.contrast_status.setText("对比度提醒：" + "；".join(warnings) + "。仍可保存，也可使用预设恢复。")
+        warnings = theme_contrast_warnings(active, self.store.preferences)
+        shown = warnings[:4]
+        self.contrast_status.setText(
+            f"对比度提醒（{len(warnings)} 项）：" + "；".join(shown)
+            + ("；……" if len(warnings) > len(shown) else "") + "。仍可保存，也可重置恢复。")
+        self.contrast_status.setToolTip("\n".join(warnings))
         self.contrast_status.setVisible(bool(warnings))
         self.preview.update()
 

@@ -213,9 +213,9 @@ class UIIntegrationTests(unittest.TestCase):
         window, _, store = self.make_window()
         from dance_ui.widgets import stylesheet
         css = stylesheet(store.active, store.preferences)
-        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #667289;', css)
+        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #5F6E86;', css)
         self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
-        self.assertIn('QPushButton[danger="true"] { color: #BD4355;', css)
+        self.assertIn('QPushButton[danger="true"] { color: #A93649;', css)
 
     def test_mouse_wheel_does_not_change_combo_selection(self):
         window, _, _ = self.make_window()

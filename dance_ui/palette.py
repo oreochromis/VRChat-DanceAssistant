@@ -6,6 +6,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from .theme import BUILTIN_THEMES
+
 
 def _hex(rgb):
     return "#" + "".join(f"{max(0, min(255, round(channel))):02X}" for channel in rgb)
@@ -31,6 +33,23 @@ def _contrast(first, second):
     return (high + .05) / (low + .05)
 
 
+def _ensure_contrast(color, *backgrounds, threshold=4.5):
+    def minimum(candidate):
+        return min(_contrast(candidate, background) for background in backgrounds)
+    if minimum(color) >= threshold:
+        return color
+    target = "#000000" if minimum("#000000") >= minimum("#FFFFFF") else "#FFFFFF"
+    best, best_ratio = color, minimum(color)
+    for step in range(1, 101):
+        candidate = _mix(color, target, step / 100)
+        ratio = minimum(candidate)
+        if ratio > best_ratio:
+            best, best_ratio = candidate, ratio
+        if ratio >= threshold:
+            return candidate
+    return best
+
+
 def palette_from_image(path, base="light"):
     with Image.open(Path(path)) as source:
         image = source.convert("RGB")
@@ -47,6 +66,7 @@ def palette_from_image(path, base="light"):
                        "lightness": lightness, "saturation": saturation})
     if not colors:
         raise ValueError("图片中没有可用颜色。")
+    base_theme = BUILTIN_THEMES[base]
     accent = max(colors, key=lambda color: color["saturation"] * 1.6 + color["share"] * .5)["hex"]
     accent_hue = colorsys.rgb_to_hls(*(channel / 255 for channel in _rgb(accent)))[0]
     secondary = max(colors, key=lambda color: (
@@ -55,23 +75,34 @@ def palette_from_image(path, base="light"):
     highlight = max(colors, key=lambda color: color["saturation"] * .8 + color["lightness"] * .35)["hex"]
     background = (max(colors, key=lambda color: color["lightness"]) if base == "light"
                   else min(colors, key=lambda color: color["lightness"]))["hex"]
-    if base == "light":
-        background = _mix(background, "#FFFFFF", .72)
-    else:
-        background = _mix(background, "#0F1420", .48)
+    background = _mix(background, "#FFFFFF" if base == "light" else "#0F1420", .72 if base == "light" else .62)
+    card = base_theme["card_background"]
+    accent = _ensure_contrast(accent, card)
+    highlight = _ensure_contrast(highlight, card, threshold=3.0)
+    gradient = _mix(background, secondary, .35)
+    hover = _mix(background, accent, .12)
+    table_header = _mix(background, accent, .07)
+    table_selection = _mix(background, accent, .16)
+    nav = _mix(background, base_theme["nav_background"], base_theme["nav_opacity"])
+    nav_selected = _mix(nav, accent, base_theme["nav_active_opacity"])
     text = "#172133" if _contrast("#172133", background) >= _contrast("#EDF1F8", background) else "#EDF1F8"
-    button_text = "#FFFFFF" if _contrast("#FFFFFF", accent) >= _contrast("#182132", accent) else "#182132"
+    text = _ensure_contrast(text, background, gradient, card, base_theme["input_background"], table_selection)
+    text_secondary = _ensure_contrast(_mix(text, background, .30), background, gradient, card)
+    button_text = _ensure_contrast(base_theme["button_text"], base_theme["button_background"], hover)
+    primary_text = "#FFFFFF" if _contrast("#FFFFFF", accent) >= _contrast("#182132", accent) else "#182132"
+    primary_text = _ensure_contrast(primary_text, accent, secondary)
     return {
         "accent": accent, "secondary_accent": secondary, "highlight": highlight,
         "background_color": background, "background_gradient": secondary,
         "background_gradient_opacity": .35, "hero_gradient": secondary,
         "hero_gradient_opacity": .28, "text_primary": text,
-        "text_secondary": _mix(text, background, .30),
-        "nav_active_background": accent, "nav_active_text": accent,
-        "primary_button_text": button_text,
-        "button_hover_background": _mix(background, accent, .12),
-        "table_header_background": _mix(background, accent, .07),
-        "table_header_text": _mix(text, background, .20),
-        "table_selection_background": _mix(background, accent, .16),
+        "text_secondary": text_secondary,
+        "nav_active_background": accent,
+        "nav_active_text": _ensure_contrast(accent, nav_selected),
+        "button_text": button_text, "primary_button_text": primary_text,
+        "button_hover_background": hover,
+        "table_header_background": table_header,
+        "table_header_text": _ensure_contrast(_mix(text, table_header, .20), table_header),
+        "table_selection_background": table_selection,
         "border_color": _mix(background, text, .14),
     }

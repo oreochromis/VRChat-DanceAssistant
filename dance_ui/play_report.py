@@ -353,7 +353,7 @@ class ReportCanvas(QWidget):
         _text(painter, QRectF(rect.left() + 24, rect.top() + 39, rect.width() * .52, 38),
               name, size=24, color=self.text, weight=QFont.Weight.DemiBold)
         _text(painter, QRectF(rect.left() + 24, rect.bottom() - 30, rect.width() * .6, 20),
-              f"累计同房 {friend.get('sessions', 0)} 次 · 来自 VRCX 本地记录", size=12, color=self.secondary)
+              f"累计同房 {friend.get('sessions', 0)} 次 · 来自 VRCX 本地记录", size=12, color=self.muted)
         _text(painter, QRectF(rect.right() - 310, rect.top() + 31, 286, 50),
               format_duration(friend.get("seconds", 0)), size=25, color=self.highlight,
               weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight)

@@ -218,8 +218,22 @@ class ThemeStoreTests(unittest.TestCase):
     def test_contrast_warnings_are_non_destructive(self):
         self.assertEqual(theme_contrast_warnings(self.store.active), [])
         self.store.change({"text_primary": "#FFFFFF", "card_background": "#FFFFFF"})
-        self.assertIn("主要文字与背景对比度偏低", theme_contrast_warnings(self.store.active))
+        self.assertIn("主要文字（卡片）与背景对比度偏低", theme_contrast_warnings(self.store.active))
         self.assertEqual(self.store.active["text_primary"], "#FFFFFF")
+
+    def test_all_text_roles_are_checked(self):
+        self.store.change({
+            "nav_active_text": "#FFFFFF", "nav_active_background": "#FFFFFF", "nav_active_opacity": 1,
+            "text_secondary": "#FFFFFF", "card_background": "#FFFFFF",
+            "button_text": "#FFFFFF", "button_background": "#FFFFFF",
+            "table_header_text": "#FFFFFF", "table_header_background": "#FFFFFF",
+            "success_color": "#FFFFFF", "highlight": "#FFFFFF",
+            "accent": "#FFFFFF", "primary_button_text": "#FFFFFF",
+        })
+        warnings = theme_contrast_warnings(self.store.active, {"home_style": "vivid"})
+        for label in ("导航选中项文字", "辅助文字（卡片）", "普通按钮文字", "表头文字",
+                      "成功状态标签", "排名与高亮数字", "主视觉文字"):
+            self.assertIn(label + "与背景对比度偏低", warnings)
 
     def test_returned_values_cannot_mutate_store(self):
         self.store.active["accent"] = "#000000"
