@@ -104,7 +104,7 @@ class PlayStatsPage(QWidget):
         heading = QHBoxLayout()
         heading.addWidget(label("点歌排行", subheading=True))
         heading.addStretch()
-        self.export_button = button("导出 CSV…", self._export_csv)
+        self.export_button = button("导出表格", self._export_csv)
         self.export_button.setEnabled(False)
         heading.addWidget(self.export_button)
         results.box.addLayout(heading)
@@ -147,6 +147,9 @@ class PlayStatsPage(QWidget):
         heading = QHBoxLayout()
         heading.addWidget(label("好友共同游玩时长", subheading=True))
         heading.addStretch()
+        self.vrcx_export_button = button("导出表格", self._export_vrcx_csv)
+        self.vrcx_export_button.setEnabled(False)
+        heading.addWidget(self.vrcx_export_button)
         self.vrcx_choose_button = button("选择数据库", self.choose_vrcx_database, link=True)
         self.vrcx_read_button = button("从VRCX同步最新数据", self.read_vrcx_stats, primary=True)
         heading.addWidget(self.vrcx_choose_button)
@@ -174,6 +177,8 @@ class PlayStatsPage(QWidget):
         vrcx_card.box.addWidget(self.vrcx_summary)
         self.vrcx_table = table(["排名", "好友", "共同游玩时长", "共同游玩次数", "最近共同游玩"], 1)
         self.vrcx_table.setAccessibleName("好友共同游玩时长排行")
+        self.vrcx_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.vrcx_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.vrcx_table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.vrcx_table.hide()
         vrcx_card.box.addWidget(self.vrcx_table)
@@ -186,6 +191,11 @@ class PlayStatsPage(QWidget):
             cached = load_vrcx_stats()
             if cached:
                 self._show_vrcx_stats(cached)
+
+    def apply_ui_mode(self):
+        advanced = self._main.store.preferences.get("ui_mode", "advanced") == "advanced"
+        self.export_button.setVisible(advanced)
+        self.vrcx_export_button.setVisible(advanced)
 
     def resizeEvent(self, event):
         self._layout_filters()
@@ -261,9 +271,10 @@ class PlayStatsPage(QWidget):
                 f"；共统计到 {len(friends)} 位好友。")
         else:
             self.vrcx_summary.setText("该日期范围没有可统计的好友共同游玩记录；VRCX 未运行的时段无法补齐。")
+        self.vrcx_export_button.setEnabled(bool(friends))
         self.vrcx_table.setSortingEnabled(False)
         self.vrcx_table.setRowCount(0)
-        for friend in friends[:10]:
+        for friend in friends:
             row_index = self.vrcx_table.rowCount()
             self.vrcx_table.insertRow(row_index)
             values = (row_index + 1, friend.get("name") or "未知",
@@ -278,7 +289,7 @@ class PlayStatsPage(QWidget):
                 self.vrcx_table.setItem(row_index, column, item)
         self.vrcx_table.setVisible(bool(friends))
         if friends:
-            row_height = max(36, self.vrcx_table.verticalHeader().defaultSectionSize())
+            row_height = self.vrcx_table.verticalHeader().defaultSectionSize()
             height = self.vrcx_table.horizontalHeader().sizeHint().height() + min(len(friends), 10) * row_height + 4
             self.vrcx_table.setFixedHeight(height)
         self.vrcx_table.setSortingEnabled(True)
@@ -393,7 +404,7 @@ class PlayStatsPage(QWidget):
 
     def _export_csv(self):
         if not self._songs:
-            QMessageBox.information(self, "导出 CSV", "当前范围内没有可导出的数据。")
+            QMessageBox.information(self, "导出表格", "当前范围内没有可导出的数据。")
             return
         start_text = self.start.date().toString("yyyyMMdd")
         end_text = self.end.date().toString("yyyyMMdd")
@@ -412,9 +423,34 @@ class PlayStatsPage(QWidget):
                         _fmt_time(song.get("first_ts")), _fmt_time(song.get("last_ts")),
                     ])
         except OSError as exc:
-            QMessageBox.warning(self, "导出 CSV", f"写入失败: {exc}")
+            QMessageBox.warning(self, "导出表格", f"写入失败: {exc}")
             return
-        QMessageBox.information(self, "导出 CSV", f"已导出 {len(self._songs)} 行到:\n{path}")
+        QMessageBox.information(self, "导出表格", f"已导出 {len(self._songs)} 行到:\n{path}")
+
+    def _export_vrcx_csv(self):
+        friends = list((self._vrcx_data or {}).get("friends") or [])
+        if not friends:
+            QMessageBox.information(self, "导出表格", "当前范围内没有可导出的好友统计。")
+            return
+        start_text = self.start.date().toString("yyyyMMdd")
+        end_text = self.end.date().toString("yyyyMMdd")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出好友共同游玩统计", f"好友共同游玩_{start_text}-{end_text}.csv", "CSV 文件 (*.csv)")
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(["排名", "好友", "共同游玩时长", "共同游玩次数", "最近共同游玩"])
+                for rank, friend in enumerate(friends, 1):
+                    writer.writerow([
+                        rank, friend.get("name") or "未知", format_duration(friend.get("seconds", 0)),
+                        friend.get("sessions", 0), _fmt_time(friend.get("last_ts")),
+                    ])
+        except OSError as exc:
+            QMessageBox.warning(self, "导出表格", f"写入失败: {exc}")
+            return
+        QMessageBox.information(self, "导出表格", f"已导出 {len(friends)} 行到:\n{path}")
 
     def _on_error(self, operation, message):
         if operation == "vrcx_stats":

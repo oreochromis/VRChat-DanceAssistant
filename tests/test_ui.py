@@ -223,7 +223,11 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(controller._demo_running)
         full_size_before_return = window.size()
         self.assertNotEqual(full_size_before_return, full_size)
-        window.minimal_full_button.click()
+        self.assertFalse(hasattr(window, "minimal_full_button"))
+        window.minimal_close_to_tray.setChecked(True)
+        self.assertTrue(controller.config()["close_to_tray"])
+        self.assertTrue(window.close_to_tray.isChecked())
+        window.return_full_mode()
         self.assertEqual(window.store.preferences["ui_mode"], "advanced")
         self.assertEqual(window.stack.currentIndex(), 4)
         self.assertEqual(window.size(), full_size)
@@ -458,6 +462,36 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(report.canvas.grab().isNull())
         report.close()
         QApplication.processEvents()
+
+    def test_vrcx_table_scrolls_and_exports_all_friends_only_in_advanced_mode(self):
+        window, controller, _ = self.make_window()
+        stats = window.play_stats_page
+        window.navigate(2)
+        friends = [{"user_id": f"friend-{index}", "name": f"Friend {index:02d}",
+                    "seconds": (13 - index) * 600, "sessions": index, "last_ts": 1000 + index}
+                   for index in range(1, 13)]
+        controller.result.emit("vrcx_stats", {
+            "path": "演示 VRCX 数据", "friends": friends, "self_names": ["小林"],
+        })
+        QApplication.processEvents()
+        self.assertEqual(stats.vrcx_table.rowCount(), 12)
+        self.assertGreater(stats.vrcx_table.verticalScrollBar().maximum(), 0)
+        self.assertTrue(stats.vrcx_export_button.isHidden())
+        self.assertTrue(stats.export_button.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(stats.vrcx_export_button.isHidden())
+        self.assertFalse(stats.export_button.isHidden())
+        csv_path = self.root / "friends.csv"
+        with (patch("dance_ui.play_stats.QFileDialog.getSaveFileName", return_value=(str(csv_path), "")),
+              patch("dance_ui.play_stats.QMessageBox.information")):
+            stats._export_vrcx_csv()
+        lines = csv_path.read_text(encoding="utf-8-sig").splitlines()
+        self.assertEqual(lines[0], "排名,好友,共同游玩时长,共同游玩次数,最近共同游玩")
+        self.assertEqual(len(lines), 13)
+        self.assertIn("Friend 12", lines[-1])
+        window.set_ui_mode("simple")
+        self.assertTrue(stats.vrcx_export_button.isHidden())
+        self.assertTrue(stats.export_button.isHidden())
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)

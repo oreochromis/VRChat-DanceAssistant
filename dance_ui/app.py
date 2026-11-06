@@ -282,6 +282,10 @@ class MainWindow(QMainWindow, Pages):
     def return_full_mode(self):
         self.set_ui_mode(self._return_mode)
 
+    def set_minimal_close_to_tray(self, checked):
+        if not self._syncing:
+            self.controller.apply_config({"close_to_tray": bool(checked)}, "settings")
+
     def set_ui_mode(self, mode):
         if mode == self.store.preferences.get("ui_mode", "advanced"):
             return
@@ -310,6 +314,8 @@ class MainWindow(QMainWindow, Pages):
             widget.setVisible(advanced)
         if hasattr(self, "appearance_page"):
             self.appearance_page.apply_ui_mode()
+        if hasattr(self, "play_stats_page"):
+            self.play_stats_page.apply_ui_mode()
         for nav in self.nav_buttons:
             nav.setVisible(not minimal)
         self.service_status.setVisible(not minimal)
@@ -560,6 +566,7 @@ class MainWindow(QMainWindow, Pages):
                 self.auto_prefer_cdn.setChecked(config.get("auto_prefer_cdn", True))
                 self.vr_overlay.setChecked(config.get("vr_overlay", True))
                 self.close_to_tray.setChecked(config.get("close_to_tray", False))
+                self.minimal_close_to_tray.setChecked(config.get("close_to_tray", False))
                 self.auto_start_service.setChecked(config.get("auto_start_service", True))
                 self.refresh_storage_location()
             for name in (section,) if section else ("storage", "settings"):

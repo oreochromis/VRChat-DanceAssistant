@@ -171,9 +171,11 @@ class Pages:
         self.minimal_service_button = button("启动服务", self.toggle_service, primary=True)
         self.minimal_service_button.setMinimumHeight(44)
         card.box.addWidget(self.minimal_service_button)
+        self.minimal_close_to_tray = QCheckBox("点 X 最小化到托盘，不退出软件")
+        self.minimal_close_to_tray.setToolTip("开启后点击 X 收进系统托盘，缓存服务保持运行；双击托盘图标恢复窗口。")
+        self.minimal_close_to_tray.toggled.connect(self.set_minimal_close_to_tray)
+        card.box.addWidget(self.minimal_close_to_tray)
         outer.addWidget(card)
-        self.minimal_full_button = button("返回完整模式", self.return_full_mode, link=True)
-        outer.addWidget(self.minimal_full_button, 0, Qt.AlignmentFlag.AlignCenter)
         outer.addStretch()
         return body
 
