@@ -382,8 +382,17 @@ class AppearancePage(QWidget):
         self._build_preferences()
         self.content_layout.addStretch(1)
         self.refresh()
+        self.apply_ui_mode()
         if self.store.warnings:
             self._error(self.store.warnings[0])
+
+    def apply_ui_mode(self) -> None:
+        advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
+        for section in self._sections:
+            section.setVisible(advanced)
+        self.detail_hint.setText(
+            "选择主题和界面风格；需要微调时，再展开下方的背景、颜色等分组。" if advanced else
+            "选择主题和界面风格；背景、遮罩与详细配色位于右上角“高级”模式。")
 
     def _build_theme_card(self) -> None:
         card = QFrame()
@@ -410,7 +419,7 @@ class AppearancePage(QWidget):
         home_row = QHBoxLayout()
         home_row.addWidget(QLabel("界面风格"))
         home_style = QComboBox()
-        for text, value in (("简洁", "simple"), ("多彩", "vivid")):
+        for text, value in (("多彩", "vivid"), ("简洁", "simple")):
             home_style.addItem(text, value)
         home_style.setAccessibleName("界面风格")
         home_style.currentIndexChanged.connect(lambda index: self._change_preferences({"home_style": home_style.itemData(index)}) if index >= 0 else None)
@@ -440,7 +449,8 @@ class AppearancePage(QWidget):
         sharing.addWidget(_button("导出配色", self._export_theme))
         sharing.addStretch(1)
         right.addLayout(sharing)
-        right.addWidget(_muted("选择主题和界面风格；需要微调时，再展开下方的背景、颜色等分组。"))
+        self.detail_hint = _muted("")
+        right.addWidget(self.detail_hint)
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
 

@@ -203,7 +203,7 @@ class MainWindow(QMainWindow, Pages):
         self.nav_buttons[0].setChecked(True)
         box.addStretch()
         self.mode_switch = SegmentedSwitch()
-        self.mode_switch.setToolTip("界面模式：简单只保留常用功能；高级显示曲库维护、CDN 网络等全部选项")
+        self.mode_switch.setToolTip("界面模式：简单只保留常用功能；高级显示曲库维护、CDN 网络、外观详细设置等全部选项")
         self.mode_switch.modeChanged.connect(self.set_ui_mode)
         box.addWidget(self.mode_switch)
         box.addSpacing(12)
@@ -280,6 +280,8 @@ class MainWindow(QMainWindow, Pages):
         advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
         for widget in self._advanced_widgets:
             widget.setVisible(advanced)
+        if hasattr(self, "appearance_page"):
+            self.appearance_page.apply_ui_mode()
         self.mode_switch.set_mode("advanced" if advanced else "simple")
 
     def apply_appearance(self):

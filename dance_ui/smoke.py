@@ -19,7 +19,7 @@ from .release_resources import (
     APP_ICON_ICO_RELATIVE_PATH, APP_ICON_PNG_RELATIVE_PATH,
     describe_app_icons, describe_cooldown,
 )
-from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES
+from .theme import BUILTIN_THEMES, DEFAULT_PREFERENCES, ensure_theme_contrast
 from .windows_taskbar import describe_windows_taskbar
 
 
@@ -75,7 +75,7 @@ def inspect_demo(window) -> dict:
         _check_openvr_library(report)
         if window.store.warnings:
             raise ValueError("; ".join(window.store.warnings))
-        if window.store.active != BUILTIN_THEMES["light"]:
+        if window.store.active != ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES):
             raise ValueError("Use a fresh state directory to check the default light theme.")
         if {theme["id"] for theme in window.store.themes} != {"light", "dark"}:
             raise ValueError("Fresh profiles should contain only the built-in light/dark themes.")

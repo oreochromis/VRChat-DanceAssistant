@@ -102,12 +102,12 @@ class ThemeStoreTests(unittest.TestCase):
             self.store.change_preferences({"ui_mode": "expert"})
 
     def test_home_style_defaults_persists_and_validates(self):
-        self.assertEqual(self.store.preferences["home_style"], "simple")
-        self.store.change_preferences({"home_style": "vivid"})
-        self.assertEqual(ThemeStore(self.store.root_dir).preferences["home_style"], "vivid")
-        self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
-        self.store.select("dark")
         self.assertEqual(self.store.preferences["home_style"], "vivid")
+        self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
+        self.store.change_preferences({"home_style": "simple"})
+        self.assertEqual(ThemeStore(self.store.root_dir).preferences["home_style"], "simple")
+        self.store.select("dark")
+        self.assertEqual(self.store.preferences["home_style"], "simple")
         with self.assertRaises(ThemeError):
             self.store.change_preferences({"home_style": "fancy"})
 
@@ -165,7 +165,7 @@ class ThemeStoreTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 self.store.change({"accent": "#123456"})
         self.assertEqual(self.store.path.read_bytes(), before)
-        self.assertEqual(self.store.active["accent"], BUILTIN_THEMES["light"]["accent"])
+        self.assertEqual(self.store.active["accent"], ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES)["accent"])
         self.assertFalse(self.store.can_undo)
         self.assertEqual(list(self.store.root_dir.glob(".appearance-*.tmp")), [])
 
@@ -180,7 +180,7 @@ class ThemeStoreTests(unittest.TestCase):
         self.store.undo()
         self.assertEqual(self.store.active, before_drag)
         self.store.undo()
-        self.assertEqual(self.store.active["accent"], BUILTIN_THEMES["light"]["accent"])
+        self.assertEqual(self.store.active["accent"], ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES)["accent"])
         self.assertFalse(self.store.undo())
 
     def test_group_reset_does_not_reset_unrelated_fields(self):
@@ -256,7 +256,7 @@ class ThemeStoreTests(unittest.TestCase):
         self.store.active["accent"] = "#000000"
         self.store.themes[0]["name"] = "modified"
         self.store.preferences["scale"] = 150
-        self.assertEqual(self.store.active["accent"], BUILTIN_THEMES["light"]["accent"])
+        self.assertEqual(self.store.active["accent"], ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES)["accent"])
         self.assertEqual(self.store.themes[0]["name"], "浅色")
         self.assertEqual(self.store.preferences["scale"], 100)
 
@@ -314,7 +314,7 @@ class ThemeStoreTests(unittest.TestCase):
         broken = b'{"version": 1, invalid'
         self.store.path.write_bytes(broken)
         recovered = ThemeStore(self.store.root_dir)
-        self.assertEqual(recovered.active, BUILTIN_THEMES["light"])
+        self.assertEqual(recovered.active, ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES))
         backups = list(self.store.root_dir.glob("appearance.corrupt-*.json"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), broken)
@@ -330,15 +330,15 @@ class ThemeStoreTests(unittest.TestCase):
         raw["preferences"] = {"scale": 999, "density": "compact", "logs_expanded": "false"}
         self.store.path.write_text(json.dumps(raw), encoding="utf-8")
         recovered = ThemeStore(self.store.root_dir)
-        self.assertEqual(recovered.active["accent"], BUILTIN_THEMES["light"]["accent"])
+        self.assertEqual(recovered.active["accent"], ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES)["accent"])
         self.assertEqual(recovered.active["radius"], 24)
         self.assertEqual(recovered.preferences, {"scale": 100, "density": "compact", "logs_expanded": False,
                                                  "dismissed_update_version": "", "ui_mode": "advanced",
-                                                 "home_style": "simple"})  # 老存档无 ui_mode 键 -> 高级
+                                                 "home_style": "vivid"})  # 老存档无 ui_mode 键 -> 高级
         self.assertEqual(recovered.active_id, "light")
         independent = ThemeStore(self.root / "another-store")
         self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)
-        self.assertEqual(independent.active, BUILTIN_THEMES["light"])
+        self.assertEqual(independent.active, ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES))
 
 
 if __name__ == "__main__":

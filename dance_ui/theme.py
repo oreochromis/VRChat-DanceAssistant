@@ -60,7 +60,7 @@ THEME_FIELDS = COLOR_FIELDS | frozenset(NUMBER_RANGES) | {
     "background_image", "image_fit", "gradient_direction",
 }
 DEFAULT_PREFERENCES = {"scale": 100, "density": "standard", "logs_expanded": False,
-                       "dismissed_update_version": "", "ui_mode": "simple", "home_style": "simple"}
+                       "dismissed_update_version": "", "ui_mode": "simple", "home_style": "vivid"}
 
 _COMMON = {
     "background_image": "", "background_opacity": 1.0,
@@ -546,10 +546,12 @@ class ThemeStore:
             self._write(self._state)
 
     def _defaults(self) -> dict[str, Any]:
+        preferences = dict(DEFAULT_PREFERENCES)
         return {
             "version": 1, "active_theme": "light",
-            "themes": copy.deepcopy(list(self._provided_themes.values())),
-            "preferences": dict(DEFAULT_PREFERENCES),
+            "themes": [ensure_theme_contrast(theme, preferences)
+                       for theme in self._provided_themes.values()],
+            "preferences": preferences,
         }
 
     def _normalise_document(self, raw: Any) -> dict[str, Any]:
@@ -602,6 +604,8 @@ class ThemeStore:
         if not isinstance(preferences, dict) or "ui_mode" not in preferences:
             # 老用户升级：存档里没有界面模式键，默认高级（不隐藏原有功能）
             state["preferences"]["ui_mode"] = "advanced"
+        for index, theme in enumerate(state["themes"]):
+            state["themes"][index] = ensure_theme_contrast(theme, state["preferences"])
         return state
 
     @property

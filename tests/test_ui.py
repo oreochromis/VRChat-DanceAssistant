@@ -212,14 +212,14 @@ class UIIntegrationTests(unittest.TestCase):
     def test_utility_buttons_use_muted_text_instead_of_accent(self):
         window, _, store = self.make_window()
         from dance_ui.widgets import stylesheet
-        css = stylesheet(store.active, store.preferences)
-        self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #58667D;', css)
-        self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
-        self.assertIn('QPushButton[danger="true"] { color: #A93649;', css)
+        css = stylesheet(store.active, {**store.preferences, "home_style": "simple"})
+        self.assertIn(f'QPushButton[link="true"], QPushButton[subtle="true"] {{ color: {store.active["text_secondary"]};', css)
+        self.assertIn(f'QPushButton[primary="true"] {{ background: {store.active["accent"]}; color: #FFFFFF;', css)
+        self.assertIn(f'QPushButton[danger="true"] {{ color: {store.active["error_color"]};', css)
         self.assertNotIn('QLabel[metricValue="success"]', css)
         vivid_css = stylesheet(store.active, {**store.preferences, "home_style": "vivid"})
         self.assertIn('QFrame[card="true"] {\n            background: qlineargradient', vivid_css)
-        self.assertIn('QLabel[subheading="true"] { color: #5865D8;', vivid_css)
+        self.assertIn(f'QLabel[subheading="true"] {{ color: {store.active["accent"]};', vivid_css)
         self.assertIn('QLabel[metricValue="success"]', vivid_css)
         self.assertIn('QHeaderView, QHeaderView::section {\n            background: qlineargradient', vivid_css)
 
@@ -1147,6 +1147,11 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.nav_buttons[4], Qt.MouseButton.LeftButton)
         editor = window.appearance_page
         self.assertTrue(all(not section.body.isVisible() for section in editor._sections))
+        self.assertTrue(all(not section.isVisible() for section in editor._sections))
+        self.assertIn("高级", editor.detail_hint.text())
+        self.assertTrue(editor.theme_combo.isVisible())
+        window.set_ui_mode("advanced")
+        self.assertTrue(all(section.isVisible() for section in editor._sections))
         logs = editor._preference_fields["logs_expanded"]
         self.assertTrue(logs.isChecked())
         old_row_height = window.queue_table.verticalHeader().defaultSectionSize()
@@ -1169,6 +1174,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.wait_until(lambda: window.backdrop.theme.get("id") == "dark")
         self.assertTrue(store.preferences["logs_expanded"])
         home_style = editor._preference_fields["home_style"]
+        self.assertEqual(home_style.itemData(0), "vivid")
         self.assertEqual(home_style.itemText(home_style.findData("vivid")), "多彩")
         self.assertEqual(home_style.accessibleName(), "界面风格")
         home_style.setCurrentIndex(home_style.findData("vivid"))
@@ -1195,6 +1201,8 @@ class UIIntegrationTests(unittest.TestCase):
         logs.setChecked(False)
         self.wait_until(lambda: not window.logs_panel.isVisible())
         self.assertFalse(store.preferences["logs_expanded"])
+        window.set_ui_mode("simple")
+        self.assertTrue(all(not section.isVisible() for section in editor._sections))
         QTest.mouseClick(window.nav_buttons[0], Qt.MouseButton.LeftButton)
         self.assertEqual(window.logs_toggle.text(), "查看日志")
 

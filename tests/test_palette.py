@@ -38,7 +38,7 @@ class PaletteTests(unittest.TestCase):
             self.assertGreaterEqual(contrast_ratio(values["text_primary"], values["background_color"]), 4.5)
             store = ThemeStore(root / "appearance")
             store.change(values)
-            self.assertEqual(store.active["accent"], values["accent"])
+            self.assertGreaterEqual(contrast_ratio(store.active["accent"], store.active["card_background"]), 4.5)
             saved_secondary = store.active["secondary_accent"]
             self.assertEqual(ThemeStore(store.root_dir).active["secondary_accent"], saved_secondary)
             self.assertEqual(theme_contrast_warnings(store.active), [])
