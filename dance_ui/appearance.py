@@ -389,10 +389,13 @@ class AppearancePage(QWidget):
     def apply_ui_mode(self) -> None:
         advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
         for section in self._sections:
-            section.setVisible(advanced)
+            section.setVisible(advanced or section is self.background_section)
+        for row in self.overlay_rows:
+            row.setVisible(advanced)
+        self.sharing_row.setVisible(advanced)
         self.detail_hint.setText(
             "选择主题和界面风格；需要微调时，再展开下方的背景、颜色等分组。" if advanced else
-            "选择主题和界面风格；背景、遮罩与详细配色位于右上角“高级”模式。")
+            "选择主题和界面风格；遮罩、详细配色及配色导入导出位于右上角“高级”模式。")
 
     def _build_theme_card(self) -> None:
         card = QFrame()
@@ -444,11 +447,13 @@ class AppearancePage(QWidget):
         actions.addWidget(self.delete_button)
         actions.addStretch(1)
         right.addLayout(actions)
-        sharing = QHBoxLayout()
+        self.sharing_row = QWidget()
+        sharing = QHBoxLayout(self.sharing_row)
+        sharing.setContentsMargins(0, 0, 0, 0)
         sharing.addWidget(_button("导入配色", self._import_theme))
         sharing.addWidget(_button("导出配色", self._export_theme))
         sharing.addStretch(1)
-        right.addLayout(sharing)
+        right.addWidget(self.sharing_row)
         self.detail_hint = _muted("")
         right.addWidget(self.detail_hint)
         layout.addLayout(right, 2)
@@ -461,7 +466,7 @@ class AppearancePage(QWidget):
         return section
 
     @staticmethod
-    def _row(section: _Section, title: str, control: QWidget, hint: str = "") -> None:
+    def _row(section: _Section, title: str, control: QWidget, hint: str = "") -> QWidget:
         row = QWidget()
         row.setProperty("settingRow", True)
         layout = QHBoxLayout(row)
@@ -481,17 +486,18 @@ class AppearancePage(QWidget):
         layout.addWidget(description, 2)
         layout.addWidget(control, 3)
         section.fields.addWidget(row)
+        return row
 
-    def _color(self, section: _Section, key: str, title: str, hint: str = "") -> None:
+    def _color(self, section: _Section, key: str, title: str, hint: str = "") -> QWidget:
         field = _ColorField()
         field.hex.setAccessibleName(title + " HEX 色值")
         field.swatch.setAccessibleName("选择" + title)
         field.edited.connect(lambda value: self._change({key: value}))
         field.invalid.connect(self._error)
         self._fields[key] = field
-        self._row(section, title, field, hint)
+        return self._row(section, title, field, hint)
 
-    def _slider(self, section: _Section, key: str, title: str, hint: str = "") -> None:
+    def _slider(self, section: _Section, key: str, title: str, hint: str = "") -> QWidget:
         low, high = NUMBER_RANGES[key]
         field = _SliderField(low, high, percentage=key.endswith("opacity"))
         field.slider.setAccessibleName(title)
@@ -500,10 +506,11 @@ class AppearancePage(QWidget):
         field.edit_started.connect(self.store.begin_edit)
         field.edit_finished.connect(self._finish_edit)
         self._fields[key] = field
-        self._row(section, title, field, hint)
+        return self._row(section, title, field, hint)
 
     def _build_background(self) -> None:
-        section = self._section("背景", "使用纯色或自己的图片；所有变化都会即时应用到窗口。", "background")
+        self.background_section = self._section("背景", "使用纯色或自己的图片；所有变化都会即时应用到窗口。", "background")
+        section = self.background_section
         self._color(section, "background_color", "背景底色")
         self._slider(section, "background_opacity", "底色不透明度", "调节底色与主题基础底色的混合程度")
         images = QWidget()
@@ -531,8 +538,10 @@ class AppearancePage(QWidget):
         self._row(section, "图片适应", fit)
         self._slider(section, "image_opacity", "图片不透明度")
         self._slider(section, "image_blur", "图片模糊", "背景细节过多时，可以适当增加模糊")
-        self._color(section, "overlay_color", "遮罩颜色")
-        self._slider(section, "overlay_opacity", "遮罩不透明度", "给背景叠加颜色，帮助内容保持清晰")
+        self.overlay_rows = (
+            self._color(section, "overlay_color", "遮罩颜色"),
+            self._slider(section, "overlay_opacity", "遮罩不透明度", "给背景叠加颜色，帮助内容保持清晰"),
+        )
 
     def _build_colors(self) -> None:
         section = self._section("常用颜色", "先调整强调色与文字，建立清晰一致的阅读层级。", "colors")

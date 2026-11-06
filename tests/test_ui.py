@@ -1147,11 +1147,15 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.nav_buttons[4], Qt.MouseButton.LeftButton)
         editor = window.appearance_page
         self.assertTrue(all(not section.body.isVisible() for section in editor._sections))
-        self.assertTrue(all(not section.isVisible() for section in editor._sections))
+        self.assertEqual([section.toggle.text() for section in editor._sections if section.isVisible()], ["背景"])
+        self.assertTrue(all(row.isHidden() for row in editor.overlay_rows))
+        self.assertFalse(editor.sharing_row.isVisible())
         self.assertIn("高级", editor.detail_hint.text())
         self.assertTrue(editor.theme_combo.isVisible())
         window.set_ui_mode("advanced")
         self.assertTrue(all(section.isVisible() for section in editor._sections))
+        self.assertTrue(all(not row.isHidden() for row in editor.overlay_rows))
+        self.assertTrue(editor.sharing_row.isVisible())
         logs = editor._preference_fields["logs_expanded"]
         self.assertTrue(logs.isChecked())
         old_row_height = window.queue_table.verticalHeader().defaultSectionSize()
@@ -1202,7 +1206,9 @@ class UIIntegrationTests(unittest.TestCase):
         self.wait_until(lambda: not window.logs_panel.isVisible())
         self.assertFalse(store.preferences["logs_expanded"])
         window.set_ui_mode("simple")
-        self.assertTrue(all(not section.isVisible() for section in editor._sections))
+        self.assertEqual([section.toggle.text() for section in editor._sections if section.isVisible()], ["背景"])
+        self.assertTrue(all(row.isHidden() for row in editor.overlay_rows))
+        self.assertFalse(editor.sharing_row.isVisible())
         QTest.mouseClick(window.nav_buttons[0], Qt.MouseButton.LeftButton)
         self.assertEqual(window.logs_toggle.text(), "查看日志")
 
