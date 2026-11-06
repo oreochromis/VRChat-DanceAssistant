@@ -295,6 +295,8 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(report.isVisible())
         self.assertEqual(report.canvas.data["total"], 84)
         self.assertEqual(report.canvas.data["active_days"], 37)
+        self.assertEqual(report.canvas.active_days, 0)
+        self.assertEqual(report.canvas.dance_partners, 0)
         self.assertEqual(report.windowTitle(), "我的舞蹈报告")
         self.assertEqual(report.canvas.title, f"我的 {QDate.currentDate().year()} 年度舞蹈报告")
         self.assertEqual(report.canvas.accessibleName(), "舞蹈年度报告")
@@ -322,11 +324,13 @@ class UIIntegrationTests(unittest.TestCase):
         rich_data = copy.deepcopy(sparse.data)
         rich_data["songs"].append({"rank": 2, "id": 2, "kind": "wd", "name": "More", "count": 1})
         rich_data["vrcx"] = {"daily_play": [
-            {"day": f"{year}-01-01", "seconds": 1800},
-            {"day": f"{year}-01-02", "seconds": 2400},
-        ]}
+            {"day": f"{year}-01-01", "seconds": 180},
+            {"day": f"{year}-01-02", "seconds": 181},
+        ], "friends": [{"user_id": "friend-1", "name": "Friend", "seconds": 181, "sessions": 1}]}
         rich = ReportCanvas(rich_data, QDate(year, 1, 1), QDate.currentDate(), "全部来源", store.active)
-        self.assertEqual(sparse._report_height(900), rich._report_height(900))
+        self.assertEqual(rich.active_days, 1)
+        self.assertEqual(rich.dance_partners, 1)
+        self.assertLess(sparse._report_height(900), rich._report_height(900))
         rich.close()
         sparse.resize(900, sparse._report_height(900))
         self.assertFalse(sparse.grab().isNull())
@@ -348,6 +352,8 @@ class UIIntegrationTests(unittest.TestCase):
         report = stats._report
         self.assertEqual(report.canvas.vrcx_friends[0]["name"], "小林")
         self.assertEqual(report.canvas.self_played, 30)
+        self.assertEqual(report.canvas.active_days, len(report.canvas.daily_play))
+        self.assertEqual(report.canvas.dance_partners, 2)
         total_play = sum(item["seconds"] for item in report.canvas.daily_play)
         self.assertEqual(report.canvas.total_play_seconds, total_play)
         self.assertEqual(sum(report.canvas.world_play.values()), total_play)

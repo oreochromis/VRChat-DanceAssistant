@@ -39,12 +39,13 @@ class ReportCanvas(QWidget):
         self.start, self.end, self.source = start, end, source
         self.songs = sorted(self.data.get("songs") or [],
                             key=lambda song: (-int(song.get("count", 0)), int(song.get("rank", 0))))
-        self.players = list(self.data.get("players") or [])
         vrcx = self.data.get("vrcx") or {}
         self.vrcx_friends = list(vrcx.get("friends") or []) if isinstance(vrcx, dict) else []
         self.daily_play = sorted((item for item in (vrcx.get("daily_play") or [])
                                   if isinstance(item, dict) and item.get("day")),
                                  key=lambda item: item["day"]) if isinstance(vrcx, dict) else []
+        self.active_days = sum(int(item.get("seconds", 0)) > 180 for item in self.daily_play)
+        self.dance_partners = len(self.vrcx_friends)
         self.total_play_seconds = int(vrcx.get("total_play_seconds", 0)) if isinstance(vrcx, dict) else 0
         world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
         self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
@@ -283,9 +284,9 @@ class ReportCanvas(QWidget):
             summary = ("最活跃月份", int(peak_month["period"][5:7]) if peak_month else "—",
                        "月" if peak_month else "", format_duration(peak_month["seconds"]) if peak_month else "")
         values = [
-            ("活跃天数", int(self.data.get("active_days", 0)), "天", "本期有点歌记录"),
-            ("舞蹈伙伴", len(self.players), "位", "本期共同点歌"),
-            ("点播歌曲", self.self_played, "首", "本人点播且已播放"),
+            ("活跃天数", self.active_days, "天", ""),
+            ("舞蹈伙伴", self.dance_partners, "位", ""),
+            ("点播歌曲", self.self_played, "首", ""),
             summary,
         ]
         gap = 12
@@ -387,11 +388,13 @@ class ReportCanvas(QWidget):
         else:
             summary_label = "本期合计"
             summary_value = format_duration(sum(counts))
-        _text(painter, QRectF(rect.left() + 20, rect.top() + 49, rect.width() - 40, 20),
-              summary_label, size=11, color=self.muted)
-        _text(painter, QRectF(rect.left() + 20, rect.top() + 67, rect.width() - 40, 38),
+        summary_x = rect.left() + rect.width() * .38
+        summary_width = rect.width() * .62 - 20
+        _text(painter, QRectF(summary_x, rect.top() + 49, summary_width, 20),
+              summary_label, size=11, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
+        _text(painter, QRectF(summary_x, rect.top() + 67, summary_width, 38),
               summary_value, size=25, color=self.accent if hover >= 0 else self.text,
-              weight=QFont.Weight.DemiBold)
+              weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight)
         plot = QRectF(rect.left() + 62, rect.top() + 122, rect.width() - 84, 120)
         maximum_minutes = max(3, math.ceil(max(counts, default=0) / 60))
         maximum = maximum_minutes * 60
