@@ -109,7 +109,7 @@ def inspect_demo(window) -> dict:
                 raise ValueError("Qt could not decode the embedded SVG: " + name)
         report["checks"].append("embedded_svg_icons")
         titles = [button.text() for button in window.nav_buttons]
-        if titles != ["运行", "存储", "统计", "设置", "外观"] or window.stack.count() != 5:
+        if titles != ["运行", "存储", "统计", "设置", "外观"] or window.stack.count() != 6:
             raise ValueError("The expected five pages were not created.")
         for index, button in enumerate(window.nav_buttons):
             button.click()

@@ -98,6 +98,8 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(ThemeStore(self.store.root_dir).preferences["ui_mode"], "simple")
         self.store.change_preferences({"ui_mode": "advanced"})
         self.assertEqual(self.store.preferences["ui_mode"], "advanced")
+        self.store.change_preferences({"ui_mode": "minimal"})
+        self.assertEqual(ThemeStore(self.store.root_dir).preferences["ui_mode"], "minimal")
         with self.assertRaises(ThemeError):
             self.store.change_preferences({"ui_mode": "expert"})
 

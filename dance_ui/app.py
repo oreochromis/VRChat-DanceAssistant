@@ -127,11 +127,16 @@ class MainWindow(QMainWindow, Pages):
         outer.addWidget(self.banner)
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget {background: transparent;}")
+        self._last_ui_mode = None
+        self._full_size = self.size()
+        self._full_page_index = 0
+        self._return_mode = "simple"
         self.stack.addWidget(self.build_run_page())
         self.stack.addWidget(self.build_storage_page())
         self.play_stats_page = PlayStatsPage(self)
         self.stack.addWidget(self.play_stats_page)
         self.stack.addWidget(self.build_settings_page())
+        self.minimal_page = self.build_minimal_page()
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
                                   self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
                                   self.storage_location_box]
@@ -139,8 +144,10 @@ class MainWindow(QMainWindow, Pages):
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
         self.stack.addWidget(self.appearance_page)
+        self.stack.addWidget(self.minimal_page)
         outer.addWidget(self.stack, 1)
         self.build_logs_and_footer(outer)
+        self.apply_ui_mode()
         self._appearance_timer = QTimer(self)
         self._appearance_timer.setSingleShot(True)
         self._appearance_timer.setInterval(65)
@@ -159,9 +166,10 @@ class MainWindow(QMainWindow, Pages):
         self.render_queue()
         self.render_downloads()
         QTimer.singleShot(0, self.refresh_steamvr_startup)
-        # 自动启动服务：默认开启（仅高级模式可关）。controller.start 自身会拦截
-        # 非 Windows/非管理员/已在启动中等情况并按原路径提示，此处只需跳过演示模式。
-        if not controller.demo and controller.config().get("auto_start_service", True):
+        # 极简模式始终自动启动；其他模式遵循设置。controller.start 自身会拦截
+        # 非 Windows/非管理员/已在启动中等情况并按原路径提示。
+        if (store.preferences.get("ui_mode") == "minimal"
+                or (not controller.demo and controller.config().get("auto_start_service", True))):
             QTimer.singleShot(0, controller.start)
         # SteamVR 面板页：仅真机 Windows 启用；跟随配置热启停
         if os.name == "nt" and not controller.demo:
@@ -203,7 +211,7 @@ class MainWindow(QMainWindow, Pages):
         self.nav_buttons[0].setChecked(True)
         box.addStretch()
         self.mode_switch = SegmentedSwitch()
-        self.mode_switch.setToolTip("界面模式：简单只保留常用功能；高级显示曲库维护、CDN 网络、外观详细设置等全部选项")
+        self.mode_switch.setToolTip("界面模式：极简仅保留缓存服务；简单保留常用功能；高级显示全部选项")
         self.mode_switch.modeChanged.connect(self.set_ui_mode)
         box.addWidget(self.mode_switch)
         box.addSpacing(12)
@@ -242,7 +250,8 @@ class MainWindow(QMainWindow, Pages):
         self.logs.setAccessibleName("最近的运行日志")
         layout.addWidget(self.logs)
         outer.addWidget(self.logs_panel)
-        footer = QWidget()
+        self.footer = QWidget()
+        footer = self.footer
         footer.setObjectName("footer")
         footer_box = QHBoxLayout(footer)
         footer_box.setContentsMargins(26, 9, 26, 9)
@@ -259,6 +268,8 @@ class MainWindow(QMainWindow, Pages):
         outer.addWidget(footer)
 
     def navigate(self, index):
+        if self.store.preferences.get("ui_mode") == "minimal":
+            self.return_full_mode()
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
         if index == 1:
@@ -268,21 +279,57 @@ class MainWindow(QMainWindow, Pages):
         elif index == 4:
             self.appearance_page.refresh()
 
+    def return_full_mode(self):
+        self.set_ui_mode(self._return_mode)
+
     def set_ui_mode(self, mode):
         if mode == self.store.preferences.get("ui_mode", "advanced"):
             return
         self.store.change_preferences({"ui_mode": mode})
         self.apply_ui_mode()
-        self.notify("已切换到简单模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。"
-                    if mode == "simple" else "已切换到高级模式：全部功能已显示。")
+        if mode == "minimal":
+            QTimer.singleShot(0, self.controller.start)
+        message = {
+            "minimal": "已切换到极简模式：缓存服务将自动启动。",
+            "simple": "已切换到简单模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。",
+            "advanced": "已切换到高级模式：全部功能已显示。",
+        }[mode]
+        self.notify(message)
 
     def apply_ui_mode(self):
-        advanced = self.store.preferences.get("ui_mode", "advanced") == "advanced"
+        mode = self.store.preferences.get("ui_mode", "advanced")
+        previous = self._last_ui_mode
+        minimal = mode == "minimal"
+        advanced = mode == "advanced"
+        if minimal and previous != "minimal":
+            self._full_size = self.size()
+            current = self.stack.currentIndex()
+            self._full_page_index = current if current >= 0 and self.stack.widget(current) != self.minimal_page else 0
+            self._return_mode = previous if previous in ("simple", "advanced") else "simple"
         for widget in self._advanced_widgets:
             widget.setVisible(advanced)
         if hasattr(self, "appearance_page"):
             self.appearance_page.apply_ui_mode()
-        self.mode_switch.set_mode("advanced" if advanced else "simple")
+        for nav in self.nav_buttons:
+            nav.setVisible(not minimal)
+        self.service_status.setVisible(not minimal)
+        self.service_button.setVisible(not minimal)
+        if hasattr(self, "footer"):
+            self.footer.setVisible(not minimal)
+        if hasattr(self, "logs_panel"):
+            self.logs_panel.setVisible(self.store.preferences["logs_expanded"] and not minimal)
+        self.mode_switch.set_mode(mode)
+        if minimal:
+            self.stack.setCurrentWidget(self.minimal_page)
+            self.setMinimumSize(480, 380)
+            if previous != "minimal":
+                self.resize(560, 460)
+        else:
+            self.setMinimumSize(850, 680)
+            if previous == "minimal":
+                self.stack.setCurrentIndex(self._full_page_index)
+                self.resize(self._full_size)
+        self._last_ui_mode = mode
 
     def apply_appearance(self):
         theme, preferences = self.store.active, self.store.preferences
@@ -309,7 +356,7 @@ class MainWindow(QMainWindow, Pages):
         self.render_downloads()
         self.render_queue()
         self.resize_tables()
-        self.logs_panel.setVisible(preferences["logs_expanded"])
+        self.logs_panel.setVisible(preferences["logs_expanded"] and preferences.get("ui_mode") != "minimal")
         self.logs_toggle.setText("收起日志" if preferences["logs_expanded"] else "查看日志")
         self.render_runtime()
         if theme["text_shadow_opacity"] > 0:
@@ -424,6 +471,11 @@ class MainWindow(QMainWindow, Pages):
         if not running and self._runtime.get("hosts_restore_pending") and phase not in ("starting", "stopping"):
             self.service_button.setText("恢复系统设置")
         self.service_button.setEnabled(phase not in ("starting", "stopping"))
+        self.minimal_service_button.setText(self.service_button.text())
+        self.minimal_service_button.setEnabled(self.service_button.isEnabled())
+        tone = ("error" if phase == "failed" else "warning" if phase in ("starting", "stopping") or self._runtime_warning
+                else "success" if running else "muted")
+        set_status(self.minimal_state, title, tone)
         if self._runtime.get("error"):
             self.notify(str(self._runtime["error"]), error=True)
         elif previous_warning and self.banner.rawText() == previous_warning:
@@ -898,6 +950,8 @@ class MainWindow(QMainWindow, Pages):
         self.metric_hits.set_value(f"{hits} 首")
         self.metric_misses.set_value(f"{misses} 首")
         self.metric_saved.set_value(saved)
+        self.minimal_hits.setText(f"本地命中 {hits} 首")
+        self.minimal_saved.setText("节省流量 " + saved)
 
     def append_log(self, message):
         self.logs.appendPlainText(str(message))
@@ -951,6 +1005,8 @@ class MainWindow(QMainWindow, Pages):
             self.song_title.setText("等待进入跳舞房")
             self.song_meta.setText("进入 PyPyDance / WannaDance 房间后，这里会显示当前歌曲、点歌人和缓存位置。")
             set_status(self.song_state, "等待检测")
+        self.minimal_song_title.setText(self.song_title.text())
+        self.minimal_song_meta.setText(self.song_meta.text())
         upcoming = self._queue[1:]
         self.queue_table.setRowCount(len(upcoming))
         vivid = self.store.preferences.get("home_style", "simple") == "vivid"

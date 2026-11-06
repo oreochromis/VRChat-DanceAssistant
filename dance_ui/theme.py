@@ -421,8 +421,8 @@ def _preference_value(key: str, value: Any) -> Any:
             raise ThemeError("不再提醒的版本号必须是文本。")
         return value.strip()
     if key == "ui_mode":
-        if value not in ("simple", "advanced"):
-            raise ThemeError("界面模式请选择简单或高级。")
+        if value not in ("minimal", "simple", "advanced"):
+            raise ThemeError("界面模式请选择极简、简单或高级。")
         return value
     if key == "home_style":
         if value not in ("simple", "vivid"):

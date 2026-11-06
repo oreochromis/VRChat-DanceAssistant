@@ -49,7 +49,7 @@ class PlayStatsPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         area, _, box = page()
         outer.addWidget(area)
-        box.addWidget(section_title("点歌统计", "回看点歌记录，导出你的年度总结"))
+        box.addWidget(section_title("点歌统计"))
 
         self.filters_panel = Card()
         self.filters_grid = QGridLayout()
