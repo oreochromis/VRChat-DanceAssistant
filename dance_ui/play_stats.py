@@ -4,9 +4,9 @@ from __future__ import annotations
 import csv
 from datetime import datetime
 
-from PySide6.QtCore import QDate, Qt
+from PySide6.QtCore import QDate, Qt, QSignalBlocker
 from PySide6.QtWidgets import (
-    QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QLineEdit, QMessageBox,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QLineEdit, QMessageBox,
     QProgressBar, QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -61,6 +61,13 @@ class PlayStatsPage(QWidget):
             self.source.addItem(text, value)
         self.source.currentIndexChanged.connect(self.refresh)
         source_field = field("来源", self.source)
+        self.player_filter = QComboBox()
+        self.player_filter.addItem("我的点歌", "__self__")
+        self.player_filter.addItem("全部点歌人", "")
+        self.player_filter.setMinimumWidth(140)
+        self.player_filter.setAccessibleName("点歌人筛选")
+        self.player_filter.currentIndexChanged.connect(self.refresh)
+        player_field = field("点歌人", self.player_filter)
 
         today = QDate.currentDate()
         self.start = QDateEdit(QDate(today.year(), 1, 1))
@@ -87,7 +94,8 @@ class PlayStatsPage(QWidget):
         presets.addWidget(button("近 30 天", self._preset_month))
         presets.addWidget(button("全部", self._preset_all))
         preset_box.addLayout(presets)
-        self.filter_widgets = [source_field, field("开始日期", self.start), field("结束日期", self.end), preset_group]
+        self.filter_widgets = [source_field, player_field, field("开始日期", self.start),
+                               field("结束日期", self.end), preset_group]
         self.filters_panel.box.addLayout(self.filters_grid)
         self._layout_filters()
         box.addWidget(self.filters_panel)
@@ -114,9 +122,11 @@ class PlayStatsPage(QWidget):
         self.empty_state.setMinimumHeight(110)
         results.box.addWidget(self.empty_state)
 
-        self.table = table(["排名", "次数", "歌名", "编号", "来源", "最常点歌人", "最近点歌"], 2)
+        self.table = table(["排名", "次数", "歌名", "编号", "来源", "最近播放"], 2)
         self.table.setAccessibleName("点歌排行")
         self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         self.table.horizontalHeader().setSortIndicator(0, Qt.SortOrder.AscendingOrder)
         self.table.setSortingEnabled(True)
         self.table.hide()
@@ -124,7 +134,7 @@ class PlayStatsPage(QWidget):
         box.addWidget(results)
 
         box.addWidget(label(
-            "统计本软件运行期间检测到的点歌，从本功能上线起累积；同一首歌离开队列后再次入队会记为新的一次。",
+            "仅统计本软件运行期间检测到并已实际开始播放的点歌，从本功能上线起累积；同一首歌再次播放会记为新的一次。",
             muted=True, wrap=True))
         report_row = QHBoxLayout()
         report_row.addWidget(label("把当前日期和来源的统计结果变成一份可分享的年度风格报告。", muted=True, wrap=True), 1)
@@ -147,8 +157,8 @@ class PlayStatsPage(QWidget):
             muted=True, wrap=True))
         self_row = QHBoxLayout()
         self_row.addWidget(label("本人显示名称", muted=True))
-        self.self_name_input = QLineEdit(saved_self_name())
-        self.self_name_input.setPlaceholderText("用于“本人点播且已播放”统计，需与游戏内名称一致")
+        self.self_name_input = QLineEdit("小林" if self.controller.demo else saved_self_name())
+        self.self_name_input.setPlaceholderText("用于“我的点歌”筛选，需与游戏内名称一致")
         self.self_name_input.editingFinished.connect(self._save_self_name)
         self_row.addWidget(self.self_name_input, 1)
         vrcx_card.box.addLayout(self_row)
@@ -184,7 +194,7 @@ class PlayStatsPage(QWidget):
     def _layout_filters(self):
         while self.filters_grid.count():
             self.filters_grid.takeAt(0)
-        columns = 4 if self.width() >= 1040 else 2
+        columns = 5 if self.width() >= 1250 else 3 if self.width() >= 900 else 2
         self.filter_columns = columns
         for index, widget in enumerate(self.filter_widgets):
             self.filters_grid.addWidget(widget, index // columns, index % columns)
@@ -207,10 +217,12 @@ class PlayStatsPage(QWidget):
 
     def _save_self_name(self):
         name = self.self_name_input.text().strip()
-        save_self_name(name)
+        if not self.controller.demo:
+            save_self_name(name)
         if self._vrcx_data and not self._vrcx_data.get("self_names") and name and not self.controller.demo:
             self._vrcx_data["self_names"] = [name]
             save_vrcx_stats(self._vrcx_data)
+        self.refresh()
 
     def read_vrcx_stats(self, path=None):
         start_date, end_date = self.start.date(), self.end.date()
@@ -235,6 +247,10 @@ class PlayStatsPage(QWidget):
         self.vrcx_read_button.setEnabled(True)
         self.vrcx_choose_button.setEnabled(True)
         self._vrcx_data = result
+        self_names = [str(name).strip() for name in (result.get("self_names") or []) if str(name).strip()]
+        if self_names and not self.self_name_input.text().strip():
+            self.self_name_input.setText(self_names[0])
+            self._save_self_name()
         self.vrcx_path.setText("数据库：" + str(result.get("path") or "未知"))
         self.vrcx_path.setToolTip(str(result.get("path") or ""))
         friends = list(result.get("friends") or [])
@@ -267,11 +283,34 @@ class PlayStatsPage(QWidget):
             self.vrcx_table.setFixedHeight(height)
         self.vrcx_table.setSortingEnabled(True)
 
+    def _update_player_options(self, players):
+        selected = self.player_filter.currentData()
+        names = sorted({str(name).strip() for name in (players or []) if str(name).strip()},
+                       key=str.casefold)
+        if selected not in ("", "__self__", None) and selected not in names:
+            names.append(selected)
+        with QSignalBlocker(self.player_filter):
+            self.player_filter.clear()
+            self.player_filter.addItem("我的点歌", "__self__")
+            self.player_filter.addItem("全部点歌人", "")
+            for name in names:
+                self.player_filter.addItem(name, name)
+            index = self.player_filter.findData(selected)
+            self.player_filter.setCurrentIndex(max(0, index))
+
     def refresh(self):
         start_date, end_date = self.start.date(), self.end.date()
         if start_date > end_date:
             self.loading.hide()
             self.summary.setText("开始日期晚于结束日期，请调整日期范围。")
+            return
+        player = self.self_name_input.text().strip() if self.player_filter.currentData() == "__self__" else self.player_filter.currentData()
+        if self.player_filter.currentData() == "__self__" and not player:
+            self.loading.hide()
+            self._report_data = None
+            self._songs = []
+            self._render()
+            self.summary.setText("请先在下方填写本人显示名称，再查看“我的点歌”。")
             return
         self.summary.setText("正在读取点歌历史…")
         self.loading.show()
@@ -279,7 +318,7 @@ class PlayStatsPage(QWidget):
         self.report_button.setEnabled(False)
         self.controller.play_history_stats(
             _day_start(start_date), _day_start(end_date) + 86400,
-            self.source.currentData())
+            self.source.currentData(), player or None)
 
     def _on_result(self, operation, result):
         if operation == "vrcx_stats" and isinstance(result, dict):
@@ -288,17 +327,15 @@ class PlayStatsPage(QWidget):
         if operation != "play_history_stats" or not isinstance(result, dict):
             return
         self.loading.hide()
+        self._update_player_options(result.get("available_players"))
         self._report_data = result
         self._songs = list(result.get("songs") or [])
         total = result.get("total", 0)
-        players = result.get("players") or []
         if not total:
-            self.summary.setText("该时间范围内没有点歌记录。")
+            self.summary.setText("该时间范围内没有已播放的点歌记录。")
         else:
-            text = f"共 {total} 次点歌 · {len(self._songs)} 首不同歌曲"
-            if players:
-                top = players[0]
-                text += f" · 点歌最多：{top['player']}（{top['count']} 次）"
+            scope = "我的点歌" if self.player_filter.currentData() == "__self__" else self.player_filter.currentText()
+            text = f"{scope} · 共 {total} 次已播放点歌 · {len(self._songs)} 首不同歌曲"
             earliest = result.get("earliest")
             if earliest:
                 text += f" · 最早记录 {_fmt_time(earliest)}"
@@ -316,7 +353,6 @@ class PlayStatsPage(QWidget):
                 song.get("name") or "—",
                 song.get("id"),
                 _KIND_LABELS.get(song.get("kind"), song.get("kind") or "?"),
-                song.get("top_player") or "—",
                 _fmt_time(song.get("last_ts")),
             )
             for column, value in enumerate(values):
@@ -333,9 +369,9 @@ class PlayStatsPage(QWidget):
         self.export_button.setEnabled(has_songs)
         self.report_button.setEnabled(has_songs)
         if has_songs:
-            row_height = max(36, self.table.verticalHeader().defaultSectionSize())
+            row_height = self.table.verticalHeader().defaultSectionSize()
             header_height = self.table.horizontalHeader().sizeHint().height()
-            self.table.setFixedHeight(header_height + min(len(self._songs), 8) * row_height + 4)
+            self.table.setFixedHeight(header_height + min(len(self._songs), 10) * row_height + 4)
 
     def open_report(self):
         if not self._report_data or not self._songs:
@@ -347,8 +383,7 @@ class PlayStatsPage(QWidget):
         start_ts, end_ts = _day_start(self.start.date()), _day_start(self.end.date()) + 86400
         if self._vrcx_data and self._vrcx_data.get("start_ts") == start_ts and self._vrcx_data.get("end_ts") == end_ts:
             report_data["vrcx"] = self._vrcx_data
-        report_data["self_played"] = 30 if self.controller.demo else core.self_played_count(
-            start_ts, end_ts, (report_data.get("vrcx") or {}).get("self_names") or [])
+        report_data["self_played"] = int(self._report_data.get("total", 0))
         self._report = PlayReportDialog(
             self, report_data, self.start.date(), self.end.date(),
             self.source.currentText(), self._main.store.active)
@@ -369,12 +404,11 @@ class PlayStatsPage(QWidget):
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(["排名", "次数", "歌名", "编号", "来源", "最常点歌人", "首次点歌", "最近点歌"])
+                writer.writerow(["排名", "次数", "歌名", "编号", "来源", "首次播放", "最近播放"])
                 for song in self._songs:
                     writer.writerow([
                         song.get("rank"), song.get("count"), song.get("name") or "",
                         song.get("id"), _KIND_LABELS.get(song.get("kind"), ""),
-                        song.get("top_player") or "",
                         _fmt_time(song.get("first_ts")), _fmt_time(song.get("last_ts")),
                     ])
         except OSError as exc:

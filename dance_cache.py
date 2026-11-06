@@ -503,18 +503,20 @@ def self_played_count(start_ts, end_ts, self_names):
     return total
 
 
-def play_history_stats(start_ts=None, end_ts=None, kind=None):
-    """聚合点歌历史。start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"。
-    返回歌曲/玩家排行，以及报告使用的 months=[{month, count}] 和 active_days。
-    earliest 是最早一条历史记录的时间戳，不受筛选范围影响。损坏行跳过。"""
+def play_history_stats(start_ts=None, end_ts=None, kind=None, player=None):
+    """聚合实际开始播放的点歌；player 为显示名称时只统计该玩家。
+    start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"。
+    available_players 包含当前日期和来源内的全部点歌人，不受 player 筛选影响。"""
+    selected_player = str(player or "").strip()
     counts = {}
     players = {}
+    available_players = set()
     months = {}
     days = set()
     total = 0
     earliest = None
     try:
-        with open(history_path(), "r", encoding="utf-8") as f:
+        with open(played_history_path(), "r", encoding="utf-8") as f:
             lines = f.readlines()
     except OSError:
         lines = []
@@ -539,6 +541,11 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None):
         ekind = entry.get("kind") if entry.get("kind") in ("pypy", "wd") else "pypy"
         if kind and ekind != kind:
             continue
+        entry_player = str(entry.get("player") or "").strip()
+        if entry_player:
+            available_players.add(entry_player)
+        if selected_player and entry_player != selected_player:
+            continue
         total += 1
         try:
             local = time.localtime(ts)
@@ -554,10 +561,9 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None):
         name = str(entry.get("name") or "").strip()
         if name and name != "?":
             slot["name"] = name
-        player = str(entry.get("player") or "").strip()
-        if player:
-            slot["players"][player] = slot["players"].get(player, 0) + 1
-            players[player] = players.get(player, 0) + 1
+        if entry_player:
+            slot["players"][entry_player] = slot["players"].get(entry_player, 0) + 1
+            players[entry_player] = players.get(entry_player, 0) + 1
         slot["first_ts"] = min(slot["first_ts"], ts)
         slot["last_ts"] = max(slot["last_ts"], ts)
     songs = sorted(counts.values(), key=lambda s: (-s["count"], s["first_ts"]))
@@ -568,6 +574,7 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None):
     top_players = sorted(({"player": p, "count": c} for p, c in players.items()),
                          key=lambda x: (-x["count"], x["player"]))
     return {"total": total, "songs": songs, "players": top_players, "earliest": earliest,
+            "available_players": sorted(available_players, key=str.casefold),
             "months": [{"month": month, "count": months[month]} for month in sorted(months)],
             "active_days": len(days)}
 

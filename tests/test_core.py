@@ -280,10 +280,13 @@ class CoreTests(unittest.TestCase):
             {"ts": 3000.0, "kind": "wd", "id": 2, "name": "Song B", "player": "Alice"},
             {"ts": 9000.0, "kind": "pypy", "id": 3, "name": "Song C", "player": "Bob"},
         ]
-        with open(self.dc.history_path(), "w", encoding="utf-8") as f:
+        with open(self.dc.played_history_path(), "w", encoding="utf-8") as f:
             for e in entries:
                 f.write(json.dumps(e) + "\n")
             f.write("not json at all\n")  # 损坏行应跳过
+        with open(self.dc.history_path(), "w", encoding="utf-8") as f:
+            f.write(json.dumps({"ts": 1500.0, "kind": "pypy", "id": 99,
+                                "name": "Queued only", "player": "Alice"}) + "\n")
         stats = self.dc.play_history_stats()
         self.assertEqual(stats["total"], 4)
         self.assertEqual(stats["earliest"], 1000.0)
@@ -295,6 +298,15 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in stats["songs"]], [1, 2, 3])
         self.assertEqual(stats["players"], [{"player": "Alice", "count": 3},
                                             {"player": "Bob", "count": 1}])
+        self.assertEqual(stats["available_players"], ["Alice", "Bob"])
+        alice = self.dc.play_history_stats(player="Alice")
+        self.assertEqual(alice["total"], 3)
+        self.assertEqual({song["id"] for song in alice["songs"]}, {1, 2})
+        self.assertEqual(alice["available_players"], ["Alice", "Bob"])
+        self.assertEqual(self.dc.play_history_stats(player="Bob")["total"], 1)
+        nobody = self.dc.play_history_stats(player="Nobody")
+        self.assertEqual(nobody["total"], 0)
+        self.assertEqual(nobody["available_players"], ["Alice", "Bob"])
         self.assertEqual(stats["active_days"], 1)
         self.assertEqual(stats["months"], [{"month": "1970-01", "count": 4}])
         # 时间范围过滤（end 不含）
@@ -307,7 +319,7 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(wd_only["total"], 1)
         self.assertEqual(wd_only["songs"][0]["kind"], "wd")
         # 无记录时为空统计
-        (self.root / "play_history.jsonl").unlink()
+        (self.root / "played_history.jsonl").unlink()
         empty = self.dc.play_history_stats()
         self.assertEqual(empty["total"], 0)
         self.assertIsNone(empty["earliest"])

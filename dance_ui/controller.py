@@ -359,32 +359,52 @@ class CoreController(QObject):
             return
         self._run("diagnostics", core.collect_diagnostics)
 
-    def play_history_stats(self, start_ts, end_ts, kind):
+    def play_history_stats(self, start_ts, end_ts, kind, player=None):
         if self.demo:
-            songs = [
-                {"rank": 1, "id": 3528, "kind": "pypy", "name": "恋爱循环", "count": 42,
-                 "top_player": "小林", "first_ts": start_ts, "last_ts": end_ts - 1},
-                {"rank": 2, "id": 1837, "kind": "pypy", "name": "极乐净土", "count": 30,
-                 "top_player": "Momo", "first_ts": start_ts, "last_ts": end_ts - 1},
-                {"rank": 3, "id": 7152, "kind": "wd", "name": "示例 WannaDance 曲", "count": 12,
-                 "top_player": "Akira", "first_ts": start_ts, "last_ts": end_ts - 1},
+            song_specs = [
+                (3528, "恋爱循环", "pypy", {"小林": 18, "Momo": 14, "Akira": 10}),
+                (1837, "极乐净土", "pypy", {"小林": 12, "Momo": 18}),
+                (7152, "示例 WannaDance 曲", "wd", {"小林": 6, "Akira": 6}),
+                (6421, "夜に駆ける", "pypy", {"小林": 9, "Momo": 8}),
+                (5290, "アイドル", "pypy", {"小林": 8, "Neko": 10}),
+                (4022, "CH4NGE", "pypy", {"小林": 7, "Momo": 5}),
+                (6688, "Darling Dance", "pypy", {"小林": 6, "Neko": 4}),
+                (7350, "ビビデバ", "pypy", {"小林": 5, "Momo": 7}),
+                (8102, "唱", "pypy", {"小林": 4, "Akira": 6}),
+                (9015, "INTERNET OVERDOSE", "pypy", {"小林": 3, "Neko": 8}),
+                (9136, "QUEEN", "pypy", {"小林": 2, "Momo": 4}),
+                (9321, "ELECT", "wd", {"小林": 4, "Akira": 2}),
             ]
-            if kind:
-                songs = [s for s in songs if s["kind"] == kind]
-                for index, song in enumerate(songs, 1):
-                    song["rank"] = index
-            total = sum(s["count"] for s in songs)
-            month_counts = {"": [8, 12, 10, 14, 16, 24], "pypy": [6, 10, 8, 12, 14, 22],
-                            "wd": [2, 2, 2, 2, 2, 2]}[kind or ""]
-            months = [{"month": f"{QDate.currentDate().year()}-{month:02d}", "count": count}
-                      for month, count in zip((1, 3, 5, 7, 9, 11), month_counts)]
+            available_players = sorted({name for _, _, song_kind, counts in song_specs
+                                        if not kind or song_kind == kind
+                                        for name in counts}, key=str.casefold)
+            songs = []
+            player_counts = {}
+            for song_id, name, song_kind, counts in song_specs:
+                if kind and song_kind != kind:
+                    continue
+                for name_key, count in counts.items():
+                    player_counts[name_key] = player_counts.get(name_key, 0) + count
+                if player and player not in counts:
+                    continue
+                songs.append({"id": song_id, "kind": song_kind, "name": name,
+                              "count": counts.get(player, 0) if player else sum(counts.values()),
+                              "first_ts": start_ts, "last_ts": end_ts - 1})
+            songs.sort(key=lambda song: -song["count"])
+            for rank, song in enumerate(songs, 1):
+                song["rank"] = rank
+            total = sum(song["count"] for song in songs)
+            months = [{"month": f"{QDate.currentDate().year()}-{month:02d}",
+                       "count": total // 6 + (index < total % 6)}
+                      for index, month in enumerate((1, 3, 5, 7, 9, 11))]
             self.result.emit("play_history_stats", {
-                "total": total, "songs": songs,
-                "players": [{"player": "小林", "count": 42}, {"player": "Momo", "count": 30}],
-                "earliest": start_ts, "months": months,
-                "active_days": min(total, {"": 37, "pypy": 32, "wd": 8}[kind or ""])})
+                "total": total, "songs": songs, "available_players": available_players,
+                "players": ([{"player": player, "count": player_counts.get(player, 0)}]
+                            if player else [{"player": name, "count": count} for name, count in player_counts.items()]),
+                "earliest": start_ts, "months": months, "active_days": min(total, 37)})
             return
-        self._run("play_history_stats", lambda: core.play_history_stats(start_ts, end_ts, kind or None))
+        self._run("play_history_stats", lambda: core.play_history_stats(
+            start_ts, end_ts, kind or None, player or None))
 
     def vrcx_stats(self, start_ts, end_ts, path=None):
         if self.demo:
