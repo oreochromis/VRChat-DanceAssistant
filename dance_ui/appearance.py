@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import Qt, QTimer, Signal, QSignalBlocker, QRectF
-from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QImageReader
+from PySide6.QtCore import Qt, QTimer, Signal, QSignalBlocker, QRectF, QPointF
+from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QImageReader, QLinearGradient
 from PySide6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QLineEdit, QComboBox,
     QSlider, QDoubleSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QScrollArea,
@@ -205,6 +205,7 @@ class _ThemePreview(QWidget):
 
     def paintEvent(self, event) -> None:
         theme = self.store.active
+        vivid = self.store.preferences.get("home_style") == "vivid"
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         outer = QRectF(1, 1, self.width() - 2, self.height() - 2)
@@ -214,6 +215,17 @@ class _ThemePreview(QWidget):
         painter.drawRoundedRect(outer, radius, radius)
         painter.setBrush(self._color(theme["background_color"], theme["background_opacity"]))
         painter.drawRoundedRect(outer, radius, radius)
+        configured_gradient = theme["background_gradient_opacity"]
+        gradient_opacity = max(configured_gradient, .24) if vivid else configured_gradient
+        if gradient_opacity > 0:
+            direction = theme["gradient_direction"]
+            end = outer.bottomRight() if direction == "diagonal" else (
+                outer.topRight() if direction == "horizontal" else outer.bottomLeft())
+            gradient = QLinearGradient(outer.topLeft(), end)
+            gradient.setColorAt(0, self._color(theme["background_color"], theme["background_opacity"]))
+            gradient.setColorAt(1, self._color(theme["background_gradient"], gradient_opacity))
+            painter.setBrush(gradient)
+            painter.drawRoundedRect(outer, radius, radius)
         image_path = self.store.background_path(theme)
         image_key = str(image_path) if image_path else None
         if image_key != self._image_key:
@@ -239,14 +251,26 @@ class _ThemePreview(QWidget):
         painter.setBrush(self._color(theme["overlay_color"], theme["overlay_opacity"]))
         painter.drawRoundedRect(outer, radius, radius)
         nav = QRectF(12, 12, self.width() - 24, 26)
-        painter.setBrush(self._color(theme["nav_background"], theme["nav_opacity"]))
+        if vivid:
+            nav_gradient = QLinearGradient(nav.topLeft(), nav.topRight())
+            nav_gradient.setColorAt(0, self._color(theme["nav_background"], theme["nav_opacity"]))
+            nav_gradient.setColorAt(1, self._color(theme["secondary_accent"], .07))
+            painter.setBrush(nav_gradient)
+        else:
+            painter.setBrush(self._color(theme["nav_background"], theme["nav_opacity"]))
         painter.drawRoundedRect(nav, 5, 5)
         tab_width = (self.width() - 36) / 5
         selected = QRectF(17, 16, tab_width, 18)
         small_font = QFont(self.font())
         small_font.setPixelSize(min(12, max(9, round(self.width() / 22))))
         painter.setFont(small_font)
-        painter.setBrush(self._color(theme["nav_active_background"], theme["nav_active_opacity"]))
+        if vivid:
+            selected_gradient = QLinearGradient(selected.topLeft(), selected.topRight())
+            selected_gradient.setColorAt(0, self._color(theme["nav_active_background"], theme["nav_active_opacity"]))
+            selected_gradient.setColorAt(1, self._color(theme["secondary_accent"], .12))
+            painter.setBrush(selected_gradient)
+        else:
+            painter.setBrush(self._color(theme["nav_active_background"], theme["nav_active_opacity"]))
         painter.drawRoundedRect(selected, 4, 4)
         painter.setPen(self._color(theme["nav_active_text"]))
         painter.drawText(selected, Qt.AlignmentFlag.AlignCenter, "运行")
@@ -255,15 +279,27 @@ class _ThemePreview(QWidget):
             painter.drawText(QRectF(17 + index * tab_width, 16, tab_width, 18), Qt.AlignmentFlag.AlignCenter, label)
         card = QRectF(12, 48, self.width() - 24, self.height() - 61)
         painter.setPen(QPen(self._color(theme["border_color"], theme["border_opacity"]), min(3, theme["border_width"])))
-        painter.setBrush(self._color(theme["card_background"], theme["card_opacity"]))
+        if vivid:
+            card_gradient = QLinearGradient(card.topLeft(), card.bottomRight())
+            card_gradient.setColorAt(0, self._color(theme["card_background"], theme["card_opacity"]))
+            card_gradient.setColorAt(1, self._color(theme["secondary_accent"], .10))
+            painter.setBrush(card_gradient)
+        else:
+            painter.setBrush(self._color(theme["card_background"], theme["card_opacity"]))
         painter.drawRoundedRect(card, min(8, radius), min(8, radius))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(theme["text_primary"]))
+        painter.setBrush(QColor(theme["accent"] if vivid else theme["text_primary"]))
         painter.drawRoundedRect(QRectF(24, 62, 80, 5), 2, 2)
         painter.setBrush(QColor(theme["text_secondary"]))
         painter.drawRoundedRect(QRectF(24, 74, self.width() - 78, 3), 1, 1)
         painter.drawRoundedRect(QRectF(24, 82, self.width() - 98, 3), 1, 1)
-        painter.setBrush(QColor(theme["accent"]))
+        if vivid:
+            button_gradient = QLinearGradient(QPointF(24, self.height() - 34), QPointF(76, self.height() - 24))
+            button_gradient.setColorAt(0, QColor(theme["accent"]))
+            button_gradient.setColorAt(1, QColor(theme["secondary_accent"]))
+            painter.setBrush(button_gradient)
+        else:
+            painter.setBrush(QColor(theme["accent"]))
         painter.drawRoundedRect(QRectF(24, self.height() - 34, 52, 10), 3, 3)
         painter.end()
 
@@ -372,11 +408,11 @@ class AppearancePage(QWidget):
         self.theme_combo.currentIndexChanged.connect(self._select_theme)
         right.addWidget(self.theme_combo)
         home_row = QHBoxLayout()
-        home_row.addWidget(QLabel("主页风格"))
+        home_row.addWidget(QLabel("界面风格"))
         home_style = QComboBox()
-        for text, value in (("简洁", "simple"), ("炫酷 · 报告式主视觉", "vivid")):
+        for text, value in (("简洁", "simple"), ("多彩", "vivid")):
             home_style.addItem(text, value)
-        home_style.setAccessibleName("主页风格")
+        home_style.setAccessibleName("界面风格")
         home_style.currentIndexChanged.connect(lambda index: self._change_preferences({"home_style": home_style.itemData(index)}) if index >= 0 else None)
         self._preference_fields["home_style"] = home_style
         home_row.addWidget(home_style, 1)
@@ -404,7 +440,7 @@ class AppearancePage(QWidget):
         sharing.addWidget(_button("导出配色", self._export_theme))
         sharing.addStretch(1)
         right.addLayout(sharing)
-        right.addWidget(_muted("选择主题和主页风格；需要微调时，再展开下方的背景、颜色等分组。"))
+        right.addWidget(_muted("选择主题和界面风格；需要微调时，再展开下方的背景、颜色等分组。"))
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
 

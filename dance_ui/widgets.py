@@ -56,6 +56,43 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
         f'QLabel[statusTone="{tone}"] {{ color:{colors[0]}; background:{colors[1]}; border:none; border-radius:6px; padding:5px 9px; }}'
         for tone, colors in tones.items()
     )
+    vivid_rules = ""
+    if preferences.get("home_style", "simple") == "vivid":
+        x1, y1, x2, y2 = (value.strip() for value in gradient_coords.split(','))
+        vivid_rules = f"""
+        QFrame[card="true"] {{
+            background: qlineargradient(x1: {x1}, y1: {y1}, x2: {x2}, y2: {y2},
+                stop: 0 {card}, stop: 0.72 {card}, stop: 1 {rgba(theme['secondary_accent'], .10)});
+        }}
+        QWidget#header, QWidget#footer {{
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                stop: 0 {rgba(theme['nav_background'], theme['nav_opacity'])},
+                stop: 1 {rgba(theme['secondary_accent'], .07)});
+        }}
+        QLabel[subheading="true"] {{ color: {accent}; }}
+        QPushButton[primary="true"] {{
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                stop: 0 {accent}, stop: 1 {theme['secondary_accent']});
+        }}
+        QPushButton[nav="true"]:checked {{
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                stop: 0 {rgba(theme['nav_active_background'], theme['nav_active_opacity'])},
+                stop: 1 {rgba(theme['secondary_accent'], .12)});
+            border-bottom-color: {theme['secondary_accent']};
+        }}
+        QHeaderView, QHeaderView::section {{
+            background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 0,
+                stop: 0 {theme['table_header_background']}, stop: 1 {rgba(theme['hero_gradient'], .10)});
+        }}
+        QFrame[metricCard="true"][metricTone="success"] {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 {card}, stop: 1 {rgba(theme['success_color'], .12)}); }}
+        QFrame[metricCard="true"][metricTone="warning"] {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 {card}, stop: 1 {rgba(theme['warning_color'], .12)}); }}
+        QFrame[metricCard="true"][metricTone="highlight"] {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 {card}, stop: 1 {rgba(theme['highlight'], .12)}); }}
+        QFrame[metricCard="true"][metricTone="secondary"] {{ background: qlineargradient(x1: 0, y1: 0, x2: 1, y2: 1, stop: 0 {card}, stop: 1 {rgba(theme['secondary_accent'], .12)}); }}
+        QLabel[metricValue="success"] {{ color: {theme['success_color']}; }}
+        QLabel[metricValue="warning"] {{ color: {theme['warning_color']}; }}
+        QLabel[metricValue="highlight"] {{ color: {theme['highlight']}; }}
+        QLabel[metricValue="secondary"] {{ color: {theme['secondary_accent']}; }}
+        """
     return f"""
     QWidget {{ color: {text}; font-size: {px(14)}px; }}
     QMainWindow {{ background: {theme['background_color']}; }}
@@ -183,6 +220,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QToolTip {{ background: {theme['card_background']}; color: {text}; border: 1px solid {border}; padding: 6px; }}
     QMessageBox, QDialog {{ background: {theme['background_color']}; }}
     {status_rules}
+    {vivid_rules}
     """
 
 
@@ -192,13 +230,15 @@ class Backdrop(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.theme: dict[str, Any] = {}
+        self.vivid = False
         self.image: Image.Image | None = None
         self._image_key = None
         self._render_key = None
         self._render: QPixmap | None = None
 
-    def set_appearance(self, theme: dict, image_path: Path | None):
+    def set_appearance(self, theme: dict, image_path: Path | None, vivid: bool = False):
         self.theme = dict(theme)
+        self.vivid = vivid
         key = (str(image_path), theme.get("image_blur", 0))
         if key != self._image_key:
             self._image_key = key
@@ -224,7 +264,8 @@ class Backdrop(QWidget):
         base = QColor(t.get("background_color", "#f4f7fb"))
         base.setAlphaF(t.get("background_opacity", 1.0))
         painter.fillRect(self.rect(), base)
-        gradient_opacity = t.get("background_gradient_opacity", 0) * t.get("background_opacity", 1.0)
+        configured_gradient = t.get("background_gradient_opacity", 0)
+        gradient_opacity = (max(configured_gradient, .24) if self.vivid else configured_gradient) * t.get("background_opacity", 1.0)
         if gradient_opacity > 0:
             direction = t.get("gradient_direction", "diagonal")
             end = QPointF(self.width(), self.height()) if direction == "diagonal" else (
@@ -454,6 +495,7 @@ class MetricCard(QFrame):
         layout.addWidget(label(caption, muted=True))
         self.value = label("0")
         self.value.setProperty("number", True)
+        self.value.setProperty("metricValue", tone)
         layout.addWidget(self.value)
 
     def set_value(self, value):

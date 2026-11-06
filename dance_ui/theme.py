@@ -175,7 +175,9 @@ def _blend_colors(foreground: str, background: str, opacity: float) -> str:
 def theme_contrast_issues(theme: Mapping[str, Any], preferences: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
     background = theme["background_color"]
     card = theme["card_background"]
-    gradient = _blend_colors(theme["background_gradient"], background, theme["background_gradient_opacity"])
+    vivid = (preferences or {}).get("home_style") == "vivid"
+    gradient_opacity = max(theme["background_gradient_opacity"], .24) if vivid else theme["background_gradient_opacity"]
+    gradient = _blend_colors(theme["background_gradient"], background, gradient_opacity)
     nav = _blend_colors(theme["nav_background"], background, theme["nav_opacity"])
     nav_active = _blend_colors(theme["nav_active_background"], nav, theme["nav_active_opacity"])
     dark = readable_on(background) == "#FFFFFF"
@@ -226,8 +228,21 @@ def theme_contrast_issues(theme: Mapping[str, Any], preferences: Mapping[str, An
         surface = _blend_colors(theme[key], background, opacity)
         check(label + "通知文字", "text_primary", surface)
         check(label + "通知详情", "text_secondary", surface)
+    if vivid:
+        card_gradient = _blend_colors(theme["secondary_accent"], background, .10)
+        check("多彩卡片主要文字", "text_primary", card_gradient)
+        check("多彩卡片辅助文字", "text_secondary", card_gradient)
+        check("多彩卡片标题", "accent", card_gradient)
+        check("多彩导航文字", "nav_text", _blend_colors(theme["secondary_accent"], background, .07))
+        check("多彩导航选中项文字", "nav_active_text", _blend_colors(theme["secondary_accent"], nav, .12))
+        check("多彩表头文字", "table_header_text", _blend_colors(theme["hero_gradient"], card, .10))
+        for label, key in (("本地命中", "success_color"), ("回源", "warning_color"),
+                           ("节省流量", "highlight"), ("后续队列", "secondary_accent")):
+            surface = _blend_colors(theme[key], background, .12)
+            check(label + "指标数字", key, surface, 3.0)
+            check(label + "指标标题", "text_secondary", surface)
     hero_backgrounds = [theme["accent"]]
-    if theme["hero_gradient_opacity"] > 0 or (preferences or {}).get("home_style") == "vivid":
+    if theme["hero_gradient_opacity"] > 0 or vivid:
         hero_backgrounds.extend((theme["secondary_accent"], theme["hero_gradient"]))
     for surface in hero_backgrounds:
         check("主视觉文字", "primary_button_text", surface, 3.0)
@@ -411,7 +426,7 @@ def _preference_value(key: str, value: Any) -> Any:
         return value
     if key == "home_style":
         if value not in ("simple", "vivid"):
-            raise ThemeError("主页风格请选择简洁或炫酷。")
+            raise ThemeError("界面风格请选择简洁或多彩。")
         return value
     raise ThemeError("未识别的阅读偏好：" + str(key))
 
@@ -636,8 +651,10 @@ class ThemeStore:
 
     def _commit(self, candidate: dict[str, Any]) -> bool:
         unchanged = {theme["id"]: theme for theme in self._state["themes"]}
+        style_changed = (candidate["preferences"].get("home_style")
+                         != self._state["preferences"].get("home_style"))
         for index, theme in enumerate(candidate["themes"]):
-            if unchanged.get(theme["id"]) != theme:
+            if style_changed or unchanged.get(theme["id"]) != theme:
                 candidate["themes"][index] = ensure_theme_contrast(theme, candidate["preferences"])
         if candidate == self._state:
             return False

@@ -216,6 +216,12 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn('QPushButton[link="true"], QPushButton[subtle="true"] { color: #58667D;', css)
         self.assertIn('QPushButton[primary="true"] { background: #5865D8; color: #FFFFFF;', css)
         self.assertIn('QPushButton[danger="true"] { color: #A93649;', css)
+        self.assertNotIn('QLabel[metricValue="success"]', css)
+        vivid_css = stylesheet(store.active, {**store.preferences, "home_style": "vivid"})
+        self.assertIn('QFrame[card="true"] {\n            background: qlineargradient', vivid_css)
+        self.assertIn('QLabel[subheading="true"] { color: #5865D8;', vivid_css)
+        self.assertIn('QLabel[metricValue="success"]', vivid_css)
+        self.assertIn('QHeaderView, QHeaderView::section {\n            background: qlineargradient', vivid_css)
 
     def test_mid_tone_custom_accent_keeps_self_painted_controls_readable(self):
         window, _, store = self.make_window()
@@ -1116,8 +1122,12 @@ class UIIntegrationTests(unittest.TestCase):
         self.wait_until(lambda: window.backdrop.theme.get("id") == "dark")
         self.assertTrue(store.preferences["logs_expanded"])
         home_style = editor._preference_fields["home_style"]
+        self.assertEqual(home_style.itemText(home_style.findData("vivid")), "多彩")
+        self.assertEqual(home_style.accessibleName(), "界面风格")
         home_style.setCurrentIndex(home_style.findData("vivid"))
         self.wait_until(lambda: window.hero.vivid)
+        self.assertTrue(window.backdrop.vivid)
+        self.assertEqual(window.metric_hits.value.property("metricValue"), "success")
         self.assertFalse(window.vivid_metrics.isHidden())
         self.assertTrue(window.session_stats.isHidden())
         self.assertEqual(window.metric_hits.value.text(), "12 首")

@@ -284,7 +284,8 @@ class MainWindow(QMainWindow, Pages):
 
     def apply_appearance(self):
         theme, preferences = self.store.active, self.store.preferences
-        self.backdrop.set_appearance(theme, self.store.background_path())
+        vivid = preferences.get("home_style", "simple") == "vivid"
+        self.backdrop.set_appearance(theme, self.store.background_path(), vivid)
         self.setStyleSheet(stylesheet(theme, preferences))
         self.mode_switch.apply_theme(theme)
         scale = preferences.get("scale", 100) / 100
@@ -294,7 +295,6 @@ class MainWindow(QMainWindow, Pages):
         self.download_table.verticalHeader().setDefaultSectionSize(self._row_height + round(8 * scale))
         self.queue_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
         self.queue_table.setColumnWidth(3, round(118 * scale))
-        vivid = preferences.get("home_style", "simple") == "vivid"
         self.hero.set_vivid(theme, vivid)
         self.vivid_metrics.setVisible(vivid)
         self.session_stats.setVisible(not vivid)

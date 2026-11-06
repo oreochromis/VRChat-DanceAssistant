@@ -105,6 +105,7 @@ class ThemeStoreTests(unittest.TestCase):
         self.assertEqual(self.store.preferences["home_style"], "simple")
         self.store.change_preferences({"home_style": "vivid"})
         self.assertEqual(ThemeStore(self.store.root_dir).preferences["home_style"], "vivid")
+        self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
         self.store.select("dark")
         self.assertEqual(self.store.preferences["home_style"], "vivid")
         with self.assertRaises(ThemeError):
