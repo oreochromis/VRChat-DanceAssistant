@@ -33,7 +33,8 @@ class VRCXStatsTests(unittest.TestCase):
                 display_name TEXT, location TEXT, user_id TEXT, time INTEGER);
             CREATE TABLE usr_test_friend_log_current (user_id TEXT PRIMARY KEY, display_name TEXT);
         """)
-        pypy, wd = sorted(vrcx_stats.DANCE_WORLD_IDS)
+        pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
+        wd = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "wd")
         connection.executemany("INSERT INTO gamelog_location(created_at,location,world_id) VALUES(?,?,?)", [
             (iso(9), "room-A", pypy), (iso(12), "room-B", wd), (iso(14), "room-C", pypy),
             (iso(16), "room-other", "wrld_other"), (iso(17), "room-D", pypy),
@@ -94,6 +95,7 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read()
         self.assertEqual(result["total_play_seconds"], 7200)
         self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 7200}])
+        self.assertEqual(result["world_play"], {"pypy": 7200, "wd": 0})
         self.assertEqual(result["self_names"], ["本人旧昵称"])
         with patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "cached")):
             vrcx_stats.save_vrcx_stats(result)

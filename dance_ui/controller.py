@@ -401,6 +401,7 @@ class CoreController(QObject):
                 ], "start_ts": start_ts, "end_ts": end_ts, "demo": True,
                 "self_names": ["小林"], "daily_play": daily_play,
                 "total_play_seconds": sum(item["seconds"] for item in daily_play),
+                "world_play": {"pypy": 27000, "wd": 18000},
             })
             return
 

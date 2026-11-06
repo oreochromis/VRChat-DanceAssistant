@@ -336,6 +336,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report.canvas.vrcx_friends[0]["name"], "小林")
         self.assertEqual(report.canvas.self_played, 30)
         self.assertEqual(report.canvas.total_play_seconds, 45000)
+        self.assertEqual(report.canvas.world_play, {"pypy": 27000, "wd": 18000})
         self.assertEqual(report.canvas.trend_mode, "day")
         self.assertEqual(len(report.canvas.trend), 10)
         report.title_edit.setText("我的自定义舞蹈报告")

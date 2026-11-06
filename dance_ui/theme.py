@@ -158,7 +158,7 @@ def contrast_ratio(first: str, second: str) -> float:
 
 
 def readable_on(background: str) -> str:
-    return ("#182132" if contrast_ratio("#182132", background) >= contrast_ratio("#FFFFFF", background)
+    return ("#000000" if contrast_ratio("#000000", background) >= contrast_ratio("#FFFFFF", background)
             else "#FFFFFF")
 
 
@@ -328,7 +328,7 @@ def ensure_theme_contrast(theme: Mapping[str, Any], preferences: Mapping[str, An
     if hero_active:
         hero_surfaces.extend((result["secondary_accent"], result["hero_gradient"]))
     result["primary_button_text"] = _ensure_foreground(
-        readable_on(result["accent"]), hero_surfaces, 4.5)
+        result["primary_button_text"], hero_surfaces, 4.5)
     for _ in range(3):
         remaining = theme_contrast_issues(result, preferences)
         if not remaining:

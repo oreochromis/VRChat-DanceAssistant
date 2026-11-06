@@ -46,6 +46,8 @@ class ReportCanvas(QWidget):
                                   if isinstance(item, dict) and item.get("day")),
                                  key=lambda item: item["day"]) if isinstance(vrcx, dict) else []
         self.total_play_seconds = int(vrcx.get("total_play_seconds", 0)) if isinstance(vrcx, dict) else 0
+        world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
+        self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
         self.self_played = int(self.data.get("self_played", 0))
         self.trend_mode, self.summary_mode = "day", "month"
         self.trend = self._trend_for("day")
@@ -111,6 +113,7 @@ class ReportCanvas(QWidget):
         if len(self.songs) > 3:
             height += 100 + min(len(self.songs), 10) * 44 + 24
         height += 310 if len(self.trend) > 1 else 230
+        height += 254
         height += 24
         if self.vrcx_friends:
             height += 130
@@ -158,9 +161,10 @@ class ReportCanvas(QWidget):
         else:
             self._draw_sources(painter, QRectF(margin, charts_y, content, 230))
             charts_y += 230
-        footer_y = charts_y + 36
+        self._draw_world_play(painter, QRectF(margin, charts_y, content, 230))
+        footer_y = charts_y + 254
         if self.vrcx_friends:
-            friend_y = charts_y + 24
+            friend_y = charts_y + 254
             self._draw_vrcx_friend(painter, QRectF(margin, friend_y, content, 112))
             footer_y = friend_y + 126
         _text(painter, QRectF(margin, footer_y, content, 30),
@@ -214,7 +218,7 @@ class ReportCanvas(QWidget):
         _text(painter, QRectF(rect.right() - 265, rect.top() + 158, 220, 30), "次点歌",
               size=18, color=translucent, align=Qt.AlignmentFlag.AlignCenter)
         _text(painter, QRectF(rect.right() - 285, rect.top() + 198, 260, 26),
-              "共同游玩 " + format_duration(self.total_play_seconds),
+              "舞蹈时长 " + format_duration(self.total_play_seconds),
               size=12, color=translucent, align=Qt.AlignmentFlag.AlignCenter)
 
     def _draw_metrics(self, painter, rect):
@@ -390,6 +394,43 @@ class ReportCanvas(QWidget):
             painter.drawEllipse(QRectF(x, legend_y + 4, 10, 10))
             _text(painter, QRectF(x + 16, legend_y - 4, (rect.width() - 48) / 2 - 16, 24),
                   f"{name} {count}", size=10, color=self.muted)
+
+    def _draw_world_play(self, painter, rect):
+        self._card(painter, rect)
+        _text(painter, QRectF(rect.left() + 20, rect.top() + 15, rect.width() - 40, 30),
+              "游玩时长分布", size=18, color=self.text, weight=QFont.Weight.DemiBold)
+        pypy, wd = self.world_play["pypy"], self.world_play["wd"]
+        total = pypy + wd
+        center = QPointF(rect.center().x(), rect.top() + 105)
+        radius = 48
+        ring = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(self.soft, 18))
+        painter.drawEllipse(ring)
+        if total:
+            start = 90 * 16
+            for count, color in ((pypy, self.accent), (wd, self.secondary)):
+                if not count:
+                    continue
+                span = round(-5760 * count / total)
+                painter.setPen(QPen(color, 18, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
+                painter.drawArc(ring, start, span)
+                start += span
+        duration_text = format_duration(total).replace(" 小时 ", " 小时\n")
+        _text(painter, QRectF(center.x() - 65, center.y() - 34, 130, 42),
+              duration_text, size=14, color=self.text, weight=QFont.Weight.DemiBold,
+              align=Qt.AlignmentFlag.AlignCenter)
+        _text(painter, QRectF(center.x() - 60, center.y() + 24, 120, 18), "总时长",
+              size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
+        legend_y = rect.bottom() - 46
+        for index, (name, count, color) in enumerate((("PyPyDance", pypy, self.accent),
+                                                     ("WannaDance", wd, self.secondary))):
+            x = rect.center().x() - 250 + index * 250
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QRectF(x, legend_y + 4, 10, 10))
+            _text(painter, QRectF(x + 16, legend_y - 4, 230, 24),
+                  f"{name} · {format_duration(count)}", size=11, color=self.muted)
 
     def _draw_vrcx_friend(self, painter, rect):
         self._card(painter, rect)
