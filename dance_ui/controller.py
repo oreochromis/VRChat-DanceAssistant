@@ -442,7 +442,8 @@ class CoreController(QObject):
             result = vrcx.read_co_room_stats(source, start_ts, end_ts)
             if not result.get("self_names") and vrcx.saved_self_name():
                 result["self_names"] = [vrcx.saved_self_name()]
-            vrcx.save_vrcx_path(source)
+            if not vrcx.is_vrcx_archive(source):
+                vrcx.save_vrcx_path(source)
             vrcx.save_vrcx_stats(result)
             return result
 

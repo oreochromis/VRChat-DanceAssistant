@@ -87,8 +87,11 @@ BUILTIN_THEMES = {
         "nav_background": "#FFFFFF", "nav_opacity": 0.82, "nav_text": "#657189",
         "nav_active_background": "#5865D8", "nav_active_opacity": 0.13,
         "nav_active_text": "#414FB8", "text_primary": "#172133",
-        "text_secondary": "#58667D", "card_background": "#FFFFFF",
+        "text_secondary": "#5B667A", "card_background": "#FFFFFF",
         "card_opacity": 0.94, "border_color": "#DDE2EB", "border_opacity": 0.8,
+        "background_opacity": 0.97, "image_blur": 9.5, "radius": 12.6,
+        "highlight": "#A67E32", "success_color": "#1E7C4A", "warning_color": "#936318",
+        "error_color": "#BB4254", "info_color": "#306ACA", "nav_text": "#5F6A81",
     },
     "dark": {
         **_COMMON, "id": "dark", "name": "深色", "builtin": True, "base": "dark",
@@ -109,14 +112,16 @@ BUILTIN_THEMES = {
         "hero_gradient": "#6CD5DF",
     },
     "miku": {
-        **_COMMON, "id": "miku", "name": "初音未来", "builtin": True, "base": "light",
+        **_COMMON, "id": "miku", "name": "葱绿", "builtin": True, "base": "light",
+        "background_image": "backgrounds/af2c10375e25de4ee8b084a60f2a5447a7e6f9b2168d9f868bca4b8b5c9b7410.png",
+        "image_blur": 3.5,
         "accent": "#13746E", "background_color": "#EFFAF8", "overlay_color": "#EFFAF8",
         "nav_background": "#F7FFFD", "nav_opacity": 0.82, "nav_text": "#4D7270",
         "nav_active_background": "#39C5BB", "nav_active_opacity": 0.16,
         "nav_active_text": "#16706A", "text_primary": "#173638",
         "text_secondary": "#506B6D", "card_background": "#FFFFFF",
         "card_opacity": 0.94, "border_color": "#C8E4DF", "border_opacity": 0.8,
-        "secondary_accent": "#1D787E", "highlight": "#A34F7D",
+        "secondary_accent": "#AB506B", "highlight": "#A34F7D",
         "success_color": "#18794F", "info_color": "#276A91",
         "button_hover_background": "#DDF4EF", "table_header_background": "#E3F4F1",
         "table_header_text": "#456B69", "table_selection_background": "#D7F0EC",
@@ -125,7 +130,9 @@ BUILTIN_THEMES = {
         "hero_gradient_opacity": 0.12,
     },
     "eva01": {
-        **_COMMON, "id": "eva01", "name": "EVA 初号机", "builtin": True, "base": "dark",
+        **_COMMON, "id": "eva01", "name": "机甲", "builtin": True, "base": "dark",
+        "background_image": "backgrounds/c7f970cac572ef33fed3ef96731a68c93a66c341889d0e6852ea99689e5df414.png",
+        "image_blur": 5.2,
         "accent": "#A7D46F", "background_color": "#15111F", "overlay_color": "#15111F",
         "nav_background": "#1B1427", "nav_opacity": 0.9, "nav_text": "#B7A7C9",
         "nav_active_background": "#7A4A9E", "nav_active_opacity": 0.22,
@@ -143,7 +150,9 @@ BUILTIN_THEMES = {
         "hero_gradient": "#8BC75A", "hero_gradient_opacity": 0.18,
     },
     "jirai": {
-        **_COMMON, "id": "jirai", "name": "地雷系", "builtin": True, "base": "light",
+        **_COMMON, "id": "jirai", "name": "阔剑", "builtin": True, "base": "light",
+        "background_image": "backgrounds/5ea05a19a106bc1d69fc87dcc389ccce655a4bba7a3e7893bfbc8dcdabee440c.png",
+        "image_blur": 8.7,
         "accent": "#B72D6B", "background_color": "#FFF4F8", "overlay_color": "#FFF4F8",
         "nav_background": "#FFF8FB", "nav_opacity": 0.82, "nav_text": "#895E71",
         "nav_active_background": "#D94F91", "nav_active_opacity": 0.14,
@@ -159,7 +168,8 @@ BUILTIN_THEMES = {
         "hero_gradient_opacity": 0.16,
     },
     "maimai": {
-        **_COMMON, "id": "maimai", "name": "maimai 彩虹", "builtin": True, "base": "light",
+        **_COMMON, "id": "maimai", "name": "萌舞", "builtin": True, "base": "light",
+        "background_image": "backgrounds/72046423e2eeee0ba84501a697010ce3ac89f198061422ba33d2de5565db9b79.png",
         "accent": "#4C5BC4", "background_color": "#F7F8FF", "overlay_color": "#F7F8FF",
         "nav_background": "#FFFFFF", "nav_opacity": 0.82, "nav_text": "#5F6689",
         "nav_active_background": "#5865D8", "nav_active_opacity": 0.13,
@@ -903,10 +913,8 @@ class ThemeStore:
                 return None
             if path.is_file():
                 return path
-            # Earlier preview versions could reference a packaged image that
-            # was never copied into user data. Keep the theme/reference intact;
-            # a missing image renders its base color until the user imports one.
-            return None
+            packaged = Path(__file__).resolve().parents[1] / "assets" / "backgrounds" / Path(value).name
+            return packaged if packaged.is_file() else None
         except (OSError, ThemeError, RuntimeError):
             return None
 

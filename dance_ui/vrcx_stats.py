@@ -13,6 +13,7 @@ import dance_cache as core
 
 SETTINGS_FILENAME = "vrcx-settings.json"
 STATS_FILENAME = "vrcx-stats.json"
+SOURCE_FILENAME = "vrcx-source.sqlite3"
 DANCE_WORLD_IDS = frozenset({
     "wrld_f20326da-f1ac-45fc-a062-609723b097b1",
     "wrld_8ac0b9db-17ae-44af-9d20-7d8ab94a9129",
@@ -37,6 +38,43 @@ def saved_vrcx_path() -> Path | None:
         return None
 
 
+def archived_vrcx_path() -> Path:
+    return Path(core.data_dir()) / SOURCE_FILENAME
+
+
+def is_vrcx_archive(path) -> bool:
+    try:
+        return Path(path).expanduser().resolve() == archived_vrcx_path().resolve()
+    except OSError:
+        return False
+
+
+def archive_vrcx_database(path) -> Path:
+    source = Path(path).expanduser().resolve()
+    target = archived_vrcx_path()
+    if is_vrcx_archive(source):
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(".tmp")
+    source_connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
+    target_connection = None
+    try:
+        target_connection = sqlite3.connect(temporary)
+        source_connection.backup(target_connection)
+        target_connection.close()
+        target_connection = None
+        os.replace(temporary, target)
+    finally:
+        source_connection.close()
+        if target_connection is not None:
+            target_connection.close()
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return target
+
+
 def resolve_vrcx_path(path=None) -> Path:
     if path:
         return Path(path).expanduser().resolve()
@@ -44,9 +82,14 @@ def resolve_vrcx_path(path=None) -> Path:
     if saved and saved.is_file():
         return saved.resolve()
     default = default_vrcx_path()
-    if default.is_file() or saved is None:
+    if default.is_file():
         return default.resolve()
-    return saved.resolve()
+    archived = archived_vrcx_path()
+    if archived.is_file():
+        return archived.resolve()
+    if saved is not None:
+        return saved.resolve()
+    return default.resolve()
 
 
 def _update_settings(values) -> None:
@@ -320,7 +363,7 @@ def read_co_room_stats(path, start_ts, end_ts):
         for start, end in intervals:
             overlap = max(0, min(end, end_ts) - max(start, start_ts))
             world_play[key] += round(overlap)
-    return {
+    result = {
         "path": str(source), "friends": friends_stats,
         "friend_count": len(friends), "matched_friends": len(friends_stats),
         "skipped_events": skipped, "observed_end": observed_end,
@@ -330,6 +373,8 @@ def read_co_room_stats(path, start_ts, end_ts):
         "world_play": world_play,
         "new_friends": _new_friend_stats(friend_history, own, start_ts, end_ts),
     }
+    archive_vrcx_database(source)
+    return result
 
 
 def format_duration(seconds) -> str:

@@ -1,0 +1,163 @@
+"""Export and incrementally merge local play/VRCX statistics backups."""
+from __future__ import annotations
+
+import json
+import os
+import time
+import zipfile
+from pathlib import Path
+
+import dance_cache as core
+from . import vrcx_stats
+
+FORMAT = "vrchat-dance-stats-backup"
+VERSION = 1
+HISTORY_FILES = ("play_history.jsonl", "played_history.jsonl")
+MAX_TEXT_MEMBER = 256 * 1024 * 1024
+MAX_DATABASE_MEMBER = 2 * 1024 * 1024 * 1024
+
+
+def _read_json(path: Path):
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_json(path: Path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _entry(line):
+    try:
+        value = json.loads(line)
+        if not isinstance(value, dict):
+            return None
+        timestamp = float(value["ts"])
+        song_id = value["id"]
+        if isinstance(song_id, bool) or not isinstance(song_id, int):
+            return None
+        kind = value.get("kind") if value.get("kind") in ("pypy", "wd") else "pypy"
+        player = str(value.get("player") or "").strip()
+        return timestamp, kind, song_id, player, value
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _history_entries(text):
+    entries = {}
+    for line in text.splitlines():
+        parsed = _entry(line)
+        if parsed is not None:
+            timestamp, kind, song_id, player, value = parsed
+            entries[(timestamp, kind, song_id, player)] = value
+    return entries
+
+
+def _merge_history(path: Path, incoming_text: str):
+    existing_text = path.read_text(encoding="utf-8") if path.is_file() else ""
+    existing = _history_entries(existing_text)
+    incoming = _history_entries(incoming_text)
+    added = len(incoming.keys() - existing.keys())
+    if added:
+        existing.update(incoming)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            for timestamp, kind, song_id, player in sorted(existing):
+                handle.write(json.dumps(existing[(timestamp, kind, song_id, player)], ensure_ascii=False) + "\n")
+        os.replace(temporary, path)
+    return added
+
+
+def _zip_text(archive, name, maximum=MAX_TEXT_MEMBER):
+    try:
+        info = archive.getinfo(name)
+    except KeyError:
+        return None
+    if info.file_size > maximum:
+        raise ValueError("备份中的文件过大，无法导入：" + name)
+    return archive.read(name).decode("utf-8")
+
+
+def export_stats_backup(path):
+    target = Path(path).expanduser().resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    root = Path(core.data_dir())
+    files = [name for name in (*HISTORY_FILES, vrcx_stats.SETTINGS_FILENAME,
+                                vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME)
+             if (root / name).is_file()]
+    manifest = {"format": FORMAT, "version": VERSION, "created_at": time.time(), "files": files}
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    try:
+        with zipfile.ZipFile(temporary, "w", zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+            for name in files:
+                archive.write(root / name, name)
+        os.replace(temporary, target)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return manifest
+
+
+def import_stats_backup(path):
+    source = Path(path).expanduser().resolve()
+    with zipfile.ZipFile(source) as archive:
+        manifest_text = _zip_text(archive, "manifest.json", 1024 * 1024)
+        if not manifest_text:
+            raise ValueError("备份缺少 manifest.json。")
+        manifest = json.loads(manifest_text)
+        if manifest.get("format") != FORMAT or manifest.get("version") != VERSION:
+            raise ValueError("这不是受支持的跳舞房统计备份。")
+        result = {
+            "play_history_added": 0, "played_history_added": 0,
+            "settings_added": 0, "stats_updated": False, "source_imported": False,
+        }
+        root = Path(core.data_dir())
+        root.mkdir(parents=True, exist_ok=True)
+        for name in HISTORY_FILES:
+            incoming = _zip_text(archive, name)
+            if incoming is not None:
+                result[name.removesuffix(".jsonl") + "_added"] = _merge_history(root / name, incoming)
+        incoming_settings = _zip_text(archive, vrcx_stats.SETTINGS_FILENAME)
+        if incoming_settings is not None:
+            incoming = json.loads(incoming_settings)
+            if not isinstance(incoming, dict):
+                raise ValueError("备份中的 VRCX 设置格式无效。")
+            settings_path = root / vrcx_stats.SETTINGS_FILENAME
+            current = _read_json(settings_path)
+            additions = {key: value for key, value in incoming.items() if key not in current}
+            if additions:
+                current.update(additions)
+                _write_json(settings_path, current)
+                result["settings_added"] = len(additions)
+        incoming_stats = _zip_text(archive, vrcx_stats.STATS_FILENAME)
+        if incoming_stats is not None:
+            incoming = json.loads(incoming_stats)
+            if not isinstance(incoming, dict) or not isinstance(incoming.get("friends"), list):
+                raise ValueError("备份中的 VRCX 统计格式无效。")
+            current = _read_json(root / vrcx_stats.STATS_FILENAME)
+            if not current or float(incoming.get("synced_at", 0)) > float(current.get("synced_at", 0)):
+                _write_json(root / vrcx_stats.STATS_FILENAME, incoming)
+                result["stats_updated"] = True
+        try:
+            database_info = archive.getinfo(vrcx_stats.SOURCE_FILENAME)
+        except KeyError:
+            database_info = None
+        if database_info is not None and database_info.file_size > MAX_DATABASE_MEMBER:
+            raise ValueError("备份中的 VRCX 数据库过大，无法导入。")
+        database = archive.read(vrcx_stats.SOURCE_FILENAME) if database_info is not None else None
+        target = root / vrcx_stats.SOURCE_FILENAME
+        if database is not None and not target.exists():
+            temporary = target.with_suffix(".tmp")
+            temporary.write_bytes(database)
+            os.replace(temporary, target)
+            result["source_imported"] = True
+    return result

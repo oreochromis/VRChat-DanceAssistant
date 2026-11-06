@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import csv
+import json
+import zipfile
 from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt, QSignalBlocker
@@ -11,6 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 import dance_cache as core
+from . import stats_backup
 from .pages import button, field
 from .vrcx_stats import (
     format_duration, load_vrcx_stats, resolve_vrcx_path, save_self_name,
@@ -142,6 +145,13 @@ class PlayStatsPage(QWidget):
         self.report_button.setEnabled(False)
         report_row.addWidget(self.report_button)
         box.addLayout(report_row)
+        backup_row = QHBoxLayout()
+        backup_row.addWidget(label("备份点歌历史与 VRCX 原始数据；增量导入不会覆盖现有记录。", muted=True, wrap=True), 1)
+        self.backup_export_button = button("导出备份", self._export_backup)
+        self.backup_import_button = button("增量导入", self._import_backup)
+        backup_row.addWidget(self.backup_export_button)
+        backup_row.addWidget(self.backup_import_button)
+        box.addLayout(backup_row)
 
         vrcx_card = Card()
         heading = QHBoxLayout()
@@ -196,6 +206,8 @@ class PlayStatsPage(QWidget):
         advanced = self._main.store.preferences.get("ui_mode", "advanced") == "advanced"
         self.export_button.setVisible(advanced)
         self.vrcx_export_button.setVisible(advanced)
+        self.backup_export_button.setVisible(advanced)
+        self.backup_import_button.setVisible(advanced)
 
     def resizeEvent(self, event):
         self._layout_filters()
@@ -451,6 +463,36 @@ class PlayStatsPage(QWidget):
             QMessageBox.warning(self, "导出表格", f"写入失败: {exc}")
             return
         QMessageBox.information(self, "导出表格", f"已导出 {len(friends)} 行到:\n{path}")
+
+    def _export_backup(self):
+        default_name = "舞蹈统计备份_" + QDate.currentDate().toString("yyyyMMdd") + ".zip"
+        path, _ = QFileDialog.getSaveFileName(self, "导出统计备份", default_name, "ZIP 备份 (*.zip)")
+        if not path:
+            return
+        try:
+            result = stats_backup.export_stats_backup(path)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "导出备份", f"备份失败：{exc}")
+            return
+        QMessageBox.information(self, "导出备份", f"已保存 {len(result['files'])} 个数据文件到：\n{path}")
+
+    def _import_backup(self):
+        path, _ = QFileDialog.getOpenFileName(self, "增量导入统计备份", "", "ZIP 备份 (*.zip)")
+        if not path:
+            return
+        try:
+            result = stats_backup.import_stats_backup(path)
+        except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "增量导入", f"导入失败：{exc}")
+            return
+        self.refresh()
+        cached = load_vrcx_stats()
+        if cached:
+            self._show_vrcx_stats(cached)
+        QMessageBox.information(
+            self, "增量导入",
+            f"导入完成：新增入队记录 {result['play_history_added']} 条、播放记录 {result['played_history_added']} 条；"
+            f"补充设置 {result['settings_added']} 项。现有记录和原始数据库不会被覆盖。")
 
     def _on_error(self, operation, message):
         if operation == "vrcx_stats":

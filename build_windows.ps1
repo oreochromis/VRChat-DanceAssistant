@@ -95,6 +95,7 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
         "--add-data", ((Join-Path $projectRoot "assets\default_cooldown.mp4") + ";assets"),
         "--add-data", ((Join-Path $projectRoot "assets\app-icon.png") + ";assets"),
         "--add-data", ((Join-Path $projectRoot "assets\app-icon.ico") + ";assets"),
+        "--add-data", ((Join-Path $projectRoot "assets\backgrounds") + ";assets/backgrounds"),
         "dance_cache_gui.py"
     )
 

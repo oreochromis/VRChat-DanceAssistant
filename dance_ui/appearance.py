@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QImageReader, 
 from PySide6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QLineEdit, QComboBox,
     QSlider, QDoubleSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication,
+    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication, QInputDialog,
 )
 
 from .theme import ThemeStore, ThemeError, NUMBER_RANGES, normalize_color, theme_contrast_warnings
@@ -431,12 +431,10 @@ class AppearancePage(QWidget):
         right.addLayout(home_row)
         name_row = QHBoxLayout()
         name_row.addWidget(QLabel("名称"))
-        self.name_edit = QLineEdit()
-        self.name_edit.setMaxLength(60)
-        self.name_edit.setAccessibleName("主题名称")
-        self.name_edit.setPlaceholderText("为主题取个名字")
-        self.name_edit.editingFinished.connect(self._rename)
-        name_row.addWidget(self.name_edit, 1)
+        self.name_button = _button("", self._edit_name)
+        self.name_button.setAccessibleName("修改主题名称")
+        self.name_button.setToolTip("点击修改主题名称")
+        name_row.addWidget(self.name_button, 1)
         right.addLayout(name_row)
         actions = QHBoxLayout()
         actions.setSpacing(8)
@@ -778,8 +776,7 @@ class AppearancePage(QWidget):
                 for theme in self.store.themes:
                     self.theme_combo.addItem(theme["name"], theme["id"])
                 self.theme_combo.setCurrentIndex(self.theme_combo.findData(active["id"]))
-            with QSignalBlocker(self.name_edit):
-                self.name_edit.setText(active["name"])
+            self.name_button.setText(active["name"])
         finally:
             self._refreshing = False
         self._sync_fields()
@@ -794,28 +791,23 @@ class AppearancePage(QWidget):
         if self._flush_pending():
             self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
 
-    def _rename(self) -> None:
+    def _edit_name(self) -> None:
         if self._refreshing:
             return
-        name = self.name_edit.text()
-        if name == self.store.active["name"]:
+        current = self.store.active["name"]
+        name, accepted = QInputDialog.getText(self, "修改主题名称", "主题名称", QLineEdit.Normal, current)
+        if not accepted or name == current:
             return
         if self._flush_pending():
             self._perform(lambda: self.store.rename(self.store.active_id, name), refresh=True, message="主题名称已保存。")
-            with QSignalBlocker(self.name_edit):
-                self.name_edit.setText(self.store.active["name"])
 
     def _create(self) -> None:
         if self._flush_pending():
-            if self._perform(lambda: self.store.create(), refresh=True, message="新主题已创建，可以修改名称和配色。"):
-                self.name_edit.setFocus()
-                self.name_edit.selectAll()
+            self._perform(lambda: self.store.create(), refresh=True, message="新主题已创建，可以修改名称和配色。")
 
     def _copy(self) -> None:
         if self._flush_pending():
-            if self._perform(lambda: self.store.create(copy_current=True), refresh=True, message="已复制当前主题。"):
-                self.name_edit.setFocus()
-                self.name_edit.selectAll()
+            self._perform(lambda: self.store.create(copy_current=True), refresh=True, message="已复制当前主题。")
 
     def _export_theme(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "导出主题配色", "dance-theme.json", "主题配色 (*.json)")

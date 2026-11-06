@@ -478,9 +478,13 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertGreater(stats.vrcx_table.verticalScrollBar().maximum(), 0)
         self.assertTrue(stats.vrcx_export_button.isHidden())
         self.assertTrue(stats.export_button.isHidden())
+        self.assertTrue(stats.backup_export_button.isHidden())
+        self.assertTrue(stats.backup_import_button.isHidden())
         window.set_ui_mode("advanced")
         self.assertFalse(stats.vrcx_export_button.isHidden())
         self.assertFalse(stats.export_button.isHidden())
+        self.assertFalse(stats.backup_export_button.isHidden())
+        self.assertFalse(stats.backup_import_button.isHidden())
         csv_path = self.root / "friends.csv"
         with (patch("dance_ui.play_stats.QFileDialog.getSaveFileName", return_value=(str(csv_path), "")),
               patch("dance_ui.play_stats.QMessageBox.information")):
@@ -492,6 +496,8 @@ class UIIntegrationTests(unittest.TestCase):
         window.set_ui_mode("simple")
         self.assertTrue(stats.vrcx_export_button.isHidden())
         self.assertTrue(stats.export_button.isHidden())
+        self.assertTrue(stats.backup_export_button.isHidden())
+        self.assertTrue(stats.backup_import_button.isHidden())
 
     def test_applying_storage_keeps_the_settings_draft(self):
         window, controller, _ = self.make_window(demo=False)
@@ -1219,6 +1225,17 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(window._can_close)
         self.assertEqual(stopped.call_count, 2)
         self.core_mocks["start_services"].assert_not_called()
+
+    def test_theme_name_is_edited_through_a_button_dialog(self):
+        window, _, store = self.make_window()
+        window.navigate(4)
+        editor = window.appearance_page
+        self.assertFalse(hasattr(editor, "name_edit"))
+        self.assertEqual(editor.name_button.text(), store.active["name"])
+        with patch("dance_ui.appearance.QInputDialog.getText", return_value=("测试主题", True)):
+            editor.name_button.click()
+        self.assertEqual(store.active["name"], "测试主题")
+        self.assertEqual(editor.name_button.text(), "测试主题")
 
     def test_theme_scaling_and_log_preferences_reach_the_whole_window(self):
         window, controller, store = self.make_window()

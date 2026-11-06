@@ -25,6 +25,9 @@ class VRCXStatsTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        self.data_patch = patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "data"))
+        self.data_patch.start()
+        self.addCleanup(self.data_patch.stop)
         self.path = self.root / "VRCX.sqlite3"
         connection = sqlite3.connect(self.path)
         connection.executescript("""
@@ -117,6 +120,25 @@ class VRCXStatsTests(unittest.TestCase):
             self.assertEqual(loaded["new_friends"], result["new_friends"])
             self.assertGreater(loaded["synced_at"], 0)
             self.assertTrue((self.root / "cached" / vrcx_stats.STATS_FILENAME).is_file())
+
+    def test_original_database_is_archived_and_used_offline(self):
+        original = self.read()
+        archive = vrcx_stats.archived_vrcx_path()
+        self.assertTrue(archive.is_file())
+        connection = sqlite3.connect(archive)
+        try:
+            tables = {row[0] for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        finally:
+            connection.close()
+        self.assertIn("gamelog_location", tables)
+        self.assertIn("usr_test_friend_log_history", tables)
+        self.path.unlink()
+        with patch.object(vrcx_stats, "default_vrcx_path", return_value=self.root / "missing.sqlite3"):
+            self.assertEqual(vrcx_stats.resolve_vrcx_path(), archive.resolve())
+            offline = vrcx_stats.read_co_room_stats(archive, ts(10), ts(12))
+        self.assertEqual(offline["friends"], original["friends"])
+        self.assertEqual(offline["daily_play"], original["daily_play"])
 
     def test_new_friends_require_add_event_inside_dance_room(self):
         result = self.read()

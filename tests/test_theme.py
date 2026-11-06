@@ -115,9 +115,14 @@ class ThemeStoreTests(unittest.TestCase):
 
     def test_additional_builtin_themes_are_readable_and_persist(self):
         self.assertEqual({"miku", "eva01", "jirai", "maimai"} - set(BUILTIN_THEMES), set())
+        self.assertEqual({key: BUILTIN_THEMES[key]["name"] for key in ("miku", "eva01", "jirai", "maimai")},
+                         {"miku": "葱绿", "eva01": "机甲", "jirai": "阔剑", "maimai": "萌舞"})
         for theme_id in ("miku", "eva01", "jirai", "maimai"):
             with self.subTest(theme=theme_id):
                 self.store.select(theme_id)
+                background = self.store.background_path()
+                self.assertIsNotNone(background)
+                self.assertTrue(background.is_file())
                 for style in ("simple", "vivid"):
                     self.store.change_preferences({"home_style": style})
                     self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
