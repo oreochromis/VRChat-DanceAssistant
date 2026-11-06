@@ -1,4 +1,4 @@
-"""以 Qt 原生绘制的点歌年度报告，支持导出高清 PNG 分享图。"""
+"""以 Qt 原生绘制的舞蹈报告，支持导出高清 PNG 分享图。"""
 from __future__ import annotations
 
 import copy
@@ -67,17 +67,17 @@ class ReportCanvas(QWidget):
         self.border = QColor(theme["border_color"])
         self.border.setAlpha(150)
         if start.month() == 1 and start.day() == 1 and start.year() == end.year():
-            self.title = f"我的 {start.year()} 年度点歌报告"
+            self.title = f"我的 {start.year()} 年度舞蹈报告"
             self.kicker = f"{start.year()} · ANNUAL DANCE REPORT"
         else:
-            self.title = "我的点歌时光报告"
+            self.title = "我的舞蹈报告"
             self.kicker = "MY DANCE COLLECTION"
-        self.setAccessibleName("点歌年度报告")
+        self.setAccessibleName("舞蹈年度报告")
         self.setMinimumWidth(720)
         self.setMinimumHeight(self._report_height(self.width()))
 
     def set_title(self, text):
-        self.title = str(text).strip() or "我的点歌报告"
+        self.title = str(text).strip() or "我的舞蹈报告"
         self.update()
 
     def set_trend_mode(self, mode):
@@ -176,6 +176,34 @@ class ReportCanvas(QWidget):
         painter.setBrush(color or self.card)
         painter.drawRoundedRect(rect, 16, 16)
 
+    def _hero_stat(self, painter, rect, value, caption, value_size):
+        value, caption = str(value), str(caption)
+        caption_size, gap = 16, 10
+        size = value_size
+        while True:
+            painter.setFont(_font(size, QFont.Weight.Bold))
+            value_metrics = painter.fontMetrics()
+            painter.setFont(_font(caption_size, QFont.Weight.Medium))
+            caption_metrics = painter.fontMetrics()
+            group_width = (value_metrics.horizontalAdvance(value) + gap
+                           + caption_metrics.horizontalAdvance(caption))
+            if group_width <= rect.width() or size <= 16:
+                break
+            size -= 2
+        painter.setFont(_font(size, QFont.Weight.Bold))
+        value_width = min(value_metrics.horizontalAdvance(value),
+                          rect.width() - gap - caption_metrics.horizontalAdvance(caption))
+        value = _elided(painter, value, value_width) if value_width < value_metrics.horizontalAdvance(value) else value
+        value_width = value_metrics.horizontalAdvance(value)
+        group_width = value_width + gap + caption_metrics.horizontalAdvance(caption)
+        x = rect.center().x() - group_width / 2
+        baseline = rect.center().y() + (value_metrics.ascent() - value_metrics.descent()) / 2
+        painter.setPen(self.hero_text)
+        painter.drawText(QPointF(x, baseline), value)
+        painter.setFont(_font(caption_size, QFont.Weight.Medium))
+        painter.setPen(self.hero_text)
+        painter.drawText(QPointF(x + value_width + gap, baseline), caption)
+
     def _draw_hero(self, painter, rect):
         end_point = (rect.topRight() if self.gradient_direction == "horizontal" else
                      rect.bottomLeft() if self.gradient_direction == "vertical" else rect.bottomRight())
@@ -201,25 +229,31 @@ class ReportCanvas(QWidget):
             painter.drawLine(QPointF(rect.left() + offset, rect.bottom()),
                              QPointF(rect.left() + offset + 180, rect.top()))
         painter.restore()
-        white = self.hero_text
         translucent = QColor(self.hero_text)
         translucent.setAlpha(210)
         _text(painter, QRectF(rect.left() + 28, rect.top() + 24, rect.width() * .58, 24),
               self.kicker, size=12, color=translucent, weight=QFont.Weight.Medium)
-        _text(painter, QRectF(rect.left() + 28, rect.top() + 67, rect.width() * .60, 104),
-              self.title, size=34, color=white, weight=QFont.Weight.Bold,
-              align=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        stats = QRectF(rect.right() - 324, rect.top() + 76, 296, 116)
+        title_rect = QRectF(rect.left() + 28, rect.top() + 67,
+                            stats.left() - rect.left() - 52, 104)
+        title_flags = (Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
+                       | Qt.TextFlag.TextWordWrap)
+        title_size = 34
+        while True:
+            painter.setFont(_font(title_size, QFont.Weight.Bold))
+            bounds = painter.fontMetrics().boundingRect(title_rect.toRect(), title_flags, self.title)
+            if bounds.height() <= title_rect.height() or title_size <= 16:
+                break
+            title_size -= 2
+        painter.setPen(self.hero_text)
+        painter.drawText(title_rect, title_flags, self.title)
         _text(painter, QRectF(rect.left() + 28, rect.bottom() - 65, rect.width() * .62, 28),
               f"{self.start.toString('yyyy.MM.dd')} — {self.end.toString('yyyy.MM.dd')}  ·  {self.source}",
               size=13, color=translucent)
-        total = int(self.data.get("total", 0))
-        _text(painter, QRectF(rect.right() - 265, rect.top() + 83, 220, 76), total,
-              size=58, color=white, weight=QFont.Weight.Bold, align=Qt.AlignmentFlag.AlignCenter)
-        _text(painter, QRectF(rect.right() - 265, rect.top() + 158, 220, 30), "次点歌",
-              size=18, color=translucent, align=Qt.AlignmentFlag.AlignCenter)
-        _text(painter, QRectF(rect.right() - 285, rect.top() + 198, 260, 26),
-              "舞蹈时长 " + format_duration(self.total_play_seconds),
-              size=12, color=translucent, align=Qt.AlignmentFlag.AlignCenter)
+        self._hero_stat(painter, QRectF(stats.left(), stats.top(), stats.width(), 58),
+                        int(self.data.get("total", 0)), "次点歌", 46)
+        self._hero_stat(painter, QRectF(stats.left(), stats.bottom() - 50, stats.width(), 50),
+                        format_duration(self.total_play_seconds), "舞蹈时长", 28)
 
     def _draw_metrics(self, painter, rect):
         peak_month = max(self._trend_for("month"), key=lambda item: item["seconds"], default=None)
@@ -416,12 +450,17 @@ class ReportCanvas(QWidget):
                 painter.setPen(QPen(color, 18, Qt.PenStyle.SolidLine, Qt.PenCapStyle.FlatCap))
                 painter.drawArc(ring, start, span)
                 start += span
-        duration_text = format_duration(total).replace(" 小时 ", " 小时\n")
-        _text(painter, QRectF(center.x() - 65, center.y() - 34, 130, 42),
-              duration_text, size=14, color=self.text, weight=QFont.Weight.DemiBold,
-              align=Qt.AlignmentFlag.AlignCenter)
-        _text(painter, QRectF(center.x() - 60, center.y() + 24, 120, 18), "总时长",
-              size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
+        if total:
+            duration_text = format_duration(total).replace(" 小时 ", " 小时\n")
+            _text(painter, QRectF(center.x() - 65, center.y() - 34, 130, 42),
+                  duration_text, size=14, color=self.text, weight=QFont.Weight.DemiBold,
+                  align=Qt.AlignmentFlag.AlignCenter)
+            _text(painter, QRectF(center.x() - 60, center.y() + 24, 120, 18), "总时长",
+                  size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
+        else:
+            _text(painter, QRectF(center.x() - 60, center.y() - 16, 120, 32), "暂无数据",
+                  size=13, color=self.muted, weight=QFont.Weight.Medium,
+                  align=Qt.AlignmentFlag.AlignCenter)
         legend_y = rect.bottom() - 46
         for index, (name, count, color) in enumerate((("PyPyDance", pypy, self.accent),
                                                      ("WannaDance", wd, self.secondary))):
@@ -452,7 +491,7 @@ class PlayReportDialog(QDialog):
         super().__init__(owner)
         self._owner = owner
         self.start, self.end = start, end
-        self.setWindowTitle("我的点歌报告")
+        self.setWindowTitle("我的舞蹈报告")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(1000, 800)
         self.setMinimumSize(760, 600)
@@ -491,8 +530,8 @@ class PlayReportDialog(QDialog):
         box.addWidget(scroll, 1)
 
     def _export_png(self):
-        name = f"点歌报告_{self.start.toString('yyyyMMdd')}-{self.end.toString('yyyyMMdd')}.png"
-        path, _ = QFileDialog.getSaveFileName(self, "导出点歌报告", name, "PNG 图片 (*.png)")
+        name = f"舞蹈报告_{self.start.toString('yyyyMMdd')}-{self.end.toString('yyyyMMdd')}.png"
+        path, _ = QFileDialog.getSaveFileName(self, "导出舞蹈报告", name, "PNG 图片 (*.png)")
         if not path:
             return
         if not self.canvas.save_png(path):

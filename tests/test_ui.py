@@ -289,6 +289,9 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(report.isVisible())
         self.assertEqual(report.canvas.data["total"], 84)
         self.assertEqual(report.canvas.data["active_days"], 37)
+        self.assertEqual(report.windowTitle(), "我的舞蹈报告")
+        self.assertEqual(report.canvas.title, f"我的 {QDate.currentDate().year()} 年度舞蹈报告")
+        self.assertEqual(report.canvas.accessibleName(), "舞蹈年度报告")
         self.assertFalse(report.canvas.grab().isNull())
         path = self.root / "annual-report.png"
         self.assertTrue(report.canvas.save_png(str(path)))
@@ -306,6 +309,10 @@ class UIIntegrationTests(unittest.TestCase):
             "total": 1, "songs": [{"rank": 1, "id": 1, "kind": "pypy", "name": "Single", "count": 1}],
             "players": [], "months": [{"month": f"{year}-01", "count": 1}], "active_days": 1,
         }, QDate(year, 1, 1), QDate.currentDate(), "PyPyDance", store.active)
+        ranged = ReportCanvas(sparse.data, QDate(year - 1, 2, 1), QDate(year - 1, 12, 31),
+                              "全部来源", store.active)
+        self.assertEqual(ranged.title, "我的舞蹈报告")
+        ranged.close()
         rich_data = copy.deepcopy(sparse.data)
         rich_data["songs"].append({"rank": 2, "id": 2, "kind": "wd", "name": "More", "count": 1})
         rich_data["vrcx"] = {"daily_play": [
