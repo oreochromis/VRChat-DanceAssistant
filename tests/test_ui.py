@@ -19,8 +19,8 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEventLoop, QTimer, Qt, QDate
-    from PySide6.QtGui import QFont, QFontDatabase, QImage
+    from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt, QDate, QPoint, QPointF
+    from PySide6.QtGui import QFont, QFontDatabase, QImage, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QProgressBar
     import dance_cache as core
@@ -326,7 +326,7 @@ class UIIntegrationTests(unittest.TestCase):
             {"day": f"{year}-01-02", "seconds": 2400},
         ]}
         rich = ReportCanvas(rich_data, QDate(year, 1, 1), QDate.currentDate(), "全部来源", store.active)
-        self.assertLess(sparse._report_height(900), rich._report_height(900))
+        self.assertEqual(sparse._report_height(900), rich._report_height(900))
         rich.close()
         sparse.resize(900, sparse._report_height(900))
         self.assertFalse(sparse.grab().isNull())
@@ -355,6 +355,21 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(report.canvas.trend_mode, "day")
         self.assertEqual(len(report.canvas.trend), len(report.canvas.daily_play))
         self.assertGreaterEqual(len(report.canvas.trend), 12)
+        report.canvas.grab()
+        self.assertEqual(len(report.canvas._trend_bars), len(report.canvas.trend))
+        def move_mouse(point):
+            event = QMouseEvent(QEvent.Type.MouseMove, QPointF(point), QPointF(point),
+                                Qt.MouseButton.NoButton, Qt.MouseButton.NoButton,
+                                Qt.KeyboardModifier.NoModifier)
+            QApplication.sendEvent(report.canvas, event)
+            QApplication.processEvents()
+
+        move_mouse(report.canvas._trend_bars[2].center().toPoint())
+        self.assertEqual(report.canvas._hover_trend, 2)
+        self.assertTrue(report.canvas.save_png(str(self.root / "hover-export.png")))
+        self.assertEqual(report.canvas._hover_trend, 2)
+        move_mouse(QPoint(2, 2))
+        self.assertEqual(report.canvas._hover_trend, -1)
         report.title_edit.setText("我的自定义舞蹈报告")
         self.assertEqual(report.canvas.title, "我的自定义舞蹈报告")
         report.summary_combo.setCurrentIndex(report.summary_combo.findData("day"))

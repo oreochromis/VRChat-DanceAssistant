@@ -51,6 +51,9 @@ class ReportCanvas(QWidget):
         self.self_played = int(self.data.get("self_played", 0))
         self.trend_mode, self.summary_mode = "day", "month"
         self.trend = self._trend_for("day")
+        self._trend_bars = []
+        self._hover_trend = -1
+        self.setMouseTracking(True)
         self.background = QColor(theme["background_color"])
         self.card = QColor(theme["card_background"])
         self.text = QColor(theme["text_primary"])
@@ -85,6 +88,7 @@ class ReportCanvas(QWidget):
             return
         self.trend_mode = mode
         self.trend = self._trend_for(mode)
+        self._hover_trend = -1
         self.setMinimumHeight(self._report_height(self.width()))
         self.update()
 
@@ -104,6 +108,23 @@ class ReportCanvas(QWidget):
             totals[period] = totals.get(period, 0) + seconds
         return [{"period": period, "seconds": totals[period]} for period in sorted(totals)]
 
+    def _set_trend_hover(self, index):
+        index = index if 0 <= index < len(self.trend) else -1
+        if index != self._hover_trend:
+            self._hover_trend = index
+            self.update()
+
+    def mouseMoveEvent(self, event):
+        position = event.position()
+        index = next((index for index, bar in enumerate(self._trend_bars)
+                      if bar.contains(position)), -1)
+        self._set_trend_hover(index)
+        super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        self._set_trend_hover(-1)
+        super().leaveEvent(event)
+
     def resizeEvent(self, event):
         self.setMinimumHeight(self._report_height(self.width()))
         super().resizeEvent(event)
@@ -112,7 +133,7 @@ class ReportCanvas(QWidget):
         height = 704
         if len(self.songs) > 3:
             height += 100 + min(len(self.songs), 10) * 44 + 24
-        height += 310 if len(self.trend) > 1 else 230
+        height += 310
         height += 254
         height += 24
         if self.vrcx_friends:
@@ -131,11 +152,11 @@ class ReportCanvas(QWidget):
         image.fill(self.background)
         painter = QPainter(image)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        self._draw(painter, width)
+        self._draw(painter, width, interactive=False)
         painter.end()
         return image.save(path, "PNG")
 
-    def _draw(self, painter, width):
+    def _draw(self, painter, width, interactive=True):
         painter.fillRect(QRectF(0, 0, width, self._report_height(width)), self.background)
         margin, content = 28, width - 56
         hero = QRectF(margin, 28, content, 270)
@@ -151,16 +172,12 @@ class ReportCanvas(QWidget):
             top_height = 100 + min(len(self.songs), 10) * 44
             self._draw_top_songs(painter, QRectF(margin, charts_y, content, top_height))
             charts_y += top_height + 24
-        if len(self.trend) > 1:
-            gap = 18
-            monthly_width = round((content - gap) * .62)
-            self._draw_trend(painter, QRectF(margin, charts_y, monthly_width, 310))
-            self._draw_sources(painter, QRectF(margin + monthly_width + gap, charts_y,
-                                               content - monthly_width - gap, 310))
-            charts_y += 310
-        else:
-            self._draw_sources(painter, QRectF(margin, charts_y, content, 230))
-            charts_y += 230
+        gap = 18
+        trend_width = round((content - gap) * .62)
+        self._draw_trend(painter, QRectF(margin, charts_y, trend_width, 310), interactive)
+        self._draw_sources(painter, QRectF(margin + trend_width + gap, charts_y,
+                                           content - trend_width - gap, 310))
+        charts_y += 310
         self._draw_world_play(painter, QRectF(margin, charts_y, content, 230))
         footer_y = charts_y + 254
         if self.vrcx_friends:
@@ -261,26 +278,33 @@ class ReportCanvas(QWidget):
         if self.summary_mode == "day":
             summary = ("游玩最长的一天",
                        f"{int(peak_day['day'][5:7])} 月 {int(peak_day['day'][8:10])} 日" if peak_day else "—",
-                       format_duration(peak_day["seconds"]) if peak_day else "")
+                       "", format_duration(peak_day["seconds"]) if peak_day else "")
         else:
-            summary = ("最活跃月份",
-                       f"{int(peak_month['period'][5:7])} 月" if peak_month else "—",
-                       format_duration(peak_month["seconds"]) if peak_month else "")
+            summary = ("最活跃月份", int(peak_month["period"][5:7]) if peak_month else "—",
+                       "月" if peak_month else "", format_duration(peak_month["seconds"]) if peak_month else "")
         values = [
-            ("活跃天数", int(self.data.get("active_days", 0)), "天"),
-            ("舞蹈伙伴", len(self.players), "位"),
-            ("点播歌曲", self.self_played, "自己点播且已播放"),
+            ("活跃天数", int(self.data.get("active_days", 0)), "天", "本期有点歌记录"),
+            ("舞蹈伙伴", len(self.players), "位", "本期共同点歌"),
+            ("点播歌曲", self.self_played, "首", "本人点播且已播放"),
             summary,
         ]
         gap = 12
         card_width = (rect.width() - gap * 3) / 4
-        for index, (title, value, caption) in enumerate(values):
+        for index, (title, value, unit, caption) in enumerate(values):
             card = QRectF(rect.left() + index * (card_width + gap), rect.top(), card_width, rect.height())
             self._card(painter, card)
             _text(painter, QRectF(card.left() + 18, card.top() + 13, card.width() - 36, 22),
                   title, size=12, color=self.muted)
-            _text(painter, QRectF(card.left() + 18, card.top() + 38, card.width() - 36, 42),
-                  value, size=27, color=self.text, weight=QFont.Weight.DemiBold)
+            painter.setFont(_font(27, QFont.Weight.DemiBold))
+            value_metrics = painter.fontMetrics()
+            baseline = card.top() + 68
+            painter.setPen(self.text)
+            painter.drawText(QPointF(card.left() + 18, baseline), str(value))
+            if unit:
+                value_width = value_metrics.horizontalAdvance(str(value))
+                painter.setFont(_font(12))
+                painter.setPen(self.muted)
+                painter.drawText(QPointF(card.left() + 25 + value_width, baseline), unit)
             _text(painter, QRectF(card.left() + 18, card.bottom() - 28, card.width() - 36, 18),
                   caption, size=11, color=self.muted)
 
@@ -342,56 +366,78 @@ class ReportCanvas(QWidget):
                   f"{song.get('count', 0)} 次", size=12, color=self.muted,
                   align=Qt.AlignmentFlag.AlignRight)
 
-    def _draw_trend(self, painter, rect):
+    def _draw_trend(self, painter, rect, interactive=True):
         self._card(painter, rect)
         _text(painter, QRectF(rect.left() + 20, rect.top() + 15, rect.width() - 150, 30),
               "舞蹈时长趋势", size=18, color=self.text, weight=QFont.Weight.DemiBold)
         _text(painter, QRectF(rect.right() - 120, rect.top() + 17, 100, 24),
               {"day": "按日", "month": "按月", "year": "按年"}[self.trend_mode],
               size=11, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
-        plot = QRectF(rect.left() + 32, rect.top() + 66, rect.width() - 58, 174)
+        hover = self._hover_trend if interactive else -1
         counts = [max(0, int(item.get("seconds", 0))) for item in self.trend]
-        maximum = max(counts, default=1) or 1
-        painter.setFont(_font(10))
+        if 0 <= hover < len(self.trend):
+            period = str(self.trend[hover]["period"])
+            if self.trend_mode == "day":
+                summary_label = QDate.fromString(period, "yyyy-MM-dd").toString("yyyy 年 M 月 d 日")
+            elif self.trend_mode == "month":
+                summary_label = f"{int(period[:4])} 年 {int(period[5:7])} 月"
+            else:
+                summary_label = period + " 年"
+            summary_value = format_duration(counts[hover])
+        else:
+            summary_label = "本期合计"
+            summary_value = format_duration(sum(counts))
+        _text(painter, QRectF(rect.left() + 20, rect.top() + 49, rect.width() - 40, 20),
+              summary_label, size=11, color=self.muted)
+        _text(painter, QRectF(rect.left() + 20, rect.top() + 67, rect.width() - 40, 38),
+              summary_value, size=25, color=self.accent if hover >= 0 else self.text,
+              weight=QFont.Weight.DemiBold)
+        plot = QRectF(rect.left() + 62, rect.top() + 122, rect.width() - 84, 120)
+        maximum_minutes = max(3, math.ceil(max(counts, default=0) / 60))
+        maximum = maximum_minutes * 60
+        _text(painter, QRectF(rect.left() + 14, plot.top() - 23, 42, 18), "分钟",
+              size=10, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
         for step in range(4):
             y = plot.top() + plot.height() * step / 3
             painter.setPen(QPen(self.border, 1))
             painter.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y))
+            minutes = round(maximum_minutes * (3 - step) / 3)
+            _text(painter, QRectF(rect.left() + 14, y - 10, 38, 20), minutes,
+                  size=10, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
         if not counts:
+            if interactive:
+                self._trend_bars = []
             _text(painter, plot, "同步 VRCX 后显示游玩时长", color=self.muted,
                   align=Qt.AlignmentFlag.AlignCenter)
             return
-        points = []
-        for index, count in enumerate(counts):
-            x = plot.left() + (plot.width() * index / max(1, len(counts) - 1))
-            y = plot.bottom() - plot.height() * count / maximum
-            points.append(QPointF(x, y))
-        area = QPainterPath(points[0])
-        for point in points[1:]:
-            area.lineTo(point)
-        area.lineTo(QPointF(points[-1].x(), plot.bottom()))
-        area.lineTo(QPointF(points[0].x(), plot.bottom()))
-        area.closeSubpath()
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(self.soft)
-        painter.drawPath(area)
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(self.accent, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
-                            Qt.PenJoinStyle.RoundJoin))
-        for first, second in zip(points, points[1:]):
-            painter.drawLine(first, second)
-        painter.setBrush(self.accent)
-        painter.setPen(QPen(self.card, 2))
-        for point in points:
-            painter.drawEllipse(point, 4, 4)
-        skip = max(1, math.ceil(len(self.trend) / 6))
+        slot = plot.width() / len(counts)
+        bar_width = min(26, max(5, slot * .46))
+        centers = [plot.left() + slot * (index + .5) for index in range(len(counts))]
+        if 0 <= hover < len(counts):
+            painter.setPen(QPen(self.soft, 1))
+            painter.drawLine(QPointF(centers[hover], plot.top()),
+                             QPointF(centers[hover], plot.bottom()))
+        for index, (count, center) in enumerate(zip(counts, centers)):
+            height = plot.height() * count / maximum
+            if height > 0:
+                bar = QRectF(center - bar_width / 2, plot.bottom() - height, bar_width, height)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(self.secondary if index == hover else self.accent)
+                radius = min(5, bar_width / 2)
+                painter.drawRoundedRect(bar, radius, radius)
+        if interactive:
+            self._trend_bars = [QRectF(plot.left() + slot * index, plot.top(), slot, plot.height())
+                                for index in range(len(counts))]
+        skip = max(1, math.ceil(len(self.trend) / 5))
         for index, item in enumerate(self.trend):
             if index % skip and index != len(self.trend) - 1:
                 continue
             period = str(item["period"])
-            text = period[5:] if self.trend_mode == "day" else f"{int(period[5:7])}月" if self.trend_mode == "month" else period + "年"
-            _text(painter, QRectF(points[index].x() - 28, plot.bottom() + 10, 56, 20),
-                  text, size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
+            text = period[5:] if self.trend_mode == "day" else f"{int(period[5:7])} 月" if self.trend_mode == "month" else period + " 年"
+            _text(painter, QRectF(centers[index] - 32, plot.bottom() + 10, 64, 20),
+                  text, size=10, color=self.accent if index == hover else self.muted,
+                  weight=QFont.Weight.DemiBold if index == hover else QFont.Weight.Normal,
+                  align=Qt.AlignmentFlag.AlignCenter)
 
     def _draw_sources(self, painter, rect):
         self._card(painter, rect)
@@ -451,11 +497,19 @@ class ReportCanvas(QWidget):
                 painter.drawArc(ring, start, span)
                 start += span
         if total:
-            duration_text = format_duration(total).replace(" 小时 ", " 小时\n")
-            _text(painter, QRectF(center.x() - 65, center.y() - 34, 130, 42),
-                  duration_text, size=14, color=self.text, weight=QFont.Weight.DemiBold,
-                  align=Qt.AlignmentFlag.AlignCenter)
-            _text(painter, QRectF(center.x() - 60, center.y() + 24, 120, 18), "总时长",
+            duration_parts = format_duration(total).split(" 小时 ")
+            if len(duration_parts) == 2:
+                _text(painter, QRectF(center.x() - 55, center.y() - 30, 110, 20),
+                      duration_parts[0] + " 小时", size=13, color=self.text,
+                      weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignCenter)
+                _text(painter, QRectF(center.x() - 55, center.y() - 10, 110, 20),
+                      duration_parts[1], size=13, color=self.text,
+                      weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignCenter)
+            else:
+                _text(painter, QRectF(center.x() - 55, center.y() - 23, 110, 26),
+                      duration_parts[0], size=15, color=self.text,
+                      weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignCenter)
+            _text(painter, QRectF(center.x() - 55, center.y() + 13, 110, 17), "总时长",
                   size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
         else:
             _text(painter, QRectF(center.x() - 60, center.y() - 16, 120, 32), "暂无数据",
@@ -474,17 +528,27 @@ class ReportCanvas(QWidget):
     def _draw_vrcx_friend(self, painter, rect):
         self._card(painter, rect)
         friend = self.vrcx_friends[0]
-        _text(painter, QRectF(rect.left() + 24, rect.top() + 14, rect.width() * .55, 22),
-              "最常与你共同游玩的好友", size=12, color=self.muted)
+        _text(painter, QRectF(rect.left() + 24, rect.top() + 12, rect.width() - 48, 28),
+              "最常与你共同游玩的好友", size=16, color=self.text, weight=QFont.Weight.DemiBold)
+        name_area = QRectF(rect.left() + 24, rect.top() + 42, rect.width() * .38, 58)
         painter.setFont(_font(24, QFont.Weight.DemiBold))
-        name = _elided(painter, friend.get("name") or "未知好友", rect.width() * .52)
-        _text(painter, QRectF(rect.left() + 24, rect.top() + 39, rect.width() * .52, 38),
-              name, size=24, color=self.text, weight=QFont.Weight.DemiBold)
-        _text(painter, QRectF(rect.left() + 24, rect.bottom() - 30, rect.width() * .6, 20),
-              f"累计共同游玩 {friend.get('sessions', 0)} 次 · 来自 VRCX 本地记录", size=12, color=self.muted)
-        _text(painter, QRectF(rect.right() - 310, rect.top() + 31, 286, 50),
-              format_duration(friend.get("seconds", 0)), size=25, color=self.highlight,
-              weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight)
+        name = _elided(painter, friend.get("name") or "未知好友", name_area.width())
+        _text(painter, QRectF(name_area.left(), name_area.top(), name_area.width(), 34),
+              name, size=24, color=self.text, weight=QFont.Weight.DemiBold,
+              align=Qt.AlignmentFlag.AlignCenter)
+        _text(painter, QRectF(name_area.left(), name_area.bottom() - 19, name_area.width(), 18),
+              "VRCX 本地记录", size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
+        stats = QRectF(rect.left() + rect.width() * .45, rect.top() + 44,
+                       rect.width() * .55 - 24, 58)
+        for index, (value, caption) in enumerate((
+                (f"{friend.get('sessions', 0)} 次", "累计共同游玩"),
+                (format_duration(friend.get("seconds", 0)), "累计共同游玩时长"))):
+            row = QRectF(stats.left(), stats.top() + index * 30, stats.width(), 27)
+            _text(painter, QRectF(row.left(), row.top(), row.width() * .56, row.height()),
+                  value, size=18, color=self.text, weight=QFont.Weight.DemiBold)
+            _text(painter, QRectF(row.left() + row.width() * .56, row.top(),
+                                  row.width() * .44, row.height()),
+                  caption, size=11, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
 
 class PlayReportDialog(QDialog):
     def __init__(self, owner, data, start, end, source, theme):
