@@ -108,6 +108,72 @@ BUILTIN_THEMES = {
         "scrollbar_color": "#6E7A90", "background_gradient": "#19243A",
         "hero_gradient": "#6CD5DF",
     },
+    "miku": {
+        **_COMMON, "id": "miku", "name": "初音未来", "builtin": True, "base": "light",
+        "accent": "#13746E", "background_color": "#EFFAF8", "overlay_color": "#EFFAF8",
+        "nav_background": "#F7FFFD", "nav_opacity": 0.82, "nav_text": "#4D7270",
+        "nav_active_background": "#39C5BB", "nav_active_opacity": 0.16,
+        "nav_active_text": "#16706A", "text_primary": "#173638",
+        "text_secondary": "#506B6D", "card_background": "#FFFFFF",
+        "card_opacity": 0.94, "border_color": "#C8E4DF", "border_opacity": 0.8,
+        "secondary_accent": "#1D787E", "highlight": "#A34F7D",
+        "success_color": "#18794F", "info_color": "#276A91",
+        "button_hover_background": "#DDF4EF", "table_header_background": "#E3F4F1",
+        "table_header_text": "#456B69", "table_selection_background": "#D7F0EC",
+        "scrollbar_color": "#73A8A4", "background_gradient": "#97E1DB",
+        "background_gradient_opacity": 0.12, "hero_gradient": "#297875",
+        "hero_gradient_opacity": 0.12,
+    },
+    "eva01": {
+        **_COMMON, "id": "eva01", "name": "EVA 初号机", "builtin": True, "base": "dark",
+        "accent": "#A7D46F", "background_color": "#15111F", "overlay_color": "#15111F",
+        "nav_background": "#1B1427", "nav_opacity": 0.9, "nav_text": "#B7A7C9",
+        "nav_active_background": "#7A4A9E", "nav_active_opacity": 0.22,
+        "nav_active_text": "#E2C8FF", "text_primary": "#F0EAF7",
+        "text_secondary": "#B7A7C9", "card_background": "#21182E",
+        "card_opacity": 0.96, "border_color": "#49355E", "border_opacity": 0.7,
+        "secondary_accent": "#B69AE8", "highlight": "#F0B45D",
+        "success_color": "#8ED9A5", "warning_color": "#F0B45D",
+        "error_color": "#F39AA9", "info_color": "#698ECF", "button_background": "#2D213D",
+        "button_text": "#F0EAF7", "button_hover_background": "#3A2A4C",
+        "primary_button_text": "#182132", "input_background": "#291D38",
+        "table_header_background": "#2B1D3B", "table_header_text": "#C3B1D6",
+        "table_selection_background": "#46305F", "scrollbar_color": "#756185",
+        "background_gradient": "#241635", "background_gradient_opacity": 0.45,
+        "hero_gradient": "#8BC75A", "hero_gradient_opacity": 0.18,
+    },
+    "jirai": {
+        **_COMMON, "id": "jirai", "name": "地雷系", "builtin": True, "base": "light",
+        "accent": "#B72D6B", "background_color": "#FFF4F8", "overlay_color": "#FFF4F8",
+        "nav_background": "#FFF8FB", "nav_opacity": 0.82, "nav_text": "#895E71",
+        "nav_active_background": "#D94F91", "nav_active_opacity": 0.14,
+        "nav_active_text": "#A42662", "text_primary": "#32232C",
+        "text_secondary": "#795B69", "card_background": "#FFFBFD",
+        "card_opacity": 0.94, "border_color": "#EBCBD9", "border_opacity": 0.8,
+        "secondary_accent": "#8D4EA3", "highlight": "#7E4CA0",
+        "success_color": "#29734F", "error_color": "#AC304F", "info_color": "#7355B7",
+        "button_hover_background": "#F9E2EE", "table_header_background": "#F9E7F0",
+        "table_header_text": "#795468", "table_selection_background": "#F4D6E7",
+        "scrollbar_color": "#B78FA3", "background_gradient": "#F9D8E8",
+        "background_gradient_opacity": 0.35, "hero_gradient": "#B94577",
+        "hero_gradient_opacity": 0.16,
+    },
+    "maimai": {
+        **_COMMON, "id": "maimai", "name": "maimai 彩虹", "builtin": True, "base": "light",
+        "accent": "#4C5BC4", "background_color": "#F7F8FF", "overlay_color": "#F7F8FF",
+        "nav_background": "#FFFFFF", "nav_opacity": 0.82, "nav_text": "#5F6689",
+        "nav_active_background": "#5865D8", "nav_active_opacity": 0.13,
+        "nav_active_text": "#414FB8", "text_primary": "#20243A",
+        "text_secondary": "#5B637C", "card_background": "#FFFFFF",
+        "card_opacity": 0.94, "border_color": "#DDE0F0", "border_opacity": 0.8,
+        "secondary_accent": "#137A7F", "highlight": "#A56B12",
+        "success_color": "#1B7A4A", "warning_color": "#925B12", "error_color": "#B33A55",
+        "button_hover_background": "#E9ECFF", "table_header_background": "#F0F1FA",
+        "table_header_text": "#555D78", "table_selection_background": "#E2E6FA",
+        "scrollbar_color": "#98A1BA", "background_gradient": "#FFE3F1",
+        "background_gradient_opacity": 0.32, "hero_gradient": "#AF4B7D",
+        "hero_gradient_opacity": 0.16,
+    },
 }
 THEME_GROUPS = {
     "background": (
@@ -567,8 +633,8 @@ class ThemeStore:
             theme_id = item.get("id")
             if not isinstance(theme_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,80}", theme_id) or theme_id in ids:
                 continue
-            base = theme_id if theme_id in BUILTIN_THEMES else item.get("base", "light")
-            if not isinstance(base, str) or base not in BUILTIN_THEMES:
+            base = BUILTIN_THEMES[theme_id]["base"] if theme_id in BUILTIN_THEMES else item.get("base", "light")
+            if not isinstance(base, str) or base not in ("light", "dark"):
                 base = "light"
             theme = copy.deepcopy(self._provided_themes.get(theme_id, BUILTIN_THEMES[base]))
             theme.update(id=theme_id, builtin=theme_id in self._provided_themes, base=base)
@@ -762,6 +828,7 @@ class ThemeStore:
         base = item.get("base", "light")
         if base not in BUILTIN_THEMES:
             raise ThemeError("主题基础模式无效。")
+        base = BUILTIN_THEMES[base]["base"]
         theme = copy.deepcopy(BUILTIN_THEMES[base])
         for key in THEME_FIELDS:
             if key in item and key != "background_image":

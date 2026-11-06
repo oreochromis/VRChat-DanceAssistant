@@ -77,7 +77,7 @@ def inspect_demo(window) -> dict:
             raise ValueError("; ".join(window.store.warnings))
         if window.store.active != ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES):
             raise ValueError("Use a fresh state directory to check the default light theme.")
-        if {theme["id"] for theme in window.store.themes} != {"light", "dark"}:
+        if {theme["id"] for theme in window.store.themes} != set(BUILTIN_THEMES):
             raise ValueError("Fresh profiles should contain only the built-in light/dark themes.")
         if window.store.preferences != DEFAULT_PREFERENCES:
             raise ValueError("Fresh reading preferences differ from the built-in defaults.")

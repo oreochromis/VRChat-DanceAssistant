@@ -113,6 +113,17 @@ class ThemeStoreTests(unittest.TestCase):
         with self.assertRaises(ThemeError):
             self.store.change_preferences({"home_style": "fancy"})
 
+    def test_additional_builtin_themes_are_readable_and_persist(self):
+        self.assertEqual({"miku", "eva01", "jirai", "maimai"} - set(BUILTIN_THEMES), set())
+        for theme_id in ("miku", "eva01", "jirai", "maimai"):
+            with self.subTest(theme=theme_id):
+                self.store.select(theme_id)
+                for style in ("simple", "vivid"):
+                    self.store.change_preferences({"home_style": style})
+                    self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
+        self.store.select("maimai")
+        self.assertEqual(ThemeStore(self.store.root_dir).active_id, "maimai")
+
     def test_copy_rename_delete_and_undo_keep_original(self):
         self.store.change({"accent": "#123456"})
         original = self.store.active

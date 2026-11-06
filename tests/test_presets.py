@@ -63,7 +63,7 @@ class ThemeUpgradeTests(unittest.TestCase):
         path.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         return path
 
-    def test_fresh_profile_has_only_light_dark_and_no_background_after_reopen(self):
+    def test_fresh_profile_has_only_builtin_themes_and_no_background_after_reopen(self):
         store = ThemeStore(self.root / "fresh")
         expected_themes = [ensure_theme_contrast(theme, DEFAULT_PREFERENCES)
                            for theme in BUILTIN_THEMES.values()]
