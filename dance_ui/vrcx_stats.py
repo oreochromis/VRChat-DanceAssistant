@@ -181,6 +181,25 @@ def _daily_play_stats(own_intervals, start_ts, end_ts):
     return [{"day": day, "seconds": round(days[day])} for day in sorted(days)]
 
 
+def _new_friend_stats(rows, own_intervals, start_ts, end_ts):
+    added = {}
+    for created_at, kind, user_id, display_name in rows:
+        if kind != "Friend" or not user_id:
+            continue
+        try:
+            timestamp = _timestamp(created_at)
+        except (ValueError, OverflowError, OSError):
+            continue
+        if not start_ts <= timestamp < end_ts or user_id in added:
+            continue
+        in_dance_room = any(start <= timestamp < end
+                            for intervals in own_intervals.values() for start, end in intervals)
+        if in_dance_room:
+            added[user_id] = {"user_id": user_id, "name": str(display_name or user_id),
+                              "ts": timestamp}
+    return sorted(added.values(), key=lambda item: item["ts"])
+
+
 def _player_intervals(rows, friends, observed_end):
     opened = {}
     intervals = {}
@@ -251,6 +270,12 @@ def read_co_room_stats(path, start_ts, end_ts):
         join_rows = connection.execute(
             "SELECT user_id, display_name, type, created_at, location FROM gamelog_join_leave "
             "ORDER BY created_at, id").fetchall()
+        history_table = friend_table.removesuffix("_current") + "_history"
+        history_exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (history_table,)).fetchone()
+        friend_history = connection.execute(
+            f'SELECT created_at, type, user_id, display_name FROM "{history_table}" '
+            "ORDER BY created_at, id").fetchall() if history_exists else []
     finally:
         connection.close()
     timestamps = []
@@ -303,6 +328,7 @@ def read_co_room_stats(path, start_ts, end_ts):
         "self_names": self_names, "daily_play": daily_play,
         "total_play_seconds": round(sum(item["seconds"] for item in daily_play)),
         "world_play": world_play,
+        "new_friends": _new_friend_stats(friend_history, own, start_ts, end_ts),
     }
 
 

@@ -46,11 +46,13 @@ class ReportCanvas(QWidget):
                                  key=lambda item: item["day"]) if isinstance(vrcx, dict) else []
         self.active_days = sum(int(item.get("seconds", 0)) > 180 for item in self.daily_play)
         self.dance_partners = len(self.vrcx_friends)
+        self.new_dance_partners = len(vrcx.get("new_friends") or []) if isinstance(vrcx, dict) else 0
         self.total_play_seconds = int(vrcx.get("total_play_seconds", 0)) if isinstance(vrcx, dict) else 0
         world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
         self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
         self.self_played = int(self.data.get("self_played", 0))
         self.trend_mode, self.summary_mode = "day", "month"
+        self.partner_mode = "co_play"
         self.trend = self._trend_for("day")
         self._trend_bars = []
         self._hover_trend = -1
@@ -96,6 +98,11 @@ class ReportCanvas(QWidget):
     def set_summary_mode(self, mode):
         if mode in ("month", "day"):
             self.summary_mode = mode
+            self.update()
+
+    def set_partner_mode(self, mode):
+        if mode in ("co_play", "new"):
+            self.partner_mode = mode
             self.update()
 
     def _trend_for(self, mode):
@@ -283,9 +290,11 @@ class ReportCanvas(QWidget):
         else:
             summary = ("最活跃月份", int(peak_month["period"][5:7]) if peak_month else "—",
                        "月" if peak_month else "", format_duration(peak_month["seconds"]) if peak_month else "")
+        partner = (("新增的舞蹈伙伴", self.new_dance_partners) if self.partner_mode == "new"
+                   else ("共同游玩的舞蹈伙伴", self.dance_partners))
         values = [
             ("活跃天数", self.active_days, "天", ""),
-            ("舞蹈伙伴", self.dance_partners, "位", ""),
+            (partner[0], partner[1], "位", ""),
             ("点播歌曲", self.self_played, "首", ""),
             summary,
         ]
@@ -442,6 +451,20 @@ class ReportCanvas(QWidget):
                   weight=QFont.Weight.DemiBold if index == hover else QFont.Weight.Normal,
                   align=Qt.AlignmentFlag.AlignCenter)
 
+    def _draw_legend(self, painter, rect, items, y, size):
+        painter.setFont(_font(size))
+        metrics = painter.fontMetrics()
+        widths = [16 + metrics.horizontalAdvance(text) for text, _ in items]
+        gap = 28
+        x = rect.center().x() - (sum(widths) + gap * (len(items) - 1)) / 2
+        for (text, color), width in zip(items, widths):
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(color)
+            painter.drawEllipse(QRectF(x, y + 4, 10, 10))
+            _text(painter, QRectF(x + 16, y - 4, width - 16, 24),
+                  text, size=size, color=self.muted)
+            x += width + gap
+
     def _draw_sources(self, painter, rect):
         self._card(painter, rect)
         _text(painter, QRectF(rect.left() + 20, rect.top() + 15, rect.width() - 40, 30),
@@ -468,15 +491,9 @@ class ReportCanvas(QWidget):
               size=25, color=self.text, weight=QFont.Weight.Bold, align=Qt.AlignmentFlag.AlignCenter)
         _text(painter, QRectF(center.x() - 60, center.y() + 10, 120, 20), "次点歌",
               size=11, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
-        legend_y = rect.bottom() - 55
-        for index, (name, count, color) in enumerate((("PyPyDance", pypy, self.accent),
-                                                     ("WannaDance", wd, self.secondary))):
-            x = rect.left() + 24 + index * (rect.width() - 48) / 2
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(QRectF(x, legend_y + 4, 10, 10))
-            _text(painter, QRectF(x + 16, legend_y - 4, (rect.width() - 48) / 2 - 16, 24),
-                  f"{name} {count}", size=10, color=self.muted)
+        self._draw_legend(painter, rect, ((f"PyPyDance {pypy}", self.accent),
+                                          (f"WannaDance {wd}", self.secondary)),
+                          rect.bottom() - 55, 10)
 
     def _draw_world_play(self, painter, rect):
         self._card(painter, rect)
@@ -518,15 +535,10 @@ class ReportCanvas(QWidget):
             _text(painter, QRectF(center.x() - 60, center.y() - 16, 120, 32), "暂无数据",
                   size=13, color=self.muted, weight=QFont.Weight.Medium,
                   align=Qt.AlignmentFlag.AlignCenter)
-        legend_y = rect.bottom() - 46
-        for index, (name, count, color) in enumerate((("PyPyDance", pypy, self.accent),
-                                                     ("WannaDance", wd, self.secondary))):
-            x = rect.center().x() - 250 + index * 250
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-            painter.drawEllipse(QRectF(x, legend_y + 4, 10, 10))
-            _text(painter, QRectF(x + 16, legend_y - 4, 230, 24),
-                  f"{name} · {format_duration(count)}", size=11, color=self.muted)
+        self._draw_legend(painter, rect,
+                          ((f"PyPyDance · {format_duration(pypy)}", self.accent),
+                           (f"WannaDance · {format_duration(wd)}", self.secondary)),
+                          rect.bottom() - 46, 11)
 
     def _draw_vrcx_friend(self, painter, rect):
         self._card(painter, rect)
@@ -582,6 +594,12 @@ class PlayReportDialog(QDialog):
             self.trend_combo.addItem(text, value)
         self.trend_combo.currentIndexChanged.connect(lambda index: self.canvas.set_trend_mode(self.trend_combo.itemData(index)))
         controls.addWidget(self.trend_combo)
+        controls.addWidget(label("第二项指标", muted=True))
+        self.partner_combo = QComboBox()
+        for text, value in (("共同游玩的舞蹈伙伴", "co_play"), ("新增的舞蹈伙伴", "new")):
+            self.partner_combo.addItem(text, value)
+        self.partner_combo.currentIndexChanged.connect(lambda index: self.canvas.set_partner_mode(self.partner_combo.itemData(index)))
+        controls.addWidget(self.partner_combo)
         controls.addWidget(label("第四项指标", muted=True))
         self.summary_combo = QComboBox()
         for text, value in (("最活跃月份", "month"), ("游玩最长的一天", "day")):

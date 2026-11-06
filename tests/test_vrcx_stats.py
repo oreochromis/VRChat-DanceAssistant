@@ -32,6 +32,8 @@ class VRCXStatsTests(unittest.TestCase):
             CREATE TABLE gamelog_join_leave (id INTEGER PRIMARY KEY, created_at TEXT, type TEXT,
                 display_name TEXT, location TEXT, user_id TEXT, time INTEGER);
             CREATE TABLE usr_test_friend_log_current (user_id TEXT PRIMARY KEY, display_name TEXT);
+            CREATE TABLE usr_test_friend_log_history (id INTEGER PRIMARY KEY, created_at TEXT,
+                type TEXT, user_id TEXT, display_name TEXT);
         """)
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
         wd = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "wd")
@@ -43,6 +45,16 @@ class VRCXStatsTests(unittest.TestCase):
             ("friend-1", "当前昵称一"), ("friend-2", "当前昵称二"), ("friend-3", "当前昵称三"),
             ("friend-4", "其他地图好友"),
         ])
+        friend_events = [
+            (iso(10), "Friend", "new-pypy", "舞蹈房新好友一"),
+            (iso(10, 5), "Friend", "new-pypy", "重复添加仍是一人"),
+            (iso(10, 10), "DisplayName", "friend-1", "改名不是新增"),
+            (iso(12, 30), "Friend", "new-wd", "舞蹈房新好友二"),
+            (iso(16, 30), "Friend", "new-other", "其他地图好友"),
+        ]
+        connection.executemany(
+            "INSERT INTO usr_test_friend_log_history(created_at,type,user_id,display_name) VALUES(?,?,?,?)",
+            friend_events)
         events = [
             ("friend-1", "旧昵称", "OnPlayerJoined", iso(9, 30), "room-A"),
             ("friend-1", "旧昵称", "OnPlayerLeft", iso(10, 15), "room-A"),
@@ -102,8 +114,18 @@ class VRCXStatsTests(unittest.TestCase):
             loaded = vrcx_stats.load_vrcx_stats()
             self.assertEqual(loaded["friends"], result["friends"])
             self.assertEqual(loaded["daily_play"], result["daily_play"])
+            self.assertEqual(loaded["new_friends"], result["new_friends"])
             self.assertGreater(loaded["synced_at"], 0)
             self.assertTrue((self.root / "cached" / vrcx_stats.STATS_FILENAME).is_file())
+
+    def test_new_friends_require_add_event_inside_dance_room(self):
+        result = self.read()
+        self.assertEqual([item["user_id"] for item in result["new_friends"]], ["new-pypy"])
+        both = self.read(end=13)
+        self.assertEqual([item["user_id"] for item in both["new_friends"]], ["new-pypy", "new-wd"])
+        other = self.read(end=18)
+        self.assertNotIn("new-other", {item["user_id"] for item in other["new_friends"]})
+        self.assertEqual(self.read(start=15, end=16)["new_friends"], [])
 
     def test_date_range_and_missing_records_are_handled(self):
         partial = vrcx_stats.read_co_room_stats(self.path, ts(10), ts(10) + 15 * 60)

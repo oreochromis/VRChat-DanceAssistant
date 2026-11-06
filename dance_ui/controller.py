@@ -432,6 +432,7 @@ class CoreController(QObject):
                 "self_names": ["小林"], "daily_play": daily_play,
                 "total_play_seconds": sum(item["seconds"] for item in daily_play),
                 "world_play": {"pypy": pypy_seconds, "wd": wd_seconds},
+                "new_friends": [{"user_id": "demo-2", "name": "Momo", "ts": end_ts - 172800}],
             })
             return
 
