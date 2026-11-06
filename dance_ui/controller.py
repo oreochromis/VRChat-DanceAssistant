@@ -389,8 +389,18 @@ class CoreController(QObject):
     def vrcx_stats(self, start_ts, end_ts, path=None):
         if self.demo:
             today = QDate.currentDate()
-            daily_play = [{"day": today.addDays(index - 9).toString("yyyy-MM-dd"),
-                           "seconds": 1800 + index * 600} for index in range(10)]
+            month_start = QDate(today.year(), today.month(), 1)
+            durations = (1500, 2700, 2100, 3600, 1800, 3900, 2400, 4500, 2700, 1200, 4800, 3300, 5400)
+            daily_play = []
+            for month_offset in range(-3, 1):
+                month = month_start.addMonths(month_offset)
+                for day in (2, 9, 16, 23):
+                    date = QDate(month.year(), month.month(), min(day, month.daysInMonth()))
+                    if date <= today:
+                        daily_play.append({"day": date.toString("yyyy-MM-dd"),
+                                           "seconds": durations[len(daily_play) % len(durations)]})
+            pypy_seconds = sum(item["seconds"] for index, item in enumerate(daily_play) if index % 3 != 2)
+            wd_seconds = sum(item["seconds"] for index, item in enumerate(daily_play) if index % 3 == 2)
             self.result.emit("vrcx_stats", {
                 "path": "演示 VRCX 数据", "friend_count": 2, "matched_friends": 2,
                 "friends": [
@@ -401,7 +411,7 @@ class CoreController(QObject):
                 ], "start_ts": start_ts, "end_ts": end_ts, "demo": True,
                 "self_names": ["小林"], "daily_play": daily_play,
                 "total_play_seconds": sum(item["seconds"] for item in daily_play),
-                "world_play": {"pypy": 27000, "wd": 18000},
+                "world_play": {"pypy": pypy_seconds, "wd": wd_seconds},
             })
             return
 
