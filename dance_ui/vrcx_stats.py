@@ -210,7 +210,28 @@ def _friends(connection, table):
     return {str(user_id): str(display_name or user_id) for user_id, display_name in rows if user_id}
 
 
-def _own_intervals(rows, observed_end):
+PLAY_INACTIVITY_SECONDS = 13 * 60
+
+
+def _play_activity_timestamps():
+    timestamps = set()
+    for path in (core.history_path(), core.played_history_path()):
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                lines = handle.readlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                timestamp = float(json.loads(line)["ts"])
+                if timestamp >= 0:
+                    timestamps.add(timestamp)
+            except (ValueError, TypeError, KeyError):
+                continue
+    return sorted(timestamps)
+
+
+def _own_intervals(rows, observed_end, activity_timestamps=()):
     intervals = {}
     events = []
     for created_at, location, world_id in rows:
@@ -221,8 +242,23 @@ def _own_intervals(rows, observed_end):
     events.sort(key=lambda item: item[0])
     for index, (start, location, world_id) in enumerate(events):
         end = events[index + 1][0] if index + 1 < len(events) else observed_end
-        if location and world_id in DANCE_WORLD_IDS and end > start:
-            intervals.setdefault(location, []).append((start, end))
+        if not location or world_id not in DANCE_WORLD_IDS or end <= start:
+            continue
+        segment_start = start
+        last_activity = start
+        for timestamp in activity_timestamps:
+            if timestamp <= start:
+                continue
+            if timestamp >= end:
+                break
+            if timestamp - last_activity > PLAY_INACTIVITY_SECONDS:
+                intervals.setdefault(location, []).append(
+                    (segment_start, last_activity + PLAY_INACTIVITY_SECONDS))
+                segment_start = timestamp
+            last_activity = timestamp
+        segment_end = min(end, last_activity + PLAY_INACTIVITY_SECONDS)
+        if segment_end > segment_start:
+            intervals.setdefault(location, []).append((segment_start, segment_end))
     return intervals
 
 
@@ -349,7 +385,7 @@ def read_co_room_stats(path, start_ts, end_ts):
     if not timestamps:
         raise ValueError("VRCX 数据库中没有可用的时间记录。")
     observed_end = max(timestamps)
-    own = _own_intervals(location_rows, observed_end)
+    own = _own_intervals(location_rows, observed_end, _play_activity_timestamps())
     players, skipped = _player_intervals(join_rows, friends, observed_end)
     friends_stats = []
     for user_id, intervals in players.items():
