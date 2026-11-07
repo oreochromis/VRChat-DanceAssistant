@@ -343,7 +343,7 @@ class MainWindow(QMainWindow, Pages):
             QTimer.singleShot(0, self.controller.start)
         message = {
             "minimal": "已切换到极简模式：缓存服务将自动启动。",
-            "simple": "已切换到标准模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。",
+            "simple": "已切换到标准模式：仅显示常用功能，可通过右上角切换模式。",
             "advanced": "已切换到高级模式：全部功能已显示。",
         }[mode]
         self.notify(message)
