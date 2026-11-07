@@ -225,6 +225,10 @@ class PlayStatsPage(QWidget):
         self._layout_filters()
         super().resizeEvent(event)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._auto_sync_vrcx(force=True)
+
     def _layout_filters(self):
         while self.filters_grid.count():
             self.filters_grid.takeAt(0)
@@ -262,7 +266,7 @@ class PlayStatsPage(QWidget):
                 values.append(None)
         return tuple(values)
 
-    def _auto_sync_vrcx(self):
+    def _auto_sync_vrcx(self, force=False):
         if self.controller.demo or self._main._closing:
             return
         if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
@@ -275,7 +279,7 @@ class PlayStatsPage(QWidget):
                     "未找到 VRCX 数据库。请先启动并登录 VRCX，检查 %APPDATA%\\VRCX\\VRCX.sqlite3；"
                     "也可切换高级模式，在统计页手动选择数据库。")
             return
-        if signature == self._vrcx_signature:
+        if not force and signature == self._vrcx_signature:
             return
         self._vrcx_signature = signature
         self.read_vrcx_stats(automatic=True)
@@ -477,6 +481,7 @@ class PlayStatsPage(QWidget):
     def open_report(self):
         if not self._report_data or not self._songs:
             return
+        self._auto_sync_vrcx(force=True)
         from .play_report import PlayReportDialog
         if self._report is not None:
             self._report.close()

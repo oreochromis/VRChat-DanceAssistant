@@ -140,6 +140,7 @@ class UIIntegrationTests(unittest.TestCase):
         # A real Windows test runner must not query or modify its SteamVR setup.
         # Integration tests below explicitly control this separate system bridge.
         if not demo:
+            controller.vrcx_stats = Mock()
             controller.steamvr_status = lambda: controller.result.emit("steamvr_startup", {
                 "enabled": False, "available": True, "message": "未启用跟随 SteamVR 启动。",
             })
@@ -267,9 +268,22 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertTrue(controller.vrcx_stats.call_args.kwargs["automatic"])
             page._auto_sync_vrcx()
             self.assertEqual(controller.vrcx_stats.call_count, 1)
+            page._auto_sync_vrcx(force=True)
+            self.assertEqual(controller.vrcx_stats.call_count, 2)
             page._vrcx_timer.stop()
             page.close()
             page.deleteLater()
+
+    def test_statistics_and_report_actions_force_vrcx_sync(self):
+        window, _, _ = self.make_window()
+        stats = window.play_stats_page
+        stats._auto_sync_vrcx = Mock()
+        window.navigate(2)
+        stats._auto_sync_vrcx.assert_called_once_with(force=True)
+        stats.open_report()
+        self.assertEqual(stats._auto_sync_vrcx.call_count, 2)
+        self.assertEqual(stats._auto_sync_vrcx.call_args.kwargs, {"force": True})
+        stats._report.close()
 
     def test_advanced_settings_offer_manual_vrcx_sync(self):
         window, _, _ = self.make_window()

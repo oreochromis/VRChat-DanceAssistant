@@ -5,6 +5,7 @@ import copy
 import json
 import os
 import sqlite3
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -68,9 +69,15 @@ def sanitize_vrcx_archive(path=None):
 
 ARCHIVE_INTERVAL_SECONDS = 300
 _archive_last = {}
+_archive_lock = threading.Lock()
 
 
 def archive_vrcx_database(path, force=False) -> Path:
+    with _archive_lock:
+        return _archive_vrcx_database(path, force)
+
+
+def _archive_vrcx_database(path, force=False) -> Path:
     source = Path(path).expanduser().resolve()
     target = archived_vrcx_path()
     if is_vrcx_archive(source):
