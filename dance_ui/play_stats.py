@@ -179,8 +179,11 @@ class PlayStatsPage(QWidget):
         backup_row.setContentsMargins(0, 0, 0, 0)
         self.backup_note = label("备份点歌历史与 VRCX 原始数据；增量导入不会覆盖现有记录。", muted=True, wrap=True)
         backup_row.addWidget(self.backup_note, 1)
+        backup_row.addStretch()
         self.backup_export_button = button("导出备份", self._export_backup)
         self.backup_import_button = button("增量导入", self._import_backup)
+        self.backup_export_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+        self.backup_import_button.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
         backup_row.addWidget(self.backup_export_button)
         backup_row.addWidget(self.backup_import_button)
 

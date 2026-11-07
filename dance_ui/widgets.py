@@ -6,7 +6,7 @@ from typing import Any
 
 from PIL import Image, ImageFilter, ImageOps
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QObject, QPoint, QPointF, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QObject, QPoint, QPointF, Signal, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
@@ -601,6 +601,11 @@ class SegmentedSwitch(QWidget):
         self._pos = 0.0
         self._hover = -1
         self._colors = {}
+        self._expanded = False
+        self._collapse_timer = QTimer(self)
+        self._collapse_timer.setSingleShot(True)
+        self._collapse_timer.setInterval(220)
+        self._collapse_timer.timeout.connect(lambda: self._set_expanded(False))
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
@@ -609,7 +614,15 @@ class SegmentedSwitch(QWidget):
     def _recalc_size(self):
         metrics = self.fontMetrics()
         self._seg_w = max(metrics.horizontalAdvance(text) for _, text in self._modes) + 30
-        self.setFixedSize(QSize(self._seg_w * len(self._modes) + self._PAD * 2, 30))
+        self.setFixedSize(QSize(self._seg_w * (len(self._modes) if self._expanded else 1) + self._PAD * 2, 30))
+
+    def _set_expanded(self, expanded):
+        if self._expanded == expanded:
+            return
+        self._expanded = expanded
+        self._recalc_size()
+        self.updateGeometry()
+        self.update()
 
     def apply_theme(self, theme: dict[str, Any]):
         is_dark = QColor(theme["background_color"]).lightnessF() < .45
@@ -641,11 +654,20 @@ class SegmentedSwitch(QWidget):
         return index if 0 <= index < len(self._modes) else -1
 
     def mouseReleaseEvent(self, event):
+        if not self._expanded:
+            self._set_expanded(True)
+            event.accept()
+            return
         index = self._segment_at(event.position().x())
         if index >= 0 and index != self._index:
             self.set_mode(self._modes[index][0])
             self.modeChanged.emit(self.mode())
         super().mouseReleaseEvent(event)
+
+    def enterEvent(self, event):
+        self._collapse_timer.stop()
+        self._set_expanded(True)
+        super().enterEvent(event)
 
     def mouseMoveEvent(self, event):
         hover = self._segment_at(event.position().x())
@@ -656,6 +678,7 @@ class SegmentedSwitch(QWidget):
 
     def leaveEvent(self, event):
         self._hover = -1
+        self._collapse_timer.start()
         self.update()
         super().leaveEvent(event)
 
@@ -670,14 +693,18 @@ class SegmentedSwitch(QWidget):
         painter.setBrush(self._colors["track"])
         painter.drawRoundedRect(track, height / 2, height / 2)
         inner_h = height - self._PAD * 2
-        thumb = QRectF(self._PAD + self._pos * self._seg_w, self._PAD, self._seg_w, inner_h)
+        thumb = QRectF(self._PAD + (self._pos if self._expanded else 0) * self._seg_w,
+                       self._PAD, self._seg_w, inner_h)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(self._colors["thumb"])
         painter.drawRoundedRect(thumb, inner_h / 2, inner_h / 2)
         painter.setFont(self.font())
         active = round(self._pos)
         for index, (_, text) in enumerate(self._modes):
-            segment = QRectF(self._PAD + index * self._seg_w, self._PAD, self._seg_w, inner_h)
+            if not self._expanded and index != active:
+                continue
+            segment = QRectF(self._PAD + (index if self._expanded else 0) * self._seg_w,
+                             self._PAD, self._seg_w, inner_h)
             if index == active:
                 color = self._colors["on_thumb"]
             elif index == self._hover:

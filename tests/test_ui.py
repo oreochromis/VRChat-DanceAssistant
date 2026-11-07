@@ -433,6 +433,25 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn('QLabel[metricValue="success"]', vivid_css)
         self.assertIn('QHeaderView, QHeaderView::section {\n            background: qlineargradient', vivid_css)
 
+    def test_mode_switch_expands_on_hover_and_collapses_after_leave(self):
+        window, _, store = self.make_window()
+        switch = window.mode_switch
+        collapsed_width = switch.width()
+        self.assertFalse(switch._expanded)
+        self.assertLess(collapsed_width, switch._seg_w * 3)
+        from PySide6.QtGui import QEnterEvent
+        switch.enterEvent(QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))
+        self.assertTrue(switch._expanded)
+        self.assertGreater(switch.width(), collapsed_width)
+        point = QPoint(round(switch._PAD + switch._seg_w * 2.5), 15)
+        QTest.mouseClick(switch, Qt.MouseButton.LeftButton, pos=point)
+        self.assertEqual(store.preferences["ui_mode"], "advanced")
+        expanded_width = switch.width()
+        switch.leaveEvent(QEvent(QEvent.Type.Leave))
+        QTest.qWait(260)
+        self.assertFalse(switch._expanded)
+        self.assertLess(switch.width(), expanded_width)
+
     def test_mid_tone_custom_accent_keeps_self_painted_controls_readable(self):
         window, _, store = self.make_window()
         from dance_ui.theme import contrast_ratio, theme_contrast_warnings
