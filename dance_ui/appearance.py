@@ -323,7 +323,26 @@ class _ThemeOrderDialog(QDialog):
             self.order_list.addItem(item)
         self.order_list.model().rowsMoved.connect(self._moved)
         layout.addWidget(self.order_list, 1)
-        layout.addWidget(_button("完成", self.close), 0, Qt.AlignmentFlag.AlignRight)
+        actions = QHBoxLayout()
+        self.up_button = _button("上移", lambda: self._move_current(-1))
+        self.up_button.setShortcut(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Up)
+        self.down_button = _button("下移", lambda: self._move_current(1))
+        self.down_button.setShortcut(Qt.KeyboardModifier.ControlModifier | Qt.Key.Key_Down)
+        actions.addWidget(self.up_button)
+        actions.addWidget(self.down_button)
+        actions.addStretch()
+        actions.addWidget(_button("完成", self.close))
+        layout.addLayout(actions)
+
+    def _move_current(self, offset):
+        row = self.order_list.currentRow()
+        target = row + offset
+        if row < 0 or not 0 <= target < self.order_list.count():
+            return
+        item = self.order_list.takeItem(row)
+        self.order_list.insertItem(target, item)
+        self.order_list.setCurrentRow(target)
+        self._moved()
 
     def _moved(self, *args):
         self.on_order([self.order_list.item(index).data(Qt.ItemDataRole.UserRole)

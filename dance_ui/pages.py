@@ -362,7 +362,21 @@ class Pages:
         contributors.box.addWidget(label("Contributors", subheading=True))
         contributors.box.addWidget(label("鲨鲨比亚Sharkspeare　小余12", muted=True))
         box.addWidget(contributors)
-        box.addStretch()
+        self.vrcx_sync_card = vrcx_sync
+        vrcx_sync.box.addWidget(self.storage_location_box)
+        box.insertWidget(1, label("缓存与曲库", subheading=True))
+        box.insertWidget(2, general)
+        box.insertWidget(3, cooldown)
+        self.vrcx_group_heading = label("VRCX 与统计数据", subheading=True)
+        box.insertWidget(4, self.vrcx_group_heading)
+        box.insertWidget(5, vrcx_sync)
+        self.network_group_heading = label("网络与诊断", subheading=True)
+        box.insertWidget(6, self.network_group_heading)
+        box.insertWidget(7, network)
+        box.insertWidget(8, label("外观与启动", subheading=True))
+        box.insertWidget(9, startup)
+        box.insertWidget(10, update)
+        box.insertWidget(11, contributors)
         return self.with_apply_footer(area, "settings")
 
     def apply_row(self, section):

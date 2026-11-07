@@ -310,6 +310,10 @@ class CoreController(QObject):
         if not self.demo and not self.busy("room_events"):
             self._run("room_events", core.scan_recent_room_events)
 
+    def compact_history(self):
+        if not self.demo and not self.busy("history_compact"):
+            self._run("history_compact", core.compact_history_files)
+
     def check_index_maintenance(self):
         if not self.demo and not self.busy("index_check"):
             self._run("index_check", core.index_maintenance_status)

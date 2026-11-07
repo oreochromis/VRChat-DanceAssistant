@@ -145,7 +145,8 @@ class MainWindow(QMainWindow, Pages):
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
                                   self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
                                   self.storage_location_box, self.vrcx_sync_card,
-                                  self.steamvr_detail, self.overlay_note]
+                                  self.steamvr_detail, self.overlay_note,
+                                  self.vrcx_group_heading, self.network_group_heading]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -174,6 +175,7 @@ class MainWindow(QMainWindow, Pages):
         self.render_downloads()
         QTimer.singleShot(0, self.refresh_steamvr_startup)
         QTimer.singleShot(0, self.controller.scan_room_events)
+        QTimer.singleShot(0, self.controller.compact_history)
         QTimer.singleShot(1000, self.controller.check_index_maintenance)
         # 极简模式始终自动启动；其他模式遵循设置。controller.start 自身会拦截
         # 非 Windows/非管理员/已在启动中等情况并按原路径提示。

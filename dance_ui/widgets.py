@@ -609,6 +609,7 @@ class SegmentedSwitch(QWidget):
         self.setMouseTracking(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._recalc_size()
 
     def _recalc_size(self):
@@ -667,6 +668,25 @@ class SegmentedSwitch(QWidget):
             self.set_mode(self._display_modes()[index][0])
             self.modeChanged.emit(self.mode())
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._set_expanded(True)
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Left, Qt.Key.Key_Right):
+            delta = -1 if event.key() == Qt.Key.Key_Left else 1
+            self._index = (self._index + delta) % len(self._modes)
+            self.set_mode(self.mode())
+            self._set_expanded(True)
+            self.modeChanged.emit(self.mode())
+            event.accept()
+            return
+        if event.key() == Qt.Key.Key_Escape:
+            self._set_expanded(False)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def enterEvent(self, event):
         self._collapse_timer.stop()

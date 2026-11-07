@@ -593,6 +593,16 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(entries[1]["kind"], "leave")
         self.assertEqual(entries[1]["user_id"], "usr_test")
 
+    def test_history_compaction_removes_only_exact_duplicates(self):
+        path = Path(self.dc.history_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        first = {"ts": 100, "kind": "pypy", "id": 1}
+        path.write_text("\n".join((json.dumps(first), json.dumps(first), "not-json", json.dumps(dict(first, ts=200)))) + "\n", encoding="utf-8")
+        self.assertEqual(self.dc.compact_history_files(), 1)
+        lines = path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 3)
+        self.assertIn("not-json", lines)
+
     def test_recent_activity_uses_latest_history_and_room_event(self):
         for path, timestamp in ((self.dc.history_path(), 100), (self.dc.played_history_path(), 200),
                                 (self.dc.room_events_path(), 300)):

@@ -569,6 +569,44 @@ def recent_activity_timestamp():
     return latest
 
 
+def _compact_jsonl_history(path):
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return 0
+    seen = set()
+    unique = []
+    duplicates = 0
+    for line in lines:
+        try:
+            key = json.dumps(json.loads(line), ensure_ascii=False, sort_keys=True)
+        except (ValueError, TypeError):
+            unique.append(line)
+            continue
+        if key in seen:
+            duplicates += 1
+        else:
+            seen.add(key)
+            unique.append(line)
+    if duplicates:
+        temporary = path + ".tmp"
+        with open(temporary, "w", encoding="utf-8") as handle:
+            handle.writelines(unique)
+        os.replace(temporary, path)
+    return duplicates
+
+
+def compact_history_files():
+    removed = 0
+    with _history_lock:
+        removed += _compact_jsonl_history(history_path())
+        removed += _compact_jsonl_history(played_history_path())
+    with _room_event_lock:
+        removed += _compact_jsonl_history(room_events_path())
+    return removed
+
+
 def record_playing_snapshot(items):
     """只在队首当前歌曲变化时记录实际播放；空队列允许之后同曲重新计入。"""
     global _last_playing_key
