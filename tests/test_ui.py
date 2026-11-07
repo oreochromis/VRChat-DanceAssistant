@@ -314,11 +314,24 @@ class UIIntegrationTests(unittest.TestCase):
             with (patch.object(RecordFieldsDialog, "exec", return_value=QDialog.DialogCode.Accepted),
                   patch.object(RecordFieldsDialog, "values", return_value=updated)):
                 editor.edit_selected()
-            self.assertEqual(editor.table.item(0, 2).text(), "world-edited")
+            self.assertIn("world-edited", editor.table.item(0, 2).text())
             with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
                 editor.delete_selected()
             self.assertEqual(editor.table.rowCount(), 0)
             editor.close()
+
+    def test_record_ids_have_friendly_chinese_descriptions(self):
+        from dance_ui.record_editor import describe_location, describe_world
+        from dance_ui import vrcx_stats
+        pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
+        self.assertEqual(describe_world(pypy), "PyPyDance")
+        self.assertEqual(describe_world("wrld_custom", {"wrld_custom": "测试地图"}), "测试地图")
+        self.assertIn("其他地图", describe_world("wrld_4432ea9b-729c-46e3-8eaf-846aa0a37fdd"))
+        self.assertEqual(describe_location(pypy + ":83642~region(jp)"), "房间 83642 · 公开房 · 日本")
+        self.assertEqual(describe_location(pypy + ":100~friends(usr_test)~region(eu)"), "房间 100 · 好友房 · 欧洲")
+        self.assertIn("好友+房", describe_location(pypy + ":200~hidden(usr_test)"))
+        self.assertIn("邀请+房", describe_location(pypy + ":300~private(usr_test)~canRequestInvite"))
+        self.assertIn("群组房", describe_location(pypy + ":400~group(grp_test)"))
 
     def test_profile_name_and_avatar_render_in_header_and_hide_in_minimal_mode(self):
         window, _, _ = self.make_window()

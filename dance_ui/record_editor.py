@@ -15,8 +15,8 @@ from .pages import button
 from .widgets import label, table
 
 SOURCES = {
-    "location": ("VRCX 位置记录", (("id", "ID"), ("created_at", "时间"), ("world_id", "地图 ID"), ("location", "位置 / 实例 ID"))),
-    "event": ("VRCX 房间事件", (("id", "ID"), ("created_at", "时间"), ("type", "类型"), ("display_name", "显示名称"), ("user_id", "用户 ID"), ("location", "位置 / 实例 ID"))),
+    "location": ("VRCX 位置记录", (("id", "ID"), ("created_at", "时间"), ("world_id", "地图"), ("location", "房间情况"))),
+    "event": ("VRCX 房间事件", (("id", "ID"), ("created_at", "时间"), ("type", "类型"), ("display_name", "显示名称"), ("user_id", "用户 ID"), ("location", "房间情况"))),
     "queue": ("点歌记录", (("ts", "时间"), ("id", "歌曲编号"), ("name", "歌名"), ("kind", "来源"), ("player", "点歌人"))),
     "played": ("实际播放记录", (("ts", "时间"), ("id", "歌曲编号"), ("name", "歌名"), ("kind", "来源"), ("player", "点歌人"))),
 }
@@ -28,6 +28,51 @@ def _time_text(value, vrcx=False):
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
     except (ValueError, TypeError, OverflowError, OSError):
         return str(value or "")
+
+
+def describe_world(world_id, cached_names=None):
+    world_id = str(world_id or "")
+    known = {"pypy": "PyPyDance", "wd": "WannaDance"}
+    if world_id in vrcx_stats.WORLD_KEYS:
+        return known[vrcx_stats.WORLD_KEYS[world_id]]
+    cached = (cached_names or {}).get(world_id)
+    if cached:
+        return str(cached)
+    if world_id.startswith("wrld_") and len(world_id) > 13:
+        return f"其他地图（{world_id[5:13]}…）"
+    return "其他地图（" + (world_id or "未知") + "）"
+
+
+def describe_location(value):
+    raw = str(value or "")
+    if not raw or raw.lower() in ("offline", "local"):
+        return "离线 / 本地"
+    if ":" not in raw:
+        return raw
+    instance = raw.split(":", 1)[1]
+    parts = instance.split("~")
+    number = parts[0]
+    tags = []
+    for part in parts[1:]:
+        key, _, content = part.partition("(")
+        tags.append((key, content.removesuffix(")")))
+    keys = {key for key, _ in tags}
+    if "group" in keys:
+        access = "群组房"
+    elif "hidden" in keys:
+        access = "好友+房"
+    elif "friends" in keys:
+        access = "好友房"
+    elif "private" in keys:
+        access = "邀请+房" if "canRequestInvite" in keys else "邀请房"
+    else:
+        access = "公开房"
+    regions = {"jp": "日本", "us": "美国", "usw": "美国西部", "use": "美国东部", "eu": "欧洲"}
+    region = next((regions[value] for key, value in tags if key == "region" and value in regions), "")
+    result = ["房间 " + number if number else "房间", access]
+    if region:
+        result.append(region)
+    return " · ".join(result)
 
 
 class RecordFieldsDialog(QDialog):
@@ -168,12 +213,24 @@ class RecordEditorDialog(QDialog):
         header.setSectionResizeMode(len(columns) - 1, QHeaderView.ResizeMode.Stretch)
         self.refresh()
 
+    def _world_names(self):
+        connection = sqlite3.connect(stats_records.ensure_editable_vrcx())
+        try:
+            if not connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cache_world'").fetchone():
+                return {}
+            return {world_id: name for world_id, name in connection.execute(
+                "SELECT id,name FROM cache_world") if world_id and name}
+        finally:
+            connection.close()
+
     def refresh(self):
         try:
             if self.kind in stats_records.VRCX_TABLES:
                 records = stats_records.list_vrcx_records(self.kind, self.search.text())
             else:
                 records = stats_records.list_history_records(self.kind, self.search.text())
+            world_names = self._world_names() if self.kind == "location" else {}
         except (OSError, ValueError, sqlite3.Error) as error:
             self.status.setText("读取失败：" + str(error))
             return
@@ -181,16 +238,23 @@ class RecordEditorDialog(QDialog):
         self.table.setRowCount(len(records))
         for row, record in enumerate(records):
             for column, (key, _) in enumerate(columns):
-                value = record.get(key)
+                original = record.get(key)
+                value = original
                 if key == "created_at":
                     value = _time_text(value, vrcx=True)
                 elif key == "ts":
                     value = _time_text(value)
+                elif key == "world_id":
+                    value = describe_world(value, world_names)
+                elif key == "location":
+                    value = describe_location(value)
                 item = QTableWidgetItem(str(value if value is not None else ""))
+                if key in ("world_id", "location"):
+                    item.setToolTip("原始 ID：" + str(original or ""))
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, record)
                 self.table.setItem(row, column, item)
-        self.status.setText(f"显示 {len(records)} 条最近记录；记录较多时可先用搜索缩小范围。")
+        self.status.setText(f"显示 {len(records)} 条最近记录；地图与房间已转为易读名称，悬停可查看原始 ID。")
 
     def selected_record(self):
         row = self.table.currentRow()
