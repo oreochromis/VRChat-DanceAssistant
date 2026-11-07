@@ -446,6 +446,7 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
         raise ValueError("开始日期必须早于结束日期。")
     source = Path(path).expanduser().resolve()
     native_events = _load_native_room_events()
+    native_only = False
     try:
         connection = _connect(source)
         try:
@@ -467,6 +468,7 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
     except (ValueError, sqlite3.Error):
         if not native_events:
             raise
+        native_only = True
         friends, friend_table = {}, ""
         location_rows, join_rows, friend_history = [], [], []
     location_rows = _merge_location_rows(location_rows, native_events)
@@ -527,6 +529,8 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
             world_play[key] += round(overlap)
     result = {
         "path": str(source), "friends": friends_stats,
+        "data_status": "partial" if native_only else "complete" if daily_play else "no_records",
+        "source_mode": "native" if native_only else "vrcx+native" if native_events else "vrcx",
         "friend_count": len(friends), "matched_friends": len(friends_stats),
         "skipped_events": skipped, "observed_end": observed_end,
         "start_ts": start_ts, "end_ts": end_ts,

@@ -169,6 +169,8 @@ class VRCXStatsTests(unittest.TestCase):
         self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 3600}])
         self.assertEqual(result["world_play"], {"pypy": 3600, "wd": 0})
         self.assertEqual(result["friends"], [])
+        self.assertEqual(result["data_status"], "partial")
+        self.assertEqual(result["source_mode"], "native")
 
     def test_native_and_vrcx_location_records_are_deduplicated(self):
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
@@ -180,6 +182,13 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read()
         self.assertEqual(result["total_play_seconds"], 6600)
         self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0})
+
+    def test_complete_and_no_record_statuses(self):
+        result = self.read()
+        self.assertEqual(result["data_status"], "complete")
+        self.assertEqual(result["source_mode"], "vrcx")
+        empty = self.read(start=22, end=23)
+        self.assertEqual(empty["data_status"], "no_records")
 
     def test_daily_play_self_names_and_sync_result_persistence(self):
         result = self.read()

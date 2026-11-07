@@ -1,6 +1,7 @@
 """Advanced editor for software-owned VRCX records and local song history."""
 from __future__ import annotations
 
+import shutil
 import sqlite3
 from datetime import datetime
 
@@ -114,6 +115,10 @@ class RecordFieldsDialog(QDialog):
             self._text_field(form, "name", "歌名")
             self._text_field(form, "player", "点歌人")
         layout.addLayout(form)
+        if kind in stats_records.VRCX_TABLES:
+            layout.addWidget(label("地图 ID 决定统计归属；实例 ID 用于匹配同一房间，用户 ID 用于识别本人和好友。修改时间会影响日期统计。", muted=True, wrap=True))
+        else:
+            layout.addWidget(label("歌曲编号影响歌曲关联，点歌人和时间会影响点歌及日期统计。", muted=True, wrap=True))
         actions = QHBoxLayout()
         actions.addStretch()
         cancel = button("取消", self.reject)
@@ -155,6 +160,7 @@ class RecordEditorDialog(QDialog):
     def __init__(self, parent=None, on_changed=None):
         super().__init__(parent)
         self.on_changed = on_changed
+        self._snapshots = []
         self.setWindowTitle("原始记录 · 软件副本")
         self.resize(1200, 720)
         self.setMinimumSize(850, 520)
@@ -192,6 +198,11 @@ class RecordEditorDialog(QDialog):
         actions.addWidget(self.add_button)
         actions.addWidget(self.edit_button)
         actions.addWidget(self.delete_button)
+        self.undo_button = button("撤销上次修改", self.undo_last_change)
+        self.undo_button.setEnabled(False)
+        actions.addWidget(self.undo_button)
+        self.reset_button = button("从 VRCX 重建副本", self.reset_from_vrcx)
+        actions.addWidget(self.reset_button)
         actions.addStretch()
         actions.addWidget(button("关闭", self.close))
         layout.addLayout(actions)
@@ -277,8 +288,44 @@ class RecordEditorDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._save(dialog.values(), record)
 
+    def _push_snapshot(self):
+        if len(self._snapshots) >= 5:
+            shutil.rmtree(self._snapshots.pop(0), ignore_errors=True)
+        self._snapshots.append(stats_records.create_record_snapshot())
+        self.undo_button.setEnabled(True)
+
+    def undo_last_change(self):
+        if not self._snapshots:
+            return
+        snapshot = self._snapshots[-1]
+        try:
+            stats_records.restore_record_snapshot(snapshot)
+        except (OSError, ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "撤销修改", str(error))
+            return
+        self._snapshots.pop()
+        self.undo_button.setEnabled(bool(self._snapshots))
+        self.refresh()
+        if self.on_changed:
+            self.on_changed()
+
+    def reset_from_vrcx(self):
+        answer = QMessageBox.question(self, "从 VRCX 重建副本", "将放弃 VRCX 记录副本中的修改并重新创建；点歌和播放历史不会删除。是否继续？")
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            self._push_snapshot()
+            stats_records.reset_editable_vrcx()
+        except (OSError, ValueError, sqlite3.Error) as error:
+            QMessageBox.warning(self, "重建副本", str(error))
+            return
+        self.refresh()
+        if self.on_changed:
+            self.on_changed()
+
     def _save(self, values, record=None):
         try:
+            self._push_snapshot()
             if self.kind in stats_records.VRCX_TABLES:
                 stats_records.save_vrcx_record(self.kind, values, None if record is None else record["id"])
             else:
@@ -299,6 +346,7 @@ class RecordEditorDialog(QDialog):
         if answer != QMessageBox.StandardButton.Yes:
             return
         try:
+            self._push_snapshot()
             if self.kind in stats_records.VRCX_TABLES:
                 stats_records.delete_vrcx_record(self.kind, record["id"])
             else:

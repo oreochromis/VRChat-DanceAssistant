@@ -275,6 +275,46 @@ class UIIntegrationTests(unittest.TestCase):
             page.close()
             page.deleteLater()
 
+    def test_vrcx_requests_are_queued_and_database_lock_retries(self):
+        import sqlite3
+        for name in ("load_config", "load_mapping", "add_listener", "remove_listener"):
+            self.allow_core(name)
+        self.allow_core("get_config", result=copy.deepcopy(self.config))
+        controller = CoreController(demo=False)
+        self.addCleanup(controller.dispose)
+        controller._run = Mock()
+        controller.busy = Mock(return_value=True)
+        controller.vrcx_stats(0, 1, automatic=True)
+        self.assertIsNotNone(controller._vrcx_pending)
+        controller.busy = Mock(return_value=False)
+        controller._finished("vrcx_stats_auto")
+        self.assertIsNone(controller._vrcx_pending)
+        self.assertEqual(controller._run.call_args.args[0], "vrcx_stats_auto")
+        controller.dispose()
+
+        controller = CoreController(demo=False)
+        self.addCleanup(controller.dispose)
+        attempts = []
+
+        def read_stats(*args, **kwargs):
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise sqlite3.OperationalError("database is locked")
+            return {"friends": [], "self_names": [], "daily_play": [], "world_play": {"pypy": 0, "wd": 0}}
+
+        results = []
+        controller.result.connect(lambda operation, result: results.append(result))
+        with (patch("dance_ui.vrcx_stats.resolve_vrcx_path", return_value=Path("custom.sqlite3")),
+              patch("dance_ui.vrcx_stats.read_co_room_stats", side_effect=read_stats),
+              patch("dance_ui.vrcx_profile.sync_vrcx_profile", side_effect=ValueError("offline")),
+              patch("dance_ui.vrcx_profile.sync_friend_avatars"),
+              patch("dance_ui.vrcx_stats.save_vrcx_stats"),
+              patch("dance_ui.controller.time.sleep") as sleep):
+            controller.vrcx_stats(0, 1, path="custom.sqlite3")
+            self.wait_until(lambda: bool(results))
+        self.assertEqual(len(attempts), 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 3])
+
     def test_statistics_and_report_actions_force_vrcx_sync(self):
         window, _, _ = self.make_window()
         stats = window.play_stats_page
@@ -330,9 +370,13 @@ class UIIntegrationTests(unittest.TestCase):
                   patch.object(RecordFieldsDialog, "values", return_value=updated)):
                 editor.edit_selected()
             self.assertIn("world-edited", editor.table.item(0, 2).text())
+            editor.undo_last_change()
+            self.assertIn("world-B", editor.table.item(0, 2).text())
             with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
                 editor.delete_selected()
             self.assertEqual(editor.table.rowCount(), 0)
+            editor.undo_last_change()
+            self.assertEqual(editor.table.rowCount(), 1)
             editor.close()
 
     def test_record_ids_have_friendly_chinese_descriptions(self):

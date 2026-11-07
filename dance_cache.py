@@ -147,7 +147,7 @@ _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_so
                   "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
                   "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json",
                   "profile.json", "profile-avatar.png", "avatar-index.json")
-_STORAGE_DIRS = ("avatars",)
+_STORAGE_DIRS = ("avatars", "record-backups")
 
 
 def set_storage_mode(mode):

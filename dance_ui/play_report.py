@@ -49,6 +49,7 @@ class ReportCanvas(QWidget):
         self.dance_partners = len(self.vrcx_friends)
         self.new_dance_partners = len(vrcx.get("new_friends") or []) if isinstance(vrcx, dict) else 0
         self.total_play_seconds = int(vrcx.get("total_play_seconds", 0)) if isinstance(vrcx, dict) else 0
+        self.data_status = vrcx.get("data_status", "") if isinstance(vrcx, dict) else ""
         world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
         self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
         self.self_played = int(self.data.get("self_played", 0))
@@ -420,7 +421,9 @@ class ReportCanvas(QWidget):
         if not counts:
             if interactive:
                 self._trend_bars = []
-            _text(painter, plot, "同步 VRCX 后显示游玩时长", color=self.muted,
+            empty_text = {"no_records": "暂无位置记录", "partial": "记录不完整，仅显示可还原时长"}.get(
+                self.data_status, "同步 VRCX 后显示游玩时长")
+            _text(painter, plot, empty_text, color=self.muted,
                   align=Qt.AlignmentFlag.AlignCenter)
             return
         slot = plot.width() / len(counts)
@@ -644,8 +647,14 @@ class PlayReportDialog(QDialog):
             timestamp = float(data.get("updated_at") or 0)
         except (TypeError, ValueError):
             timestamp = 0
-        self.updated_label.setText("数据最后更新于 " + datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
-                                   if timestamp > 0 else "数据最后更新时间未知")
+        text = ("数据最后更新于 " + datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+                if timestamp > 0 else "数据最后更新时间未知")
+        status = (data.get("vrcx") or {}).get("data_status")
+        if status == "no_records":
+            text += " · 暂无位置记录"
+        elif status == "partial":
+            text += " · 记录不完整"
+        self.updated_label.setText(text)
 
     def _export_png(self):
         name = f"舞蹈报告_{self.start.toString('yyyyMMdd')}-{self.end.toString('yyyyMMdd')}.png"

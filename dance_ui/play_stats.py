@@ -371,6 +371,10 @@ class PlayStatsPage(QWidget):
             self.vrcx_summary.setText(
                 f"最常与你共同游玩的好友：{top.get('name') or '未知'} · {format_duration(top.get('seconds', 0))}"
                 f"；共统计到 {len(friends)} 位好友。")
+        elif result.get("data_status") == "no_records":
+            self.vrcx_summary.setText("该日期范围没有位置记录，无法还原游玩时长。")
+        elif result.get("data_status") == "partial":
+            self.vrcx_summary.setText("记录不完整，当前仅显示可还原的好友共同游玩时长。")
         else:
             self.vrcx_summary.setText("该日期范围没有可统计的好友共同游玩记录；VRCX 未运行的时段无法补齐。")
         if result.get("profile_error"):
@@ -617,6 +621,26 @@ class PlayStatsPage(QWidget):
         if not path:
             return
         try:
+            preview = stats_backup.inspect_stats_backup(path)
+            additions = (
+                f"点歌记录 {preview['play_history_added']} 条、实际播放 {preview['played_history_added']} 条、"
+                f"房间事件 {preview['room_events_added']} 条、好友头像 {preview['avatars_added']} 张、设置 {preview['settings_added']} 项"
+            )
+            has_database = preview["source_imported"] or preview["edited_source_imported"]
+            if not any((preview["play_history_added"], preview["played_history_added"], preview["room_events_added"],
+                        preview["avatars_added"], preview["settings_added"], preview["stats_updated"],
+                        preview["profile_imported"], has_database)):
+                QMessageBox.information(self, "增量导入", "备份中没有需要新增的内容，现有数据已是最新。")
+                return
+            details = ["将新增：" + additions,
+                       "现有原始数据库和编辑副本不会被覆盖；只补入缺失副本。"]
+            if preview["stats_updated"]:
+                details.append("会用较新的好友统计汇总替换当前汇总；原始事件仍按增量合并。")
+            else:
+                details.append("不会替换当前好友统计汇总。")
+            answer = QMessageBox.question(self, "确认增量导入", "\n\n".join(details))
+            if answer != QMessageBox.StandardButton.Yes:
+                return
             result = stats_backup.import_stats_backup(path)
         except (OSError, ValueError, zipfile.BadZipFile, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "增量导入", f"导入失败：{exc}")

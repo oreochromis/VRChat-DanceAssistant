@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import os
 import threading
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QDate, QObject, QTimer, Signal, Slot, QUrl
@@ -47,6 +48,7 @@ class CoreController(QObject):
         self._demo_maintenance_timer.setSingleShot(True)
         self._demo_maintenance_timer.timeout.connect(self._finish_demo_maintenance)
         self._startup_events = []
+        self._vrcx_pending = None
         self._initializing = not demo
         self._maintenance_cancel = threading.Event()
         self._listener = self._receive
@@ -124,6 +126,8 @@ class CoreController(QObject):
     def _finished(self, operation):
         self._workers.pop(operation, None)
         self.busy_changed.emit(operation, False)
+        if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self._schedule_vrcx()
 
     def publish_initial(self):
         if self.demo:
@@ -445,15 +449,35 @@ class CoreController(QObject):
             })
             return
 
+        self._vrcx_pending = (start_ts, end_ts, path, automatic)
+        self._schedule_vrcx()
+
+    def _schedule_vrcx(self):
+        if self._closing or self._vrcx_pending is None:
+            return
+        if self.busy("vrcx_stats") or self.busy("vrcx_stats_auto"):
+            return
+        start_ts, end_ts, path, automatic = self._vrcx_pending
+        self._vrcx_pending = None
+        operation = "vrcx_stats_auto" if automatic else "vrcx_stats"
+
         def read():
             from . import vrcx_stats as vrcx
-            source = vrcx.resolve_vrcx_path(path)
-            statistics_source = source
-            if path is None:
-                from .stats_records import prepare_statistics_source
-                statistics_source = prepare_statistics_source(source)
-            result = vrcx.read_co_room_stats(statistics_source, start_ts, end_ts,
-                                             force_archive=not automatic)
+            result = None
+            for attempt, delay in enumerate((1, 3, 10)):
+                try:
+                    source = vrcx.resolve_vrcx_path(path)
+                    statistics_source = source
+                    if path is None:
+                        from .stats_records import prepare_statistics_source
+                        statistics_source = prepare_statistics_source(source)
+                    result = vrcx.read_co_room_stats(statistics_source, start_ts, end_ts,
+                                                     force_archive=not automatic)
+                    break
+                except Exception as exc:
+                    if "database is locked" not in str(exc).lower() or attempt == 2:
+                        raise
+                    time.sleep(delay)
             if not result.get("self_names") and vrcx.saved_self_name():
                 result["self_names"] = [vrcx.saved_self_name()]
             try:

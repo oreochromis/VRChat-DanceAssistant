@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 import sqlite3
+import time
+import uuid
 from pathlib import Path
 
 import dance_cache as core
@@ -301,3 +304,49 @@ def delete_history_record(kind, line_index):
             raise ValueError("这条历史记录已发生变化，请刷新后再删除。")
         del lines[line_index]
         _write_history(path, lines)
+
+
+def create_record_snapshot():
+    source = ensure_editable_vrcx()
+    target = Path(core.data_dir()) / "record-backups" / (str(int(time.time())) + "-" + uuid.uuid4().hex[:8])
+    target.mkdir(parents=True, exist_ok=False)
+    source_connection = sqlite3.connect(source)
+    destination_connection = sqlite3.connect(target / EDITABLE_SOURCE_FILENAME)
+    try:
+        source_connection.backup(destination_connection)
+    finally:
+        source_connection.close()
+        destination_connection.close()
+    for name in (*HISTORY_FILES.values(), core.ROOM_EVENT_FILENAME):
+        path = Path(core.data_dir()) / name
+        if path.is_file():
+            shutil.copy2(path, target / name)
+    return target
+
+
+def restore_record_snapshot(path):
+    snapshot = Path(path)
+    if not snapshot.is_dir() or not (snapshot / EDITABLE_SOURCE_FILENAME).is_file():
+        raise ValueError("修改前快照不存在或已损坏。")
+    target = editable_vrcx_path()
+    temporary = target.with_suffix(".tmp")
+    source_connection = sqlite3.connect(snapshot / EDITABLE_SOURCE_FILENAME)
+    destination_connection = sqlite3.connect(temporary)
+    try:
+        source_connection.backup(destination_connection)
+    finally:
+        source_connection.close()
+        destination_connection.close()
+    os.replace(temporary, target)
+    for name in (*HISTORY_FILES.values(), core.ROOM_EVENT_FILENAME):
+        source = snapshot / name
+        if source.is_file():
+            shutil.copy2(source, Path(core.data_dir()) / name)
+    shutil.rmtree(snapshot)
+
+
+def reset_editable_vrcx(path=None):
+    target = editable_vrcx_path()
+    if target.exists():
+        target.unlink()
+    return ensure_editable_vrcx(path)

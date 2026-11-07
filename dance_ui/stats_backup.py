@@ -152,6 +152,52 @@ def export_stats_backup(path):
     return manifest
 
 
+def inspect_stats_backup(path):
+    source = Path(path).expanduser().resolve()
+    with zipfile.ZipFile(source) as archive:
+        manifest_text = _zip_text(archive, "manifest.json", 1024 * 1024)
+        if not manifest_text:
+            raise ValueError("备份缺少 manifest.json。")
+        manifest = json.loads(manifest_text)
+        if manifest.get("format") != FORMAT or manifest.get("version") != VERSION:
+            raise ValueError("这不是受支持的跳舞房统计备份。")
+        root = Path(core.data_dir())
+        result = {"play_history_added": 0, "played_history_added": 0, "room_events_added": 0,
+                  "settings_added": 0, "stats_updated": False, "source_imported": False,
+                  "edited_source_imported": False, "profile_imported": False, "avatars_added": 0}
+        for name in HISTORY_FILES:
+            incoming_text = _zip_text(archive, name)
+            if incoming_text is not None:
+                existing_text = (root / name).read_text(encoding="utf-8") if (root / name).is_file() else ""
+                result[name.removesuffix(".jsonl") + "_added"] = len(
+                    _history_entries(incoming_text).keys() - _history_entries(existing_text).keys())
+        incoming_room = _zip_text(archive, ROOM_EVENTS_FILENAME)
+        if incoming_room is not None:
+            existing_room = _room_event_entries((root / ROOM_EVENTS_FILENAME).read_text(encoding="utf-8")
+                                                if (root / ROOM_EVENTS_FILENAME).is_file() else "")
+            result["room_events_added"] = len(_room_event_entries(incoming_room).keys() - existing_room.keys())
+        incoming_settings = _zip_text(archive, vrcx_stats.SETTINGS_FILENAME)
+        if incoming_settings is not None:
+            current = _read_json(root / vrcx_stats.SETTINGS_FILENAME)
+            result["settings_added"] = len(set(json.loads(incoming_settings)) - set(current))
+        incoming_stats = _zip_text(archive, vrcx_stats.STATS_FILENAME)
+        if incoming_stats is not None:
+            incoming = json.loads(incoming_stats)
+            current = _read_json(root / vrcx_stats.STATS_FILENAME)
+            result["stats_updated"] = bool(incoming.get("friends") and (
+                not current or float(incoming.get("synced_at", 0)) > float(current.get("synced_at", 0))))
+        for name, key in ((vrcx_stats.SOURCE_FILENAME, "source_imported"),
+                          (stats_records.EDITABLE_SOURCE_FILENAME, "edited_source_imported")):
+            result[key] = name in archive.namelist() and not (root / name).exists()
+        if "profile.json" in archive.namelist():
+            result["profile_imported"] = not _read_json(root / "profile.json")
+        for info in archive.infolist():
+            name = info.filename
+            if name.startswith("avatars/") and name.endswith(".png") and not (root / name).exists():
+                result["avatars_added"] += 1
+    return result
+
+
 def import_stats_backup(path):
     source = Path(path).expanduser().resolve()
     with zipfile.ZipFile(source) as archive:

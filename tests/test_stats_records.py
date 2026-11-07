@@ -75,6 +75,19 @@ class StatsRecordTests(unittest.TestCase):
         connection.close()
         self.assertEqual(friends, {"friend-1": "New name", "friend-2": "Second"})
 
+    def test_record_snapshot_restore_and_vrcx_reset(self):
+        stats_records.ensure_editable_vrcx(self.source)
+        original = {"created_at": "2026-01-01T10:00:00Z", "location": "room-A", "world_id": "world-edited"}
+        stats_records.save_vrcx_record("location", original, 1)
+        snapshot = stats_records.create_record_snapshot()
+        stats_records.save_vrcx_record("location", dict(original, world_id="world-later"), 1)
+        stats_records.restore_record_snapshot(snapshot)
+        records = {record["id"]: record for record in stats_records.list_vrcx_records("location")}
+        self.assertEqual(records[1]["world_id"], "world-edited")
+        stats_records.reset_editable_vrcx(self.source)
+        records = {record["id"]: record for record in stats_records.list_vrcx_records("location")}
+        self.assertEqual(records[1]["world_id"], "world-old")
+
     def test_history_crud_preserves_unrelated_lines(self):
         self.data.mkdir()
         path = self.data / core.HISTORY_FILENAME
