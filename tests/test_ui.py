@@ -57,6 +57,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.patches = ExitStack()
+        self.patches.enter_context(patch("winreg.QueryValueEx", return_value=1))
         self.patches.enter_context(patch("dance_ui.app.set_windows_application_identity"))
         self.addCleanup(self.patches.close)
         self.windows = []
@@ -137,6 +138,8 @@ class UIIntegrationTests(unittest.TestCase):
         if before_controller is not None:
             before_controller()
         store = ThemeStore(self.root / ("appearance-" + str(len(self.windows))))
+        if demo:
+            store.select("light")
         controller = CoreController(demo=demo)
         # A real Windows test runner must not query or modify its SteamVR setup.
         # Integration tests below explicitly control this separate system bridge.

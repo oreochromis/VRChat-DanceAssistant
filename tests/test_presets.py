@@ -29,6 +29,9 @@ def small_png():
 
 class ThemeUpgradeTests(unittest.TestCase):
     def setUp(self):
+        self.windows_theme_patch = patch("winreg.QueryValueEx", return_value=1)
+        self.windows_theme_patch.start()
+        self.addCleanup(self.windows_theme_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()

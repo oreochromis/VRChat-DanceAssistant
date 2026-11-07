@@ -656,6 +656,19 @@ def _image_info(data: bytes) -> tuple[str, int, int]:
     raise ThemeError("仅支持有效的 PNG、JPG 和 WEBP 图片。")
 
 
+def _windows_dark_mode():
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as key:
+            value, _ = winreg.QueryValueEx(key, "AppsUseLightTheme")
+        return int(value) == 0
+    except (OSError, ValueError, TypeError):
+        return False
+
+
 class ThemeStore:
     """Editable themes, independent preferences, atomic writes, and session undo."""
 
@@ -670,7 +683,8 @@ class ThemeStore:
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self.background_dir.mkdir(parents=True, exist_ok=True)
         self._provided_themes = copy.deepcopy(BUILTIN_THEMES)
-        self._state = self._defaults()
+        initial_theme = "dark" if not self.path.exists() and _windows_dark_mode() else "light"
+        self._state = self._defaults(initial_theme)
         if self.path.exists():
             try:
                 if self.path.stat().st_size > 2 * 1024 * 1024:
@@ -687,10 +701,10 @@ class ThemeStore:
         else:
             self._write(self._state)
 
-    def _defaults(self) -> dict[str, Any]:
+    def _defaults(self, active_theme="light") -> dict[str, Any]:
         preferences = dict(DEFAULT_PREFERENCES)
         return {
-            "version": 1, "active_theme": "light",
+            "version": 1, "active_theme": active_theme,
             "themes": [ensure_theme_contrast(theme, preferences)
                        for theme in self._provided_themes.values()],
             "preferences": preferences,

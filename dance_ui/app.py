@@ -1514,6 +1514,8 @@ def main(argv=None):
     try:
         app.setWindowIcon(app_icon())
         store = ThemeStore(state_dir)
+        if args.demo:
+            store.select("light")
         controller = CoreController(demo=args.demo)
         window = MainWindow(controller, store)
         window.show()

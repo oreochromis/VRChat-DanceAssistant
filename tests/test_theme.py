@@ -83,6 +83,18 @@ class ThemeStoreTests(unittest.TestCase):
         fresh = ThemeStore(self.root / "brand-new")
         self.assertEqual(fresh.preferences["ui_mode"], "simple")
 
+    def test_windows_theme_is_used_only_for_fresh_install(self):
+        with patch("dance_ui.theme._windows_dark_mode", return_value=True):
+            fresh = ThemeStore(self.root / "windows-dark")
+            self.assertEqual(fresh.active_id, "dark")
+            existing = self.root / "windows-existing"
+            existing.mkdir()
+            (existing / "appearance.json").write_text(json.dumps({
+                "version": 1, "active_theme": "light",
+                "themes": list(BUILTIN_THEMES.values()), "preferences": DEFAULT_PREFERENCES,
+            }), encoding="utf-8")
+            self.assertEqual(ThemeStore(existing).active_id, "light")
+
     def test_ui_mode_defaults_to_advanced_for_legacy_profile(self):
         legacy = self.root / "legacy"
         legacy.mkdir()
@@ -372,9 +384,10 @@ class ThemeStoreTests(unittest.TestCase):
                                                  "dismissed_update_version": "", "ui_mode": "advanced",
                                                  "home_style": "vivid"})  # 老存档无 ui_mode 键 -> 高级
         self.assertEqual(recovered.active_id, "light")
-        independent = ThemeStore(self.root / "another-store")
-        self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)
-        self.assertEqual(independent.active, ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES))
+        with patch("dance_ui.theme._windows_dark_mode", return_value=False):
+            independent = ThemeStore(self.root / "another-store")
+            self.assertEqual(independent.preferences, DEFAULT_PREFERENCES)
+            self.assertEqual(independent.active, ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES))
 
 
 if __name__ == "__main__":
