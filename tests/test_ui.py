@@ -532,6 +532,30 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertFalse(sparse.grab().isNull())
         sparse.close()
 
+    def test_open_report_refreshes_when_vrcx_sync_arrives(self):
+        from dance_ui.play_stats import _day_start
+        window, controller, _ = self.make_window()
+        stats = window.play_stats_page
+        window.navigate(2)
+        start_ts, end_ts = _day_start(stats.start.date()), _day_start(stats.end.date()) + 86400
+        initial = {"path": "demo", "friends": [], "daily_play": [], "total_play_seconds": 0,
+                   "start_ts": start_ts, "end_ts": end_ts, "world_play": {"pypy": 0, "wd": 0}}
+        stats._show_vrcx_stats(initial)
+        stats.open_report()
+        report = stats._report
+        self.assertEqual(report.canvas.total_play_seconds, 0)
+        report.title_edit.setText("保留的标题")
+        report.trend_combo.setCurrentIndex(report.trend_combo.findData("month"))
+        result = dict(initial, daily_play=[{"day": stats.start.date().toString("yyyy-MM-dd"), "seconds": 7750}],
+                      total_play_seconds=7750, world_play={"pypy": 7750, "wd": 0})
+        controller.result.emit("vrcx_stats", result)
+        QApplication.processEvents()
+        self.assertIs(stats._report, report)
+        self.assertEqual(report.canvas.total_play_seconds, 7750)
+        self.assertEqual(report.canvas.title, "保留的标题")
+        self.assertEqual(report.canvas.trend_mode, "month")
+        report.close()
+
     def test_vrcx_demo_stats_reach_table_and_report(self):
         window, _, _ = self.make_window()
         stats = window.play_stats_page

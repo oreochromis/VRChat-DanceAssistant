@@ -570,6 +570,7 @@ class PlayReportDialog(QDialog):
         super().__init__(owner)
         self._owner = owner
         self.start, self.end = start, end
+        self.theme = theme
         self.setWindowTitle("我的舞蹈报告")
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(1000, 800)
@@ -608,11 +609,30 @@ class PlayReportDialog(QDialog):
         controls.addWidget(self.summary_combo)
         controls.addStretch()
         box.addLayout(controls)
-        scroll = QScrollArea()
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.canvas)
-        box.addWidget(scroll, 1)
+        self.scroll = QScrollArea()
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setWidget(self.canvas)
+        box.addWidget(self.scroll, 1)
+
+    def update_data(self, data):
+        previous = self.canvas
+        title = previous.title
+        trend_mode = previous.trend_mode
+        summary_mode = previous.summary_mode
+        partner_mode = previous.partner_mode
+        scroll_value = self.scroll.verticalScrollBar().value()
+        self.title_edit.textChanged.disconnect(previous.set_title)
+        canvas = ReportCanvas(data, self.start, self.end, previous.source, self.theme)
+        canvas.set_title(title)
+        canvas.set_trend_mode(trend_mode)
+        canvas.set_summary_mode(summary_mode)
+        canvas.set_partner_mode(partner_mode)
+        self.canvas = canvas
+        self.title_edit.textChanged.connect(self.canvas.set_title)
+        self.scroll.setWidget(self.canvas)
+        self.scroll.verticalScrollBar().setValue(scroll_value)
+        previous.deleteLater()
 
     def _export_png(self):
         name = f"舞蹈报告_{self.start.toString('yyyyMMdd')}-{self.end.toString('yyyyMMdd')}.png"

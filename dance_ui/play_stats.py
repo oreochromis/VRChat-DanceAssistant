@@ -410,6 +410,7 @@ class PlayStatsPage(QWidget):
     def _on_result(self, operation, result):
         if operation in ("vrcx_stats", "vrcx_stats_auto") and isinstance(result, dict):
             self._show_vrcx_stats(result)
+            self._refresh_open_report()
             return
         if operation != "play_history_stats" or not isinstance(result, dict):
             return
@@ -428,6 +429,7 @@ class PlayStatsPage(QWidget):
                 text += f" · 最早记录 {_fmt_time(earliest)}"
             self.summary.setText(text)
         self._render()
+        self._refresh_open_report()
 
     def _render(self):
         self.table.setSortingEnabled(False)
@@ -460,19 +462,26 @@ class PlayStatsPage(QWidget):
             header_height = self.table.horizontalHeader().sizeHint().height()
             self.table.setFixedHeight(header_height + min(len(self._songs), 10) * row_height + 4)
 
+    def _report_payload(self):
+        report_data = dict(self._report_data)
+        start_ts, end_ts = _day_start(self.start.date()), _day_start(self.end.date()) + 86400
+        if self._vrcx_data and self._vrcx_data.get("start_ts") == start_ts and self._vrcx_data.get("end_ts") == end_ts:
+            report_data["vrcx"] = self._vrcx_data
+        report_data["self_played"] = int(self._report_data.get("total", 0))
+        return report_data
+
+    def _refresh_open_report(self):
+        if self._report is not None and self._report_data and self._songs:
+            self._report.update_data(self._report_payload())
+
     def open_report(self):
         if not self._report_data or not self._songs:
             return
         from .play_report import PlayReportDialog
         if self._report is not None:
             self._report.close()
-        report_data = dict(self._report_data)
-        start_ts, end_ts = _day_start(self.start.date()), _day_start(self.end.date()) + 86400
-        if self._vrcx_data and self._vrcx_data.get("start_ts") == start_ts and self._vrcx_data.get("end_ts") == end_ts:
-            report_data["vrcx"] = self._vrcx_data
-        report_data["self_played"] = int(self._report_data.get("total", 0))
         self._report = PlayReportDialog(
-            self, report_data, self.start.date(), self.end.date(),
+            self, self._report_payload(), self.start.date(), self.end.date(),
             self.source.currentText(), self._main.store.active)
         self._report.show()
         self._report.raise_()
