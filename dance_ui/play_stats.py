@@ -297,10 +297,21 @@ class PlayStatsPage(QWidget):
                 values.append(None)
         return tuple(values)
 
+    def _gameplay_active(self):
+        if time.time() - core.recent_activity_timestamp() <= 120:
+            return True
+        source = resolve_vrcx_path()
+        try:
+            return time.time() - source.stat().st_mtime <= 120
+        except OSError:
+            return False
+
     def _auto_sync_vrcx(self, force=False):
         if self.controller.demo or self._main._closing:
             return
         if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
+            return
+        if not force and self._gameplay_active():
             return
         signature = self._vrcx_source_signature()
         if signature is None:

@@ -264,6 +264,7 @@ class UIIntegrationTests(unittest.TestCase):
               patch("dance_ui.play_stats.resolve_vrcx_path", return_value=source),
               patch("dance_ui.play_stats.is_vrcx_archive", return_value=False)):
             page = PlayStatsPage(owner)
+            page._gameplay_active = Mock(return_value=False)
             page._auto_sync_vrcx()
             self.assertEqual(controller.vrcx_stats.call_count, 1)
             self.assertTrue(controller.vrcx_stats.call_args.kwargs["automatic"])
@@ -271,6 +272,11 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertEqual(controller.vrcx_stats.call_count, 1)
             page._auto_sync_vrcx(force=True)
             self.assertEqual(controller.vrcx_stats.call_count, 2)
+            page._gameplay_active = Mock(return_value=True)
+            page._auto_sync_vrcx()
+            self.assertEqual(controller.vrcx_stats.call_count, 2)
+            page._auto_sync_vrcx(force=True)
+            self.assertEqual(controller.vrcx_stats.call_count, 3)
             page._vrcx_timer.stop()
             page.close()
             page.deleteLater()

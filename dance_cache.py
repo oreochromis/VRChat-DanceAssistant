@@ -550,6 +550,25 @@ def scan_recent_room_events():
     return record_room_events(lines)
 
 
+def recent_activity_timestamp():
+    latest = 0.0
+    for path in (history_path(), played_history_path(), room_events_path()):
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 65536))
+                lines = handle.read().decode("utf-8", errors="replace").splitlines()[-20:]
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                latest = max(latest, float(json.loads(line)["ts"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+    return latest
+
+
 def record_playing_snapshot(items):
     """只在队首当前歌曲变化时记录实际播放；空队列允许之后同曲重新计入。"""
     global _last_playing_key

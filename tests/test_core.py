@@ -593,6 +593,13 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(entries[1]["kind"], "leave")
         self.assertEqual(entries[1]["user_id"], "usr_test")
 
+    def test_recent_activity_uses_latest_history_and_room_event(self):
+        for path, timestamp in ((self.dc.history_path(), 100), (self.dc.played_history_path(), 200),
+                                (self.dc.room_events_path(), 300)):
+            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).write_text(json.dumps({"ts": timestamp}) + "\n", encoding="utf-8")
+        self.assertEqual(self.dc.recent_activity_timestamp(), 300)
+
     def test_index_maintenance_detects_only_unmapped_local_songs(self):
         (self.library / "1.mp4").write_bytes(b"one")
         (self.library / "2.mp4").write_bytes(b"two")
