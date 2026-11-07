@@ -32,6 +32,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
@@ -143,7 +144,7 @@ def mapping_path():
 
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
-                  "play_history.jsonl", "played_history.jsonl", "vrcx-settings.json", "vrcx-stats.json",
+                  "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
                   "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json",
                   "profile.json", "profile-avatar.png", "avatar-index.json")
 _STORAGE_DIRS = ("avatars",)
@@ -463,6 +464,90 @@ def record_queue_snapshot(items):
 
 def played_history_path():
     return os.path.join(data_dir(), PLAYED_HISTORY_FILENAME)
+
+
+ROOM_EVENT_FILENAME = "room_events.jsonl"
+_room_event_lock = threading.Lock()
+_room_event_keys = None
+_native_location = None
+ROOM_JOIN_RE = re.compile(r"\[Behaviour\] Joining (wrld_[a-f0-9-]+)(?::(.*))?")
+ROOM_LEAVE_RE = re.compile(r"\[Behaviour\] OnPlayerLeft (.+?) \((usr_[^)]+)\)")
+ROOM_TIME_RE = re.compile(r"^(\d{4}\.\d{2}\.\d{2} \d{2}:\d{2}:\d{2})")
+
+
+def room_events_path():
+    return os.path.join(data_dir(), ROOM_EVENT_FILENAME)
+
+
+def _load_room_event_keys():
+    global _room_event_keys
+    if _room_event_keys is not None:
+        return
+    _room_event_keys = set()
+    try:
+        with open(room_events_path(), "r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    entry = json.loads(line)
+                    key = (entry.get("kind"), round(float(entry["ts"]), 3),
+                           entry.get("location", ""), entry.get("user_id", ""))
+                    _room_event_keys.add(key)
+                except (ValueError, TypeError, KeyError):
+                    continue
+    except OSError:
+        pass
+
+
+def record_room_events(lines):
+    global _native_location
+    discovered = []
+    for line in lines:
+        time_match = ROOM_TIME_RE.search(line)
+        join_match = ROOM_JOIN_RE.search(line)
+        leave_match = ROOM_LEAVE_RE.search(line)
+        if not time_match or not (join_match or leave_match):
+            continue
+        try:
+            timestamp = datetime.strptime(time_match.group(1), "%Y.%m.%d %H:%M:%S").timestamp()
+        except ValueError:
+            continue
+        if join_match:
+            world_id = join_match.group(1)
+            instance = join_match.group(2)
+            location = world_id + ":" + instance if instance else world_id
+            _native_location = location
+            discovered.append({"ts": timestamp, "kind": "location", "world_id": world_id, "location": location})
+        else:
+            discovered.append({"ts": timestamp, "kind": "leave", "location": _native_location or "",
+                               "user_id": leave_match.group(2)})
+    if not discovered:
+        return 0
+    with _room_event_lock:
+        _load_room_event_keys()
+        fresh = []
+        for entry in discovered:
+            key = (entry["kind"], round(float(entry["ts"]), 3), entry.get("location", ""), entry.get("user_id", ""))
+            if key not in _room_event_keys:
+                _room_event_keys.add(key)
+                fresh.append(entry)
+        if fresh:
+            os.makedirs(data_dir(), exist_ok=True)
+            with open(room_events_path(), "a", encoding="utf-8") as handle:
+                for entry in fresh:
+                    handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    return len(fresh)
+
+
+def scan_recent_room_events():
+    path = find_newest_log()
+    if path is None:
+        return 0
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        handle.seek(0, 2)
+        size = handle.tell()
+        handle.seek(max(0, size - 2 * 1024 * 1024))
+        lines = handle.read().splitlines()
+    return record_room_events(lines)
 
 
 def record_playing_snapshot(items):
@@ -3485,6 +3570,7 @@ class LogWatcher(threading.Thread):
                 log("日志文件超过 10 分钟未更新，跳过历史内容（等待 VRChat 写入新日志）")
                 return
             tail_lines = tail.splitlines()
+            record_room_events(tail_lines)
             if get_runtime_state()["youtube_available"]:
                 scan_resolved_youtube(tail_lines)
             items = extract_queue_items(tail_lines)
@@ -3506,6 +3592,7 @@ class LogWatcher(threading.Thread):
             return
         lines = self.buf.split("\n")
         self.buf = lines.pop()
+        record_room_events(lines)
         if get_runtime_state()["youtube_available"]:
             scan_resolved_youtube(lines)
         items = extract_queue_items(lines)

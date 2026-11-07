@@ -302,6 +302,10 @@ class CoreController(QObject):
             return
         self._run("library_delete", lambda: core.delete_library_songs(kind, ids))
 
+    def scan_room_events(self):
+        if not self.demo and not self.busy("room_events"):
+            self._run("room_events", core.scan_recent_room_events)
+
     def check_index_maintenance(self):
         if not self.demo and not self.busy("index_check"):
             self._run("index_check", core.index_maintenance_status)

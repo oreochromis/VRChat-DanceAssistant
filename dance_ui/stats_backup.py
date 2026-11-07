@@ -13,6 +13,7 @@ from . import stats_records, vrcx_stats
 FORMAT = "vrchat-dance-stats-backup"
 VERSION = 1
 HISTORY_FILES = ("play_history.jsonl", "played_history.jsonl")
+ROOM_EVENTS_FILENAME = "room_events.jsonl"
 PROFILE_FILES = ("profile.json", "profile-avatar.png")
 MAX_TEXT_MEMBER = 256 * 1024 * 1024
 MAX_DATABASE_MEMBER = 2 * 1024 * 1024 * 1024
@@ -75,6 +76,43 @@ def _merge_history(path: Path, incoming_text: str):
     return added
 
 
+def _room_event_key(line):
+    try:
+        value = json.loads(line)
+        timestamp = float(value["ts"])
+        kind = value["kind"]
+        if kind not in ("location", "leave"):
+            return None
+        return timestamp, kind, str(value.get("location") or ""), str(value.get("user_id") or ""), value
+    except (ValueError, TypeError, KeyError):
+        return None
+
+
+def _room_event_entries(text):
+    entries = {}
+    for line in text.splitlines():
+        parsed = _room_event_key(line)
+        if parsed is not None:
+            timestamp, kind, location, user_id, value = parsed
+            entries[(timestamp, kind, location, user_id)] = value
+    return entries
+
+
+def _merge_room_events(path, incoming_text):
+    existing = _room_event_entries(path.read_text(encoding="utf-8") if path.is_file() else "")
+    incoming = _room_event_entries(incoming_text)
+    added = len(incoming.keys() - existing.keys())
+    if added:
+        existing.update(incoming)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            for key in sorted(existing):
+                handle.write(json.dumps(existing[key], ensure_ascii=False) + "\n")
+        os.replace(temporary, path)
+    return added
+
+
 def _zip_text(archive, name, maximum=MAX_TEXT_MEMBER):
     try:
         info = archive.getinfo(name)
@@ -89,7 +127,7 @@ def export_stats_backup(path):
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     root = Path(core.data_dir())
-    files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, "avatar-index.json",
+    files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, "avatar-index.json", ROOM_EVENTS_FILENAME,
                                 vrcx_stats.SETTINGS_FILENAME, vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME,
                                 stats_records.EDITABLE_SOURCE_FILENAME)
              if (root / name).is_file()]
@@ -126,7 +164,7 @@ def import_stats_backup(path):
         result = {
             "play_history_added": 0, "played_history_added": 0,
             "settings_added": 0, "stats_updated": False, "source_imported": False,
-            "profile_imported": False, "avatars_added": 0,
+            "profile_imported": False, "avatars_added": 0, "room_events_added": 0,
         }
         root = Path(core.data_dir())
         root.mkdir(parents=True, exist_ok=True)
@@ -134,6 +172,9 @@ def import_stats_backup(path):
             incoming = _zip_text(archive, name)
             if incoming is not None:
                 result[name.removesuffix(".jsonl") + "_added"] = _merge_history(root / name, incoming)
+        incoming_room_events = _zip_text(archive, ROOM_EVENTS_FILENAME)
+        if incoming_room_events is not None:
+            result["room_events_added"] = _merge_room_events(root / ROOM_EVENTS_FILENAME, incoming_room_events)
         incoming_settings = _zip_text(archive, vrcx_stats.SETTINGS_FILENAME)
         if incoming_settings is not None:
             incoming = json.loads(incoming_settings)

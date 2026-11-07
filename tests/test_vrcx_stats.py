@@ -85,8 +85,8 @@ class VRCXStatsTests(unittest.TestCase):
         activity_dir.mkdir()
         activity_start = datetime(2026, 1, 1, 8, tzinfo=timezone.utc)
         activities = []
-        for index in range(76):
-            at = activity_start + timedelta(minutes=10 * index)
+        for index in range(151):
+            at = activity_start + timedelta(minutes=5 * index)
             activities.append(json.dumps({"ts": at.timestamp(), "kind": "pypy", "id": index + 1}))
         (activity_dir / vrcx_stats.core.PLAYED_HISTORY_FILENAME).write_text(
             "\n".join(activities) + "\n", encoding="utf-8")
@@ -143,6 +143,34 @@ class VRCXStatsTests(unittest.TestCase):
         self.assertEqual(intervals["room"], [(entered.timestamp(), left.timestamp())])
         daily = vrcx_stats._daily_play_stats(intervals, entered.timestamp(), left.timestamp() + 1)
         self.assertEqual(daily, [{"day": "2026-08-31", "seconds": 1123}])
+
+    def test_native_room_events_allow_statistics_without_vrcx(self):
+        self.path.unlink()
+        pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
+        location = pypy + ":12345~region(jp)"
+        events = [
+            {"ts": ts(10), "kind": "location", "world_id": pypy, "location": location},
+            {"ts": ts(11), "kind": "leave", "user_id": "usr_test", "location": location},
+        ]
+        event_path = Path(vrcx_stats.core.room_events_path())
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        event_path.write_text("\n".join(json.dumps(event) for event in events) + "\n", encoding="utf-8")
+        (self.root / "data" / "profile.json").write_text(json.dumps({"id": "usr_test", "name": "本人"}), encoding="utf-8")
+        result = self.read(start=10, end=11)
+        self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 3600}])
+        self.assertEqual(result["world_play"], {"pypy": 3600, "wd": 0})
+        self.assertEqual(result["friends"], [])
+
+    def test_native_and_vrcx_location_records_are_deduplicated(self):
+        pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
+        event_path = Path(vrcx_stats.core.room_events_path())
+        event_path.parent.mkdir(parents=True, exist_ok=True)
+        event_path.write_text(json.dumps({
+            "ts": ts(9), "kind": "location", "world_id": pypy, "location": "room-A",
+        }) + "\n", encoding="utf-8")
+        result = self.read()
+        self.assertEqual(result["total_play_seconds"], 6600)
+        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0})
 
     def test_daily_play_self_names_and_sync_result_persistence(self):
         result = self.read()

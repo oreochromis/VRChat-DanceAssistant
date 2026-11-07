@@ -229,7 +229,7 @@ def _friends(connection, table):
     return {str(user_id): str(display_name or user_id) for user_id, display_name in rows if user_id}
 
 
-PLAY_INACTIVITY_SECONDS = 14 * 60
+PLAY_INACTIVITY_SECONDS = 9 * 60
 
 
 def _activity_timestamps(vrcx_timestamps=()):
@@ -274,7 +274,7 @@ def _own_intervals(rows, observed_end, activity_timestamps=(), own_leaves=()):
         for timestamp in activity_timestamps:
             if timestamp <= start:
                 continue
-            if timestamp >= end:
+            if timestamp > end:
                 break
             if timestamp - last_activity > PLAY_INACTIVITY_SECONDS:
                 if last_activity > segment_start:
@@ -378,28 +378,85 @@ def _merge_intervals(intervals):
     return merged
 
 
+def _load_native_room_events():
+    try:
+        with open(core.room_events_path(), "r", encoding="utf-8") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return []
+    events = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            timestamp = float(entry["ts"])
+            if entry.get("kind") == "location" and entry.get("world_id") in DANCE_WORLD_IDS and entry.get("location"):
+                events.append((timestamp, "location", entry))
+            elif entry.get("kind") == "leave" and entry.get("user_id"):
+                events.append((timestamp, "leave", entry))
+        except (ValueError, TypeError, KeyError):
+            continue
+    return events
+
+
+def _merge_location_rows(rows, native_events):
+    candidates = list(rows)
+    for timestamp, event_kind, entry in native_events:
+        if event_kind == "location":
+            candidates.append((datetime.fromtimestamp(timestamp).isoformat(), entry["location"], entry["world_id"]))
+    parsed = []
+    for created_at, location, world_id in candidates:
+        try:
+            parsed.append((_timestamp(created_at), created_at, str(location or ""), str(world_id or "")))
+        except (ValueError, OverflowError, OSError):
+            continue
+    parsed.sort(key=lambda item: item[0])
+    merged = []
+    for candidate in parsed:
+        if any(candidate[2] == previous[2] and candidate[3] == previous[3]
+               and abs(candidate[0] - previous[0]) <= 2 for previous in merged[-2:]):
+            continue
+        merged.append(candidate)
+    return [(created_at, location, world_id) for _, created_at, location, world_id in merged]
+
+
+def _current_account_id():
+    try:
+        profile = json.loads((Path(core.data_dir()) / "profile.json").read_text(encoding="utf-8"))
+        return str(profile.get("id") or "")
+    except (OSError, ValueError, TypeError):
+        return ""
+
+
 def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
     start_ts, end_ts = float(start_ts), float(end_ts)
     if end_ts <= start_ts:
         raise ValueError("开始日期必须早于结束日期。")
     source = Path(path).expanduser().resolve()
-    connection = _connect(source)
+    native_events = _load_native_room_events()
     try:
-        friend_table = _friend_table(connection)
-        friends = _friends(connection, friend_table)
-        location_rows = connection.execute(
-            "SELECT created_at, location, world_id FROM gamelog_location ORDER BY created_at, id").fetchall()
-        join_rows = connection.execute(
-            "SELECT user_id, display_name, type, created_at, location FROM gamelog_join_leave "
-            "ORDER BY created_at, id").fetchall()
-        history_table = friend_table.removesuffix("_current") + "_history"
-        history_exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (history_table,)).fetchone()
-        friend_history = connection.execute(
-            f'SELECT created_at, type, user_id, display_name FROM "{history_table}" '
-            "ORDER BY created_at, id").fetchall() if history_exists else []
-    finally:
-        connection.close()
+        connection = _connect(source)
+        try:
+            friend_table = _friend_table(connection)
+            friends = _friends(connection, friend_table)
+            location_rows = connection.execute(
+                "SELECT created_at, location, world_id FROM gamelog_location ORDER BY created_at, id").fetchall()
+            join_rows = connection.execute(
+                "SELECT user_id, display_name, type, created_at, location FROM gamelog_join_leave "
+                "ORDER BY created_at, id").fetchall()
+            history_table = friend_table.removesuffix("_current") + "_history"
+            history_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (history_table,)).fetchone()
+            friend_history = connection.execute(
+                f'SELECT created_at, type, user_id, display_name FROM "{history_table}" '
+                "ORDER BY created_at, id").fetchall() if history_exists else []
+        finally:
+            connection.close()
+    except (ValueError, sqlite3.Error):
+        if not native_events:
+            raise
+        friends, friend_table = {}, ""
+        location_rows, join_rows, friend_history = [], [], []
+    location_rows = _merge_location_rows(location_rows, native_events)
     timestamps = []
     for collection, index in ((location_rows, 0), (join_rows, 3)):
         for row in collection:
@@ -407,11 +464,12 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
                 timestamps.append(_timestamp(row[index]))
             except (ValueError, OverflowError, OSError):
                 pass
+    timestamps.extend(timestamp for timestamp, _, _ in native_events)
     if not timestamps:
-        raise ValueError("VRCX 数据库中没有可用的时间记录。")
+        raise ValueError("VRCX 与本软件日志中都没有可用的时间记录。")
     activity = _activity_timestamps(timestamps)
     observed_end = max(activity)
-    self_id = friend_table.removesuffix("_friend_log_current")
+    self_id = friend_table.removesuffix("_friend_log_current") if friend_table else _current_account_id()
     own_leaves = []
     for user_id, _, kind, created_at, location in join_rows:
         if user_id != self_id or kind != "OnPlayerLeft":
@@ -420,6 +478,9 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
             own_leaves.append((_timestamp(created_at), str(location or "")))
         except (ValueError, OverflowError, OSError):
             pass
+    for timestamp, event_kind, entry in native_events:
+        if event_kind == "leave" and entry.get("user_id") == self_id:
+            own_leaves.append((timestamp, str(entry.get("location") or "")))
     own = _own_intervals(location_rows, observed_end, activity, sorted(own_leaves))
     players, skipped = _player_intervals(join_rows, friends, observed_end)
     friends_stats = []
@@ -461,7 +522,8 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
         "world_play": world_play,
         "new_friends": _new_friend_stats(friend_history, own, start_ts, end_ts),
     }
-    archive_vrcx_database(source, force=force_archive)
+    if source.is_file():
+        archive_vrcx_database(source, force=force_archive)
     return result
 
 

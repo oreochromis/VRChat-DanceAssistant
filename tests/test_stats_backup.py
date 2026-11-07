@@ -34,10 +34,13 @@ class StatsBackupTests(unittest.TestCase):
             (first / "avatars").mkdir()
             (first / "avatars" / "existing.png").write_bytes(b"incoming avatar")
             (first / "avatars" / "new.png").write_bytes(b"new avatar")
+            (first / "room_events.jsonl").write_text(json.dumps({
+                "ts": 1000, "kind": "location", "world_id": "wrld_test", "location": "room-A",
+            }) + "\n", encoding="utf-8")
             backup = root / "backup.zip"
             with patch.object(stats_backup.core, "data_dir", return_value=str(first)):
                 manifest = stats_backup.export_stats_backup(backup)
-            self.assertEqual(len(manifest["files"]), 10)
+            self.assertEqual(len(manifest["files"]), 11)
             with zipfile.ZipFile(backup) as archive:
                 self.assertEqual(archive.read("vrcx-source.sqlite3"), database)
                 self.assertEqual(archive.read("avatars/new.png"), b"new avatar")
@@ -70,6 +73,8 @@ class StatsBackupTests(unittest.TestCase):
                 self.assertFalse(result["source_imported"])
                 self.assertTrue(result["profile_imported"])
                 self.assertEqual(result["avatars_added"], 1)
+                self.assertEqual(result["room_events_added"], 1)
+                self.assertTrue((second / "room_events.jsonl").is_file())
                 self.assertEqual((second / "profile-avatar.png").read_bytes(), b"avatar")
                 self.assertEqual((second / "avatars" / "existing.png").read_bytes(), b"existing avatar")
                 self.assertEqual((second / "avatars" / "new.png").read_bytes(), b"new avatar")
@@ -91,6 +96,7 @@ class StatsBackupTests(unittest.TestCase):
                 again = stats_backup.import_stats_backup(backup)
                 self.assertEqual(again["play_history_added"], 0)
                 self.assertEqual(again["played_history_added"], 0)
+                self.assertEqual(again["room_events_added"], 0)
 
     def test_edited_vrcx_copy_is_backed_up_without_overwriting_existing_copy(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -580,6 +580,19 @@ class CoreTests(unittest.TestCase):
         row = self.dc.get_queue_snapshot()[0]
         self.assertEqual(row["state_code"], "not_cached")
 
+    def test_room_events_are_recorded_once(self):
+        lines = [
+            "2026.11.07 17:19:21 Debug      -  [Behaviour] Joining wrld_f20326da-f1ac-45fc-a062-609723b097b1:12345~region(jp)",
+            "2026.11.07 17:19:22 Debug      -  [Behaviour] OnPlayerLeft Tester (usr_test)",
+        ]
+        self.assertEqual(self.dc.record_room_events(lines), 2)
+        self.assertEqual(self.dc.record_room_events(lines), 0)
+        entries = [json.loads(line) for line in Path(self.dc.room_events_path()).read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(entries[0]["kind"], "location")
+        self.assertEqual(entries[0]["world_id"], "wrld_f20326da-f1ac-45fc-a062-609723b097b1")
+        self.assertEqual(entries[1]["kind"], "leave")
+        self.assertEqual(entries[1]["user_id"], "usr_test")
+
     def test_index_maintenance_detects_only_unmapped_local_songs(self):
         (self.library / "1.mp4").write_bytes(b"one")
         (self.library / "2.mp4").write_bytes(b"two")

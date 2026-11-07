@@ -173,6 +173,7 @@ class MainWindow(QMainWindow, Pages):
         self.render_queue()
         self.render_downloads()
         QTimer.singleShot(0, self.refresh_steamvr_startup)
+        QTimer.singleShot(0, self.controller.scan_room_events)
         QTimer.singleShot(1000, self.controller.check_index_maintenance)
         # 极简模式始终自动启动；其他模式遵循设置。controller.start 自身会拦截
         # 非 Windows/非管理员/已在启动中等情况并按原路径提示。
