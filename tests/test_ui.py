@@ -377,6 +377,22 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.banner.close_button, Qt.MouseButton.LeftButton)
         self.assertFalse(window.banner.isVisible())
 
+    def test_index_warning_offers_rebuild_action_and_deduplicates(self):
+        window, controller, _ = self.make_window()
+        controller.result.emit("index_check", {"needed": True, "missing": 2, "total": 5})
+        self.assertTrue(window.banner.isVisible())
+        self.assertIn("2 首本地歌曲", window.banner.text())
+        self.assertEqual(window.banner.action_button.text(), "重建索引")
+        generation = window._banner_generation
+        controller.result.emit("index_check", {"needed": True, "missing": 2, "total": 5})
+        self.assertEqual(window._banner_generation, generation)
+        QTest.mouseClick(window.banner.action_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(window.stack.currentIndex(), 1)
+        self.assertEqual(window._maintenance, "rebuild")
+        self.assertFalse(window.banner.isVisible())
+        window._maintenance = None
+        controller.result.emit("index_check", {"needed": False, "missing": 0, "total": 5})
+
     def test_vrcx_failure_banner_deduplicates_and_clears_after_success(self):
         window, _, _ = self.make_window()
         window.vrcx_auto_error("VRCX 读取失败")

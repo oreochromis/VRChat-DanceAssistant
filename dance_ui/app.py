@@ -101,6 +101,8 @@ class MainWindow(QMainWindow, Pages):
         self._update_prompted = False
         self._banner_generation = 0
         self._vrcx_banner_error = ""
+        self._index_notice_key = ""
+        self._index_notice_dismissed = None
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
@@ -124,7 +126,8 @@ class MainWindow(QMainWindow, Pages):
         outer.setSpacing(0)
         self.build_header(outer)
         self.banner = NoticeBanner()
-        self.banner.close_requested.connect(lambda: self.clear_notice(self._banner_generation))
+        self.banner.close_requested.connect(self._close_banner)
+        self.banner.action_requested.connect(self._on_banner_action)
         self.banner.hide()
         outer.addWidget(self.banner)
         self.stack = QStackedWidget()
@@ -170,6 +173,7 @@ class MainWindow(QMainWindow, Pages):
         self.render_queue()
         self.render_downloads()
         QTimer.singleShot(0, self.refresh_steamvr_startup)
+        QTimer.singleShot(1000, self.controller.check_index_maintenance)
         # 极简模式始终自动启动；其他模式遵循设置。controller.start 自身会拦截
         # 非 Windows/非管理员/已在启动中等情况并按原路径提示。
         if (store.preferences.get("ui_mode") == "minimal"
@@ -322,6 +326,7 @@ class MainWindow(QMainWindow, Pages):
         self.nav_buttons[index].setChecked(True)
         if index == 1:
             self.controller.refresh_stats()
+            self.controller.check_index_maintenance()
         elif index == 2:
             self.play_stats_page.refresh()
         elif index == 4:
@@ -1052,6 +1057,40 @@ class MainWindow(QMainWindow, Pages):
             self.banner.clear()
             self.banner.hide()
 
+    def _close_banner(self):
+        if self.banner.rawText() == self._index_notice_key:
+            self._index_notice_dismissed = self._index_notice_key
+        self.clear_notice(self._banner_generation)
+
+    def _handle_index_check(self, result):
+        data = result or {}
+        if not data.get("needed"):
+            if self._index_notice_key and self.banner.rawText() == self._index_notice_key:
+                self.clear_notice(self._banner_generation)
+            self._index_notice_key = ""
+            self._index_notice_dismissed = None
+            return
+        if self._maintenance == "rebuild":
+            return
+        key = f"{data.get('missing', 0)}/{data.get('total', 0)}"
+        if key == self._index_notice_dismissed or key == self._index_notice_key:
+            return
+        self._index_notice_key = key
+        self.notify(f"发现 {data.get('missing', 0)} 首本地歌曲缺少索引，建议重建索引以正确关联编号与文件。",
+                    persistent=True)
+        self.banner.set_action("重建索引", "rebuild")
+
+    def _on_banner_action(self, operation):
+        if operation != "rebuild":
+            return
+        self._index_notice_dismissed = self._index_notice_key
+        self.clear_notice(self._banner_generation)
+        self.navigate(1)
+        if self._runtime.get("running"):
+            self.start_maintenance("rebuild")
+        else:
+            self.notify("请先启动缓存服务，再点击“重建索引”。", error=True, persistent=True)
+
     def vrcx_auto_error(self, message):
         message = str(message)
         if message == self._vrcx_banner_error:
@@ -1184,6 +1223,8 @@ class MainWindow(QMainWindow, Pages):
                 result += f" · 已检查 {data.get('checked', total)} / {total} · 大小不符 {data.get('bad', 0)} · 跳过 {data.get('skipped', 0)} · 失败 {data.get('failed', 0)}"
             self.maintenance_status.setText(result)
             self.controller.refresh_stats()
+            if kind == "rebuild_done":
+                self.controller.check_index_maintenance()
         elif kind == "speedtest_result":
             self._scan_results.append(data)
             self.scan_status.setText(f"已测试 {len(self._scan_results)} 个地址，测速继续进行；扩大范围测速仅抽样，不穷举全部 IP。")
@@ -1200,11 +1241,15 @@ class MainWindow(QMainWindow, Pages):
                 self.vrcx_sync_status.setText("统计数据已更新；部分账号资料或头像同步失败，可在统计页查看详情。")
             else:
                 self.vrcx_sync_status.setText("VRCX 数据、账号头像与好友头像已同步。")
+        elif operation == "index_check":
+            self._handle_index_check(result)
         elif operation == "steamvr_startup":
             self.show_steamvr_status(result)
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             self.load_fields(section)
+            if section == "storage":
+                self.controller.check_index_maintenance()
             self.notify("设置已应用。" + ("请重新启动服务。" if (result or {}).get("restart_required") else ""))
             self.controller.refresh_stats()
         elif operation == "clear_cache":

@@ -1295,6 +1295,16 @@ def scan_library(kind):
             "parts": parts, "total_bytes": total}
 
 
+def index_maintenance_status():
+    scan = scan_library("pypy")
+    if scan is None:
+        return {"needed": False, "missing": 0, "total": 0, "dir": "", "mapping": mapping_path()}
+    with _mapping_lock:
+        missing = sum(not _mapping.get(song["id"]) for song in scan["songs"])
+    return {"needed": missing > 0, "missing": missing, "total": len(scan["songs"]),
+            "dir": scan["dir"], "mapping": mapping_path()}
+
+
 def library_missing(kind):
     """对照官方清单找曲库里缺的编号。返回 None（目录未设置）或
     {"source": 清单描述或 None, "expected", "missing": [id], "dead": [id],

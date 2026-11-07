@@ -368,6 +368,7 @@ def install_combo_wheel_filter(app):
 
 class NoticeBanner(QFrame):
     close_requested = Signal()
+    action_requested = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -381,6 +382,13 @@ class NoticeBanner(QFrame):
         self.message = label("", wrap=True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         top.addWidget(self.message, 1)
+        self.action_button = QPushButton()
+        self.action_button.setProperty("primary", True)
+        self.action_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.action_button.clicked.connect(lambda: self.action_requested.emit(self._action))
+        self.action_button.hide()
+        top.addWidget(self.action_button)
+        self._action = ""
         self.details_button = QPushButton("技术详情")
         self.details_button.setProperty("link", True)
         self.details_button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -404,9 +412,16 @@ class NoticeBanner(QFrame):
         self.details.hide()
         self.details_button.setText("技术详情")
         self.details_button.setVisible(bool(self._raw and self._raw != str(message)))
+        self.action_button.hide()
+        self._action = ""
         self.setProperty("noticeTone", "error" if error else "info" if busy else "success")
         self.style().unpolish(self)
         self.style().polish(self)
+
+    def set_action(self, text, operation):
+        self._action = str(operation)
+        self.action_button.setText(str(text))
+        self.action_button.setVisible(bool(self._action))
 
     def _toggle_details(self):
         visible = not self.details.isVisible()

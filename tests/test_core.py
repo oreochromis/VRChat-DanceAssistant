@@ -580,6 +580,19 @@ class CoreTests(unittest.TestCase):
         row = self.dc.get_queue_snapshot()[0]
         self.assertEqual(row["state_code"], "not_cached")
 
+    def test_index_maintenance_detects_only_unmapped_local_songs(self):
+        (self.library / "1.mp4").write_bytes(b"one")
+        (self.library / "2.mp4").write_bytes(b"two")
+        self.dc.mark_mapping(1, "one.mp4")
+        result = self.dc.index_maintenance_status()
+        self.assertTrue(result["needed"])
+        self.assertEqual(result["missing"], 1)
+        self.assertEqual(result["total"], 2)
+        self.dc.mark_mapping(2, "yt:https://www.youtube.com/watch?v=two")
+        result = self.dc.index_maintenance_status()
+        self.assertFalse(result["needed"])
+        self.assertEqual(result["missing"], 0)
+
     def test_learning_mapping_refreshes_queue_state(self):
         # 映射缺失时队列显示"待解析"；之后学习到映射（如播放时代理透传学到）
         # 必须主动刷新队列，否则本地已缓存的歌会一直卡在"待解析"
