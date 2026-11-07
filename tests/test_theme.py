@@ -114,11 +114,14 @@ class ThemeStoreTests(unittest.TestCase):
             self.store.change_preferences({"home_style": "fancy"})
 
     def test_additional_builtin_themes_are_readable_and_persist(self):
-        self.assertEqual({"miku", "eva01", "jirai", "maimai"} - set(BUILTIN_THEMES), set())
-        self.assertEqual({key: BUILTIN_THEMES[key]["name"] for key in ("miku", "eva01", "jirai", "maimai")},
-                         {"miku": "葱绿", "eva01": "机甲", "jirai": "阔剑", "maimai": "萌舞"})
-        for theme_id in ("miku", "eva01", "jirai", "maimai"):
+        additional = ("miku", "eva01", "jirai", "maimai", "neko", "inu", "chaomian", "jidan")
+        self.assertEqual(set(additional) - set(BUILTIN_THEMES), set())
+        self.assertEqual({key: BUILTIN_THEMES[key]["name"] for key in additional},
+                         {"miku": "葱绿", "eva01": "机甲", "jirai": "地瓜", "maimai": "萌舞",
+                          "neko": "猫猫", "inu": "狗狗", "chaomian": "炒面", "jidan": "鸡蛋"})
+        for theme_id in additional:
             with self.subTest(theme=theme_id):
+                self.assertEqual(set(BUILTIN_THEMES["light"]) - set(BUILTIN_THEMES[theme_id]), set())
                 self.store.select(theme_id)
                 background = self.store.background_path()
                 self.assertIsNotNone(background)
@@ -126,8 +129,23 @@ class ThemeStoreTests(unittest.TestCase):
                 for style in ("simple", "vivid"):
                     self.store.change_preferences({"home_style": style})
                     self.assertEqual(theme_contrast_warnings(self.store.active, self.store.preferences), [])
-        self.store.select("maimai")
-        self.assertEqual(ThemeStore(self.store.root_dir).active_id, "maimai")
+        self.store.select("jidan")
+        self.assertEqual(ThemeStore(self.store.root_dir).active_id, "jidan")
+
+    def test_new_builtin_themes_are_added_without_removing_custom_copies(self):
+        root = self.root / "upgrade"
+        root.mkdir()
+        custom = copy.deepcopy(BUILTIN_THEMES["light"])
+        custom.update(id="theme_custom", name="我的猫猫副本", builtin=False)
+        (root / "appearance.json").write_text(json.dumps({
+            "version": 1, "active_theme": "theme_custom",
+            "themes": [BUILTIN_THEMES["light"], custom], "preferences": DEFAULT_PREFERENCES,
+        }), encoding="utf-8")
+        store = ThemeStore(root)
+        self.assertEqual(store.active_id, "theme_custom")
+        self.assertEqual(store.active["name"], "我的猫猫副本")
+        self.assertIn("neko", {theme["id"] for theme in store.themes})
+        self.assertIn("jidan", {theme["id"] for theme in store.themes})
 
     def test_copy_rename_delete_and_undo_keep_original(self):
         self.store.change({"accent": "#123456"})

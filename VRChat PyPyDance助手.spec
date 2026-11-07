@@ -1,7 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 # Compatibility build entry. Prefer build_windows.ps1 to also collect notices.
-# User configuration, custom themes/backgrounds, and cached videos are not bundled.
-# The stable build starts with light/dark themes and bundles no personal images.
+# User configuration and cached videos are not bundled; approved built-in theme backgrounds are.
 
 from pathlib import Path
 
@@ -17,6 +16,7 @@ a = Analysis(
         (str(project_root / 'assets' / 'default_cooldown.mp4'), 'assets'),
         (str(project_root / 'assets' / 'app-icon.png'), 'assets'),
         (str(project_root / 'assets' / 'app-icon.ico'), 'assets'),
+        (str(project_root / 'assets' / 'backgrounds'), 'assets/backgrounds'),
     ],
     hiddenimports=[],
     hookspath=[str(project_root / 'tools' / 'pyinstaller_hooks')],

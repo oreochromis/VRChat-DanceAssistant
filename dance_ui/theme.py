@@ -68,7 +68,7 @@ _COMMON = {
     "hero_gradient": "#39B8C6", "hero_gradient_opacity": 0.0,
     "gradient_direction": "diagonal",
     "image_fit": "cover", "image_opacity": 0.35, "image_blur": 0.0,
-    "overlay_opacity": 0.0, "border_width": 1.0, "radius": 12.0,
+    "overlay_opacity": 0.0, "border_opacity": 0.8, "border_width": 1.0, "radius": 12.0,
     "text_shadow_color": "#000000", "text_shadow_opacity": 0.0,
     "text_shadow_size": 1.0, "text_shadow_blur": 4.0,
     "secondary_accent": "#39B8C6", "highlight": "#A56B12",
@@ -150,7 +150,7 @@ BUILTIN_THEMES = {
         "hero_gradient": "#8BC75A", "hero_gradient_opacity": 0.18,
     },
     "jirai": {
-        **_COMMON, "id": "jirai", "name": "阔剑", "builtin": True, "base": "light",
+        **_COMMON, "id": "jirai", "name": "地瓜", "builtin": True, "base": "light",
         "background_image": "backgrounds/5ea05a19a106bc1d69fc87dcc389ccce655a4bba7a3e7893bfbc8dcdabee440c.png",
         "image_blur": 8.7,
         "accent": "#B72D6B", "background_color": "#FFF4F8", "overlay_color": "#FFF4F8",
@@ -183,6 +183,67 @@ BUILTIN_THEMES = {
         "scrollbar_color": "#98A1BA", "background_gradient": "#FFE3F1",
         "background_gradient_opacity": 0.32, "hero_gradient": "#AF4B7D",
         "hero_gradient_opacity": 0.16,
+    },
+    "neko": {
+        **_COMMON, "id": "neko", "name": "猫猫", "builtin": True, "base": "light",
+        "background_image": "backgrounds/36f8401105b76ec92adb1a31d812cf37fb012b54c2096469515a9615d34d454b.png",
+        "table_selection_background": "#DDDCD0", "table_header_background": "#E9E6DE",
+        "nav_text": "#59647A", "warning_color": "#936318", "table_header_text": "#414855",
+        "background_color": "#F2EEE9", "button_hover_background": "#E2E0D6",
+        "border_color": "#D3D1D0", "error_color": "#BB4254", "accent": "#59653D",
+        "nav_active_text": "#5E6B40", "info_color": "#306ACA", "text_secondary": "#3D4149",
+        "success_color": "#1E7C4A", "nav_active_background": "#6D7B4A",
+        "nav_background": "#FFFFFF", "card_background": "#FFFFFF", "hero_gradient": "#393231",
+        "background_gradient_opacity": 0.35, "text_primary": "#172133",
+        "secondary_accent": "#393231", "radius": 12.6, "background_gradient": "#D7D6D6",
+        "hero_gradient_opacity": 0.28, "overlay_color": "#F3F5F9", "highlight": "#877E73",
+        "nav_opacity": 0.82, "card_opacity": 0.94, "nav_active_opacity": 0.13,
+    },
+    "inu": {
+        **_COMMON, "id": "inu", "name": "狗狗", "builtin": True, "base": "light",
+        "background_image": "backgrounds/30bc17d0d84072649032978059cf05ef847a8a3c1566d9d40429d5cf09780c95.png",
+        "table_selection_background": "#EDE9DD", "table_header_background": "#F7F5F0",
+        "nav_text": "#5F6A81", "warning_color": "#936318", "table_header_text": "#444B59",
+        "background_color": "#FFFFFF", "button_hover_background": "#F1EEE5",
+        "border_color": "#DFE0E2", "error_color": "#BB4254", "accent": "#836A25",
+        "nav_active_text": "#806824", "info_color": "#306ACA", "text_secondary": "#525863",
+        "success_color": "#1E7C4A", "nav_active_background": "#8E7328",
+        "nav_background": "#FFFFFF", "card_background": "#FFFFFF", "hero_gradient": "#A45948",
+        "background_gradient_opacity": 0.35, "text_primary": "#172133",
+        "secondary_accent": "#A45948", "radius": 12.6, "background_gradient": "#E8CFCA",
+        "hero_gradient_opacity": 0.28, "overlay_color": "#F3F5F9", "highlight": "#A6872F",
+        "nav_opacity": 0.82, "card_opacity": 0.94, "nav_active_opacity": 0.13,
+    },
+    "chaomian": {
+        **_COMMON, "id": "chaomian", "name": "炒面", "builtin": True, "base": "light",
+        "background_image": "backgrounds/d038f70dbee7a3e71738520a18579afbc6fb539303e891ef5405cbce4bc79cb3.png",
+        "table_selection_background": "#E8E6E4", "table_header_background": "#F3F2F0",
+        "nav_text": "#5F6A81", "warning_color": "#936318", "table_header_text": "#434B59",
+        "background_color": "#FCFBFA", "button_hover_background": "#EDEBEA",
+        "border_color": "#DCDCDE", "error_color": "#BB4254", "accent": "#716A68",
+        "nav_active_text": "#706967", "info_color": "#306ACA", "text_secondary": "#5C626F",
+        "success_color": "#1E7C4A", "nav_active_background": "#7C7572",
+        "nav_background": "#FFFFFF", "card_background": "#FFFFFF", "hero_gradient": "#566F70",
+        "background_gradient_opacity": 0.35, "text_primary": "#172133",
+        "secondary_accent": "#566F70", "radius": 12.6, "background_gradient": "#ADDEDF",
+        "hero_gradient_opacity": 0.28, "overlay_color": "#F3F5F9", "highlight": "#908784",
+        "nav_opacity": 0.82, "primary_button_text": "#EEEEEE",
+        "card_opacity": 0.94, "nav_active_opacity": 0.13,
+    },
+    "jidan": {
+        **_COMMON, "id": "jidan", "name": "鸡蛋", "builtin": True, "base": "light",
+        "background_image": "backgrounds/21c84731dd456b241e2b1179dc6cb741ac248029a8970947ad62e90d1f879ad6.png",
+        "table_selection_background": "#E8E5E3", "table_header_background": "#F3F2F0",
+        "nav_text": "#5F6A81", "warning_color": "#936318", "table_header_text": "#434B59",
+        "background_color": "#FCFBFA", "button_hover_background": "#EDEBE8",
+        "border_color": "#DCDCDE", "error_color": "#BB4254", "accent": "#74675D",
+        "nav_active_text": "#73665C", "info_color": "#306ACA", "text_secondary": "#484C57",
+        "success_color": "#1E7C4A", "nav_active_background": "#827468",
+        "nav_background": "#FFFFFF", "card_background": "#FFFFFF", "hero_gradient": "#464648",
+        "background_gradient_opacity": 0.35, "text_primary": "#172133",
+        "secondary_accent": "#464648", "radius": 12.6, "background_gradient": "#D5D5D6",
+        "hero_gradient_opacity": 0.28, "overlay_color": "#F3F5F9", "highlight": "#968678",
+        "nav_opacity": 0.82, "card_opacity": 0.94, "nav_active_opacity": 0.13,
     },
 }
 THEME_GROUPS = {
@@ -404,7 +465,7 @@ def ensure_theme_contrast(theme: Mapping[str, Any], preferences: Mapping[str, An
         remaining = theme_contrast_issues(result, preferences)
         if not remaining:
             break
-        for key in {issue["key"] for issue in remaining if issue["key"]}:
+        for key in sorted({issue["key"] for issue in remaining if issue["key"]}):
             result[key] = BUILTIN_THEMES[result.get("base", "light")][key]
     luminance = _relative_luminance(result["accent"])
     if .16 < luminance < .35 and contrast_ratio(readable_on(result["accent"]), result["accent"]) < 4.5:
@@ -424,10 +485,15 @@ def ensure_theme_contrast(theme: Mapping[str, Any], preferences: Mapping[str, An
         remaining = theme_contrast_issues(result, preferences)
         if not remaining:
             break
-        for key in {issue["key"] for issue in remaining if issue["key"]}:
+        for key in sorted({issue["key"] for issue in remaining if issue["key"]}):
             issues = [issue for issue in remaining if issue["key"] == key]
             result[key] = _ensure_foreground(result[key], [issue["background"] for issue in issues],
                                              max(issue["threshold"] for issue in issues))
+    for key in sorted({issue["key"] for issue in theme_contrast_issues(result, preferences) if issue["key"]}):
+        result[key] = min(("#000000", "#FFFFFF"), key=lambda color: len(
+            theme_contrast_issues({**result, key: color}, preferences)))
+    if theme_contrast_issues(result, preferences):
+        return copy.deepcopy(BUILTIN_THEMES[result.get("base", "light")])
     return result
 
 
