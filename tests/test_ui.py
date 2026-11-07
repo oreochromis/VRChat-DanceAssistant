@@ -1392,17 +1392,22 @@ class UIIntegrationTests(unittest.TestCase):
         from PySide6.QtCore import QModelIndex
         window, _, store = self.make_window()
         editor = window.appearance_page
-        self.assertTrue(editor.order_list.isHidden())
+        self.assertFalse(hasattr(editor, "theme_view"))
+        self.assertTrue(editor.order_button.isHidden())
         window.set_ui_mode("advanced")
-        self.assertFalse(editor.order_list.isHidden())
+        self.assertFalse(editor.order_button.isHidden())
+        editor._edit_order()
+        dialog = editor.order_dialog
         original = [theme["id"] for theme in store.themes]
-        self.assertTrue(editor.order_list.model().moveRow(QModelIndex(), 0, QModelIndex(), 2))
+        self.assertTrue(dialog.order_list.model().moveRow(QModelIndex(), 0, QModelIndex(), 2))
+        QApplication.processEvents()
         expected = [original[1], original[0], *original[2:]]
         self.assertEqual([theme["id"] for theme in store.themes], expected)
         self.assertEqual([editor.theme_combo.itemData(index) for index in range(editor.theme_combo.count())], expected)
         self.assertEqual([theme["id"] for theme in ThemeStore(store.root_dir).themes], expected)
         with self.assertRaises(ValueError):
             store.reorder(expected[:-1])
+        dialog.close()
 
     def test_theme_scaling_and_log_preferences_reach_the_whole_window(self):
         window, controller, store = self.make_window()

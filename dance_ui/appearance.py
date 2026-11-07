@@ -10,8 +10,8 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QImageReader, 
 from PySide6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QLineEdit, QComboBox,
     QSlider, QDoubleSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication, QListWidget, QListWidgetItem,
-    QAbstractItemView,
+    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication, QAbstractItemView,
+    QListWidget, QListWidgetItem, QDialog,
 )
 
 from .theme import ThemeStore, ThemeError, NUMBER_RANGES, normalize_color, theme_contrast_warnings
@@ -305,6 +305,31 @@ class _ThemePreview(QWidget):
         painter.end()
 
 
+class _ThemeOrderDialog(QDialog):
+    def __init__(self, themes, on_order, parent=None):
+        super().__init__(parent)
+        self.on_order = on_order
+        self.setWindowTitle("修改主题排序")
+        self.setMinimumSize(420, 480)
+        layout = QVBoxLayout(self)
+        layout.addWidget(_muted("拖动主题调整顺序，修改会自动保存。"))
+        self.order_list = QListWidget()
+        self.order_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.order_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.order_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        for theme in themes:
+            item = QListWidgetItem(theme["name"])
+            item.setData(Qt.ItemDataRole.UserRole, theme["id"])
+            self.order_list.addItem(item)
+        self.order_list.model().rowsMoved.connect(self._moved)
+        layout.addWidget(self.order_list, 1)
+        layout.addWidget(_button("完成", self.close), 0, Qt.AlignmentFlag.AlignRight)
+
+    def _moved(self, *args):
+        self.on_order([self.order_list.item(index).data(Qt.ItemDataRole.UserRole)
+                       for index in range(self.order_list.count())])
+
+
 class AppearancePage(QWidget):
     """Theme editor with stable widgets and a signal for application-wide repaint."""
 
@@ -394,7 +419,7 @@ class AppearancePage(QWidget):
         for row in self.overlay_rows:
             row.setVisible(advanced)
         self.sharing_row.setVisible(advanced)
-        self.order_list.setVisible(advanced)
+        self.order_button.setVisible(advanced)
         self.detail_hint.setText(
             "选择主题和界面风格；需要微调时，再展开下方的背景、颜色等分组。" if advanced else
             "选择主题和界面风格；遮罩、详细配色及配色导入导出位于右上角“高级”模式。")
@@ -427,6 +452,8 @@ class AppearancePage(QWidget):
         self.name_button.setAccessibleName("修改主题名称")
         self.name_button.setToolTip("点击后在主题框中修改当前主题名称")
         theme_row.addWidget(self.name_button)
+        self.order_button = _button("修改排序", self._edit_order)
+        theme_row.addWidget(self.order_button)
         right.addLayout(theme_row)
         home_row = QHBoxLayout()
         home_row.addWidget(QLabel("界面风格"))
@@ -456,15 +483,6 @@ class AppearancePage(QWidget):
         right.addWidget(self.sharing_row)
         self.detail_hint = _muted("")
         right.addWidget(self.detail_hint)
-        self.order_list = QListWidget()
-        self.order_list.setAccessibleName("主题排序")
-        self.order_list.setToolTip("拖动主题调整排列顺序，修改会自动保存")
-        self.order_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.order_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
-        self.order_list.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.order_list.setFixedHeight(180)
-        self.order_list.model().rowsMoved.connect(self._order_moved)
-        right.addWidget(self.order_list)
         layout.addLayout(right, 2)
         self.content_layout.addWidget(card)
 
@@ -788,13 +806,6 @@ class AppearancePage(QWidget):
                 for theme in self.store.themes:
                     self.theme_combo.addItem(theme["name"], theme["id"])
                 self.theme_combo.setCurrentIndex(self.theme_combo.findData(active["id"]))
-            self.order_list.clear()
-            for theme in self.store.themes:
-                item = QListWidgetItem(theme["name"])
-                item.setData(Qt.ItemDataRole.UserRole, theme["id"])
-                self.order_list.addItem(item)
-                if theme["id"] == active["id"]:
-                    self.order_list.setCurrentItem(item)
         finally:
             self._refreshing = False
         self._sync_fields()
@@ -809,11 +820,16 @@ class AppearancePage(QWidget):
         if self._flush_pending():
             self._perform(lambda: self.store.select(theme_id), refresh=True, message="已切换主题。")
 
-    def _order_moved(self, *args) -> None:
-        if self._refreshing:
-            return
-        theme_ids = [self.order_list.item(index).data(Qt.ItemDataRole.UserRole)
-                     for index in range(self.order_list.count())]
+    def _edit_order(self) -> None:
+        dialog = _ThemeOrderDialog(self.store.themes, self._save_order, self)
+        self.order_dialog = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.destroyed.connect(lambda: setattr(self, "order_dialog", None))
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def _save_order(self, theme_ids) -> None:
         if self._flush_pending():
             self._perform(lambda: self.store.reorder(theme_ids), refresh=True, message="主题顺序已保存。")
 

@@ -168,7 +168,7 @@ def stylesheet(theme: dict[str, Any], preferences: dict[str, Any]) -> str:
     QComboBox::drop-down, QDateEdit::drop-down {{ subcontrol-origin: border; subcontrol-position: top right; width: {px(28)}px; border: none; background: transparent; }}
     QComboBox::down-arrow, QDateEdit::down-arrow {{ image: url(:/controls/down-{arrow_tone}.svg); width: {px(10)}px; height: {px(7)}px; }}
     QLineEdit:disabled, QDateEdit:disabled, QComboBox:disabled {{ color: {muted}; background: {subtle}; }}
-    QComboBox QAbstractItemView {{ background: {theme['card_background']}; color: {text}; selection-background-color: {accent}; selection-color: {on_color(accent)}; }}
+    QComboBox QAbstractItemView, QListWidget {{ background: {theme['card_background']}; color: {text}; selection-background-color: {accent}; selection-color: {on_color(accent)}; }}
     QCalendarWidget {{ background: {theme['card_background']}; border: 1px solid {border}; }}
     QCalendarWidget QWidget, QCalendarWidget QTableView {{ background: {theme['card_background']}; color: {text}; }}
     QCalendarWidget QWidget#qt_calendar_navigationbar {{
