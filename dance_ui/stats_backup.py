@@ -13,6 +13,7 @@ from . import vrcx_stats
 FORMAT = "vrchat-dance-stats-backup"
 VERSION = 1
 HISTORY_FILES = ("play_history.jsonl", "played_history.jsonl")
+PROFILE_FILES = ("profile.json", "profile-avatar.png")
 MAX_TEXT_MEMBER = 256 * 1024 * 1024
 MAX_DATABASE_MEMBER = 2 * 1024 * 1024 * 1024
 
@@ -88,9 +89,11 @@ def export_stats_backup(path):
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     root = Path(core.data_dir())
-    files = [name for name in (*HISTORY_FILES, vrcx_stats.SETTINGS_FILENAME,
+    files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, vrcx_stats.SETTINGS_FILENAME,
                                 vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME)
              if (root / name).is_file()]
+    if vrcx_stats.SOURCE_FILENAME in files:
+        vrcx_stats.sanitize_vrcx_archive(root / vrcx_stats.SOURCE_FILENAME)
     manifest = {"format": FORMAT, "version": VERSION, "created_at": time.time(), "files": files}
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
@@ -119,6 +122,7 @@ def import_stats_backup(path):
         result = {
             "play_history_added": 0, "played_history_added": 0,
             "settings_added": 0, "stats_updated": False, "source_imported": False,
+            "profile_imported": False,
         }
         root = Path(core.data_dir())
         root.mkdir(parents=True, exist_ok=True)
@@ -160,4 +164,26 @@ def import_stats_backup(path):
             temporary.write_bytes(database)
             os.replace(temporary, target)
             result["source_imported"] = True
+        profile_text = _zip_text(archive, "profile.json")
+        if profile_text is not None:
+            incoming_profile = json.loads(profile_text)
+            if not isinstance(incoming_profile, dict) or not incoming_profile.get("id") or not incoming_profile.get("name"):
+                raise ValueError("备份中的账号资料格式无效。")
+            current_profile = _read_json(root / "profile.json")
+            if not current_profile:
+                _write_json(root / "profile.json", incoming_profile)
+                current_profile = incoming_profile
+                result["profile_imported"] = True
+            try:
+                avatar_info = archive.getinfo("profile-avatar.png")
+            except KeyError:
+                avatar_info = None
+            if avatar_info is not None and avatar_info.file_size > 10 * 1024 * 1024:
+                raise ValueError("备份中的头像文件过大。")
+            avatar_target = root / "profile-avatar.png"
+            if (avatar_info is not None and not avatar_target.exists()
+                    and current_profile.get("id") == incoming_profile.get("id")):
+                temporary = avatar_target.with_suffix(".tmp")
+                temporary.write_bytes(archive.read("profile-avatar.png"))
+                os.replace(temporary, avatar_target)
     return result

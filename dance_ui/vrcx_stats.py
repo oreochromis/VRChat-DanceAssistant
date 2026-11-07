@@ -49,11 +49,28 @@ def is_vrcx_archive(path) -> bool:
         return False
 
 
+def sanitize_vrcx_archive(path=None):
+    target = Path(path).expanduser().resolve() if path else archived_vrcx_path()
+    connection = sqlite3.connect(target)
+    try:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cookies'").fetchone()
+        if exists:
+            connection.execute("DROP TABLE cookies")
+            connection.commit()
+            connection.execute("VACUUM")
+    except sqlite3.DatabaseError:
+        return target
+    finally:
+        connection.close()
+    return target
+
+
 def archive_vrcx_database(path) -> Path:
     source = Path(path).expanduser().resolve()
     target = archived_vrcx_path()
     if is_vrcx_archive(source):
-        return target
+        return sanitize_vrcx_archive(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".tmp")
     source_connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
@@ -63,6 +80,7 @@ def archive_vrcx_database(path) -> Path:
         source_connection.backup(target_connection)
         target_connection.close()
         target_connection = None
+        sanitize_vrcx_archive(temporary)
         os.replace(temporary, target)
     finally:
         source_connection.close()

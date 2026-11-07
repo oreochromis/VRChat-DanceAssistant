@@ -37,7 +37,9 @@ class VRCXStatsTests(unittest.TestCase):
             CREATE TABLE usr_test_friend_log_current (user_id TEXT PRIMARY KEY, display_name TEXT);
             CREATE TABLE usr_test_friend_log_history (id INTEGER PRIMARY KEY, created_at TEXT,
                 type TEXT, user_id TEXT, display_name TEXT);
+            CREATE TABLE cookies (key TEXT PRIMARY KEY, value TEXT);
         """)
+        connection.execute("INSERT INTO cookies VALUES ('default', 'sensitive-session')")
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
         wd = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "wd")
         connection.executemany("INSERT INTO gamelog_location(created_at,location,world_id) VALUES(?,?,?)", [
@@ -133,6 +135,7 @@ class VRCXStatsTests(unittest.TestCase):
             connection.close()
         self.assertIn("gamelog_location", tables)
         self.assertIn("usr_test_friend_log_history", tables)
+        self.assertNotIn("cookies", tables)
         self.path.unlink()
         with patch.object(vrcx_stats, "default_vrcx_path", return_value=self.root / "missing.sqlite3"):
             self.assertEqual(vrcx_stats.resolve_vrcx_path(), archive.resolve())

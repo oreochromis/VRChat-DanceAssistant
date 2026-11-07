@@ -25,10 +25,12 @@ class StatsBackupTests(unittest.TestCase):
             (first / "vrcx-stats.json").write_text(json.dumps({"friends": [], "synced_at": 10}), encoding="utf-8")
             database = b"SQLite format 3\x00" + bytes(range(32))
             (first / "vrcx-source.sqlite3").write_bytes(database)
+            (first / "profile.json").write_text(json.dumps({"id": "usr_test", "name": "测试昵称"}), encoding="utf-8")
+            (first / "profile-avatar.png").write_bytes(b"avatar")
             backup = root / "backup.zip"
             with patch.object(stats_backup.core, "data_dir", return_value=str(first)):
                 manifest = stats_backup.export_stats_backup(backup)
-            self.assertEqual(len(manifest["files"]), 5)
+            self.assertEqual(len(manifest["files"]), 7)
             with zipfile.ZipFile(backup) as archive:
                 self.assertEqual(archive.read("vrcx-source.sqlite3"), database)
 
@@ -53,6 +55,8 @@ class StatsBackupTests(unittest.TestCase):
                 self.assertEqual(result["settings_added"], 1)
                 self.assertTrue(result["stats_updated"])
                 self.assertFalse(result["source_imported"])
+                self.assertTrue(result["profile_imported"])
+                self.assertEqual((second / "profile-avatar.png").read_bytes(), b"avatar")
                 self.assertEqual(json.loads((second / "vrcx-settings.json").read_text())["self_name"], "Keep")
                 self.assertEqual(json.loads((second / "vrcx-settings.json").read_text())["path"], "incoming.sqlite3")
                 self.assertEqual(json.loads((second / "vrcx-stats.json").read_text())["synced_at"], 30)

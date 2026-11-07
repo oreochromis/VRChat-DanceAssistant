@@ -246,6 +246,22 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(startup_controller._demo_running)
         self.assertEqual(startup_window.stack.currentWidget(), startup_window.minimal_page)
 
+    def test_profile_name_and_avatar_render_in_header_and_hide_in_minimal_mode(self):
+        window, _, _ = self.make_window()
+        self.assertEqual(window.profile_name.text(), "演示账号")
+        self.assertFalse(hasattr(window.play_stats_page, "self_name_input"))
+        path = self.root / "avatar.png"
+        image = QImage(32, 32, QImage.Format.Format_RGB32)
+        image.fill(Qt.GlobalColor.red)
+        self.assertTrue(image.save(str(path)))
+        window.update_profile({"id": "usr_test", "name": "测试昵称", "avatar": str(path)})
+        self.assertEqual(window.profile_name.text(), "测试昵称")
+        self.assertEqual(window.profile_avatar.pixmap().width(), 64)
+        window.set_ui_mode("minimal")
+        self.assertTrue(window.profile_widget.isHidden())
+        window.return_full_mode()
+        self.assertFalse(window.profile_widget.isHidden())
+
     def test_error_notice_has_friendly_summary_and_expandable_raw_details(self):
         window, _, _ = self.make_window()
         raw = "无法访问 SteamVR 启动设置：InitError_Init_HmdNotFound"

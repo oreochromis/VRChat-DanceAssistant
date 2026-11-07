@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal, Slot, QUrl
-from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase
+from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QHeaderView,
     QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea,
@@ -162,6 +162,7 @@ class MainWindow(QMainWindow, Pages):
         self._download_timer.setInterval(125)
         self._download_timer.timeout.connect(self.render_downloads)
         self.load_fields()
+        self.update_profile()
         self.apply_appearance()
         self.render_queue()
         self.render_downloads()
@@ -198,6 +199,21 @@ class MainWindow(QMainWindow, Pages):
         box = QHBoxLayout(header)
         box.setContentsMargins(16, 0, 22, 0)
         box.setSpacing(5)
+        self.profile_widget = QWidget()
+        profile_box = QHBoxLayout(self.profile_widget)
+        profile_box.setContentsMargins(0, 0, 0, 0)
+        profile_box.setSpacing(8)
+        self.profile_avatar = label()
+        self.profile_avatar.setFixedSize(32, 32)
+        self.profile_avatar.setScaledContents(True)
+        self.profile_avatar.setAccessibleName("当前账号头像")
+        profile_box.addWidget(self.profile_avatar)
+        self.profile_name = label("VRCX 账号")
+        self.profile_name.setAccessibleName("当前账号昵称")
+        profile_box.addWidget(self.profile_name)
+        self.profile_widget.setToolTip("从 VRCX 同步后显示当前账号昵称和头像")
+        box.addWidget(self.profile_widget)
+        box.addSpacing(8)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
         for index, title in enumerate(("运行", "存储", "统计", "设置", "外观")):
@@ -222,7 +238,36 @@ class MainWindow(QMainWindow, Pages):
         box.addWidget(self.service_button)
         outer.addWidget(header)
 
+    def update_profile(self, profile=None):
+        if self.controller.demo and profile is None:
+            profile = {"id": "demo", "name": "演示账号", "avatar": ""}
+        elif profile is None:
+            from .vrcx_profile import load_vrcx_profile
+            profile = load_vrcx_profile()
+        name = str((profile or {}).get("name") or "VRCX 账号")
+        self.profile_name.setText(self.profile_name.fontMetrics().elidedText(
+            name, Qt.TextElideMode.ElideRight, 150))
+        self.profile_widget.setToolTip(name if not profile else f"{name}\n{profile.get('id', '')}")
+        source = QPixmap(str((profile or {}).get("avatar") or ""))
+        if source.isNull():
+            self.profile_avatar.setPixmap(app_icon().pixmap(32, 32))
+            return
+        source = source.scaled(64, 64, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+        rounded = QPixmap(64, 64)
+        rounded.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(rounded)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        path = QPainterPath()
+        path.addEllipse(0, 0, 64, 64)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, source)
+        painter.end()
+        self.profile_avatar.setPixmap(rounded)
+
     def resizeEvent(self, event):
+        if hasattr(self, "profile_name"):
+            self.profile_name.setVisible(event.size().width() >= 1000)
         if hasattr(self, "nav_buttons"):
             compact = event.size().width() < 1000
             for nav in self.nav_buttons:
@@ -318,6 +363,7 @@ class MainWindow(QMainWindow, Pages):
             self.play_stats_page.apply_ui_mode()
         for nav in self.nav_buttons:
             nav.setVisible(not minimal)
+        self.profile_widget.setVisible(not minimal)
         self.service_status.setVisible(not minimal)
         self.service_button.setVisible(not minimal)
         if hasattr(self, "footer"):

@@ -8,7 +8,7 @@ from datetime import datetime
 
 from PySide6.QtCore import QDate, Qt, QSignalBlocker
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QLineEdit, QMessageBox,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QMessageBox,
     QProgressBar, QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
@@ -16,8 +16,7 @@ import dance_cache as core
 from . import stats_backup
 from .pages import button, field
 from .vrcx_stats import (
-    format_duration, load_vrcx_stats, resolve_vrcx_path, save_self_name,
-    save_vrcx_stats, saved_self_name,
+    format_duration, load_vrcx_stats, resolve_vrcx_path, save_self_name, saved_self_name,
 )
 from .widgets import Card, label, page, section_title, table
 
@@ -47,6 +46,7 @@ class PlayStatsPage(QWidget):
         self._report_data = None
         self._report = None
         self._vrcx_data = None
+        self._self_name_value = "小林" if self.controller.demo else saved_self_name()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -166,15 +166,9 @@ class PlayStatsPage(QWidget):
         heading.addWidget(self.vrcx_read_button)
         vrcx_card.box.addLayout(heading)
         vrcx_card.box.addWidget(label(
-            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的共同游玩时间。只读本地数据，不读取账号凭据。",
+            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的共同游玩时间。房间记录只读本地；头像同步使用当前登录会话，不保存凭据。",
             muted=True, wrap=True))
-        self_row = QHBoxLayout()
-        self_row.addWidget(label("本人显示名称", muted=True))
-        self.self_name_input = QLineEdit("小林" if self.controller.demo else saved_self_name())
-        self.self_name_input.setPlaceholderText("用于“我的点歌”筛选，需与游戏内名称一致")
-        self.self_name_input.editingFinished.connect(self._save_self_name)
-        self_row.addWidget(self.self_name_input, 1)
-        vrcx_card.box.addLayout(self_row)
+        vrcx_card.box.addWidget(label("“我的点歌”自动使用 VRCX 当前账号昵称，昵称和头像会在同步时更新。", muted=True, wrap=True))
         self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)
         self.vrcx_path.setToolTip(self.vrcx_path.text())
         vrcx_card.box.addWidget(self.vrcx_path)
@@ -237,15 +231,6 @@ class PlayStatsPage(QWidget):
         self.start.setDate(QDate(2000, 1, 1))
         self.end.setDate(QDate.currentDate())
 
-    def _save_self_name(self):
-        name = self.self_name_input.text().strip()
-        if not self.controller.demo:
-            save_self_name(name)
-        if self._vrcx_data and not self._vrcx_data.get("self_names") and name and not self.controller.demo:
-            self._vrcx_data["self_names"] = [name]
-            save_vrcx_stats(self._vrcx_data)
-        self.refresh()
-
     def read_vrcx_stats(self, path=None):
         start_date, end_date = self.start.date(), self.end.date()
         if start_date > end_date:
@@ -270,9 +255,14 @@ class PlayStatsPage(QWidget):
         self.vrcx_choose_button.setEnabled(True)
         self._vrcx_data = result
         self_names = [str(name).strip() for name in (result.get("self_names") or []) if str(name).strip()]
-        if self_names and not self.self_name_input.text().strip():
-            self.self_name_input.setText(self_names[0])
-            self._save_self_name()
+        if self_names:
+            self._self_name_value = self_names[0]
+            if not self.controller.demo:
+                save_self_name(self._self_name_value)
+        if result.get("profile"):
+            self._main.update_profile(result["profile"])
+        elif self_names:
+            self._main.update_profile({"id": "", "name": self_names[0], "avatar": ""})
         self.vrcx_path.setText("数据库：" + str(result.get("path") or "未知"))
         self.vrcx_path.setToolTip(str(result.get("path") or ""))
         friends = list(result.get("friends") or [])
@@ -283,6 +273,9 @@ class PlayStatsPage(QWidget):
                 f"；共统计到 {len(friends)} 位好友。")
         else:
             self.vrcx_summary.setText("该日期范围没有可统计的好友共同游玩记录；VRCX 未运行的时段无法补齐。")
+        if result.get("profile_error"):
+            self.vrcx_summary.setText(self.vrcx_summary.text() + "；账号头像未更新，请在 VRCX 重新登录后同步。")
+            self.vrcx_summary.setToolTip(str(result["profile_error"]))
         self.vrcx_export_button.setEnabled(bool(friends))
         self.vrcx_table.setSortingEnabled(False)
         self.vrcx_table.setRowCount(0)
@@ -327,13 +320,13 @@ class PlayStatsPage(QWidget):
             self.loading.hide()
             self.summary.setText("开始日期晚于结束日期，请调整日期范围。")
             return
-        player = self.self_name_input.text().strip() if self.player_filter.currentData() == "__self__" else self.player_filter.currentData()
+        player = self._self_name_value if self.player_filter.currentData() == "__self__" else self.player_filter.currentData()
         if self.player_filter.currentData() == "__self__" and not player:
             self.loading.hide()
             self._report_data = None
             self._songs = []
             self._render()
-            self.summary.setText("请先在下方填写本人显示名称，再查看“我的点歌”。")
+            self.summary.setText("请先从 VRCX 同步当前账号，再查看“我的点歌”。")
             return
         self.summary.setText("正在读取点歌历史…")
         self.loading.show()

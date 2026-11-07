@@ -442,6 +442,12 @@ class CoreController(QObject):
             result = vrcx.read_co_room_stats(source, start_ts, end_ts)
             if not result.get("self_names") and vrcx.saved_self_name():
                 result["self_names"] = [vrcx.saved_self_name()]
+            try:
+                from .vrcx_profile import sync_vrcx_profile
+                result["profile"] = sync_vrcx_profile(source)
+                vrcx.save_self_name(result["profile"]["name"])
+            except Exception as exc:
+                result["profile_error"] = str(exc)
             if not vrcx.is_vrcx_archive(source):
                 vrcx.save_vrcx_path(source)
             vrcx.save_vrcx_stats(result)
