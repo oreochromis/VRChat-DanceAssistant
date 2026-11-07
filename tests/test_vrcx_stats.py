@@ -100,13 +100,22 @@ class VRCXStatsTests(unittest.TestCase):
         self.assertEqual(first["user_id"], "friend-1")
         self.assertEqual(first["name"], "当前昵称一")
         self.assertEqual(first["seconds"], 4500)
-        self.assertEqual(first["sessions"], 2)
+        self.assertEqual(first["days"], 1)
         self.assertEqual(first["last_ts"], ts(11, 30))
         self.assertEqual(second["seconds"], 300)
-        self.assertEqual(second["sessions"], 1)
+        self.assertEqual(second["days"], 1)
         self.assertEqual(result["matched_friends"], 2)
         self.assertNotIn("not-friend", {item["user_id"] for item in result["friends"]})
         self.assertEqual(vrcx_stats.format_duration(first["seconds"]), "1 小时 15 分钟")
+
+    def test_play_days_use_distinct_calendar_dates(self):
+        overnight = [(datetime(2026, 1, 1, 23, 50).timestamp(), datetime(2026, 1, 2, 0, 10).timestamp())]
+        self.assertEqual(vrcx_stats._play_days(overnight), 2)
+        same_day = [
+            (datetime(2026, 1, 1, 10).timestamp(), datetime(2026, 1, 1, 11).timestamp()),
+            (datetime(2026, 1, 1, 12).timestamp(), datetime(2026, 1, 1, 13).timestamp()),
+        ]
+        self.assertEqual(vrcx_stats._play_days(same_day), 1)
 
     def test_open_sessions_close_at_last_observed_record(self):
         result = self.read(end=15)

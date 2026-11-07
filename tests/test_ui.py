@@ -739,7 +739,7 @@ class UIIntegrationTests(unittest.TestCase):
               patch("dance_ui.play_stats.QMessageBox.information")):
             stats._export_vrcx_csv()
         lines = csv_path.read_text(encoding="utf-8-sig").splitlines()
-        self.assertEqual(lines[0], "排名,好友,共同游玩时长,共同游玩次数,最近共同游玩")
+        self.assertEqual(lines[0], "排名,好友,共同游玩时长,共同游玩天数,最近共同游玩")
         self.assertEqual(len(lines), 13)
         self.assertIn("Friend 12", lines[-1])
         window.set_ui_mode("simple")

@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import dance_cache as core
@@ -378,6 +378,19 @@ def _merge_intervals(intervals):
     return merged
 
 
+def _play_days(intervals):
+    days = set()
+    for start, end in intervals:
+        if end <= start:
+            continue
+        day = datetime.fromtimestamp(start).date()
+        last_day = datetime.fromtimestamp(end).date()
+        while day <= last_day:
+            days.add(day)
+            day += timedelta(days=1)
+    return len(days)
+
+
 def _load_native_room_events():
     try:
         with open(core.room_events_path(), "r", encoding="utf-8") as handle:
@@ -496,7 +509,7 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
         if seconds > 0:
             friends_stats.append({
                 "user_id": user_id, "name": name, "seconds": seconds,
-                "sessions": len(merged), "last_ts": max(end for _, end in merged),
+                "sessions": len(merged), "days": _play_days(merged), "last_ts": max(end for _, end in merged),
             })
     friends_stats.sort(key=lambda item: (-item["seconds"], item["name"].casefold()))
     daily_play = _daily_play_stats(own, start_ts, end_ts)

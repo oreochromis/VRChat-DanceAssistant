@@ -557,7 +557,7 @@ class ReportCanvas(QWidget):
         stats = QRectF(rect.left() + rect.width() * .45, rect.top() + 44,
                        rect.width() * .55 - 24, 58)
         for index, (value, caption) in enumerate((
-                (f"{friend.get('sessions', 0)} 次", "累计共同游玩"),
+                (f"{friend.get('days', friend.get('sessions', 0))} 天", "累计共同游玩天数"),
                 (format_duration(friend.get("seconds", 0)), "累计共同游玩时长"))):
             row = QRectF(stats.left(), stats.top() + index * 30, stats.width(), 27)
             _text(painter, QRectF(row.left(), row.top(), row.width() * .56, row.height()),

@@ -212,7 +212,7 @@ class PlayStatsPage(QWidget):
         vrcx_card.box.addWidget(self.vrcx_loading)
         self.vrcx_summary = label("尚未读取。VRCX 未运行或没有记录的时段无法统计。", muted=True, wrap=True)
         vrcx_card.box.addWidget(self.vrcx_summary)
-        self.vrcx_table = table(["排名", "好友", "共同游玩时长", "共同游玩次数", "最近共同游玩"], 1)
+        self.vrcx_table = table(["排名", "好友", "共同游玩时长", "共同游玩天数", "最近共同游玩"], 1)
         self.vrcx_table.setAccessibleName("好友共同游玩时长排行")
         self.vrcx_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.vrcx_table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
@@ -385,7 +385,7 @@ class PlayStatsPage(QWidget):
             row_index = self.vrcx_table.rowCount()
             self.vrcx_table.insertRow(row_index)
             values = (row_index + 1, friend.get("name") or "未知",
-                      format_duration(friend.get("seconds", 0)), friend.get("sessions", 0),
+                      format_duration(friend.get("seconds", 0)), friend.get("days", friend.get("sessions", 0)),
                       _fmt_time(friend.get("last_ts")))
             for column, value in enumerate(values):
                 item = QTableWidgetItem()
@@ -589,11 +589,11 @@ class PlayStatsPage(QWidget):
         try:
             with open(path, "w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.writer(handle)
-                writer.writerow(["排名", "好友", "共同游玩时长", "共同游玩次数", "最近共同游玩"])
+                writer.writerow(["排名", "好友", "共同游玩时长", "共同游玩天数", "最近共同游玩"])
                 for rank, friend in enumerate(friends, 1):
                     writer.writerow([
                         rank, friend.get("name") or "未知", format_duration(friend.get("seconds", 0)),
-                        friend.get("sessions", 0), _fmt_time(friend.get("last_ts")),
+                        friend.get("days", friend.get("sessions", 0)), _fmt_time(friend.get("last_ts")),
                     ])
         except OSError as exc:
             QMessageBox.warning(self, "导出表格", f"写入失败: {exc}")
