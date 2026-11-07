@@ -440,7 +440,11 @@ class CoreController(QObject):
         def read():
             from . import vrcx_stats as vrcx
             source = vrcx.resolve_vrcx_path(path)
-            result = vrcx.read_co_room_stats(source, start_ts, end_ts)
+            statistics_source = source
+            if path is None:
+                from .stats_records import prepare_statistics_source
+                statistics_source = prepare_statistics_source(source)
+            result = vrcx.read_co_room_stats(statistics_source, start_ts, end_ts)
             if not result.get("self_names") and vrcx.saved_self_name():
                 result["self_names"] = [vrcx.saved_self_name()]
             try:

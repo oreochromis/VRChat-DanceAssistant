@@ -276,12 +276,49 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(window.vrcx_sync_card.isHidden())
         window.set_ui_mode("advanced")
         self.assertFalse(window.vrcx_sync_card.isHidden())
+        self.assertFalse(window.raw_records_button.isHidden())
         QTest.mouseClick(window.vrcx_sync_button, Qt.MouseButton.LeftButton)
         self.assertTrue(window.vrcx_sync_button.isEnabled())
         self.assertIn("已同步", window.vrcx_sync_status.text())
         self.assertEqual(window.play_stats_page.vrcx_table.rowCount(), 2)
         window.set_ui_mode("simple")
         self.assertTrue(window.vrcx_sync_card.isHidden())
+
+    def test_record_editor_supports_real_crud_on_an_isolated_copy(self):
+        import sqlite3
+        from PySide6.QtWidgets import QDialog, QMessageBox
+        import dance_cache as cache_core
+        from dance_ui.record_editor import RecordEditorDialog, RecordFieldsDialog
+        source = self.root / "editor-source.sqlite3"
+        connection = sqlite3.connect(source)
+        connection.execute("CREATE TABLE gamelog_location (id INTEGER PRIMARY KEY, created_at TEXT, location TEXT, world_id TEXT)")
+        connection.execute("INSERT INTO gamelog_location VALUES (1, '2026-01-01T10:00:00Z', 'room-A', 'world-A')")
+        connection.commit()
+        connection.close()
+        changed = Mock()
+        with (patch.object(cache_core, "data_dir", return_value=str(self.root / "record-data")),
+              patch("dance_ui.vrcx_stats.resolve_vrcx_path", return_value=source)):
+            editor = RecordEditorDialog(on_changed=changed)
+            self.assertEqual(editor.table.rowCount(), 1)
+            values = {"created_at": "2026-01-01T12:00:00Z", "location": "manual-room", "world_id": "world-B"}
+            with (patch.object(RecordFieldsDialog, "exec", return_value=QDialog.DialogCode.Accepted),
+                  patch.object(RecordFieldsDialog, "values", return_value=values)):
+                editor.add_record()
+            self.assertEqual(editor.table.rowCount(), 2)
+            self.assertEqual(changed.call_count, 1)
+            editor.search.setText("manual-room")
+            editor.refresh()
+            self.assertEqual(editor.table.rowCount(), 1)
+            editor.table.selectRow(0)
+            updated = dict(values, world_id="world-edited")
+            with (patch.object(RecordFieldsDialog, "exec", return_value=QDialog.DialogCode.Accepted),
+                  patch.object(RecordFieldsDialog, "values", return_value=updated)):
+                editor.edit_selected()
+            self.assertEqual(editor.table.item(0, 2).text(), "world-edited")
+            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                editor.delete_selected()
+            self.assertEqual(editor.table.rowCount(), 0)
+            editor.close()
 
     def test_profile_name_and_avatar_render_in_header_and_hide_in_minimal_mode(self):
         window, _, _ = self.make_window()

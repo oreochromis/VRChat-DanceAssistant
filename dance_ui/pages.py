@@ -256,6 +256,9 @@ class Pages:
         sync_row, sync_box = row(self.vrcx_sync_button, self.vrcx_sync_status)
         sync_box.setStretch(1, 1)
         vrcx_sync.box.addWidget(sync_row)
+        self.raw_records_button = button("查看与编辑原始记录", self.open_record_editor)
+        self.raw_records_button.setToolTip("查询、新增、编辑或删除软件副本中的位置、房间事件、点歌及实际播放记录")
+        vrcx_sync.box.addWidget(self.raw_records_button, 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(vrcx_sync)
         general = Card()
         self.general_card = general

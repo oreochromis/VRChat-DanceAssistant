@@ -8,7 +8,7 @@ import zipfile
 from pathlib import Path
 
 import dance_cache as core
-from . import vrcx_stats
+from . import stats_records, vrcx_stats
 
 FORMAT = "vrchat-dance-stats-backup"
 VERSION = 1
@@ -90,10 +90,12 @@ def export_stats_backup(path):
     target.parent.mkdir(parents=True, exist_ok=True)
     root = Path(core.data_dir())
     files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, "avatar-index.json",
-                                vrcx_stats.SETTINGS_FILENAME, vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME)
+                                vrcx_stats.SETTINGS_FILENAME, vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME,
+                                stats_records.EDITABLE_SOURCE_FILENAME)
              if (root / name).is_file()]
-    if vrcx_stats.SOURCE_FILENAME in files:
-        vrcx_stats.sanitize_vrcx_archive(root / vrcx_stats.SOURCE_FILENAME)
+    for name in (vrcx_stats.SOURCE_FILENAME, stats_records.EDITABLE_SOURCE_FILENAME):
+        if name in files:
+            vrcx_stats.sanitize_vrcx_archive(root / name)
     avatars = sorted((root / "avatars").rglob("*.png")) if (root / "avatars").is_dir() else []
     files.extend(path.relative_to(root).as_posix() for path in avatars)
     manifest = {"format": FORMAT, "version": VERSION, "created_at": time.time(), "files": files}
@@ -153,19 +155,20 @@ def import_stats_backup(path):
             if not current or float(incoming.get("synced_at", 0)) > float(current.get("synced_at", 0)):
                 _write_json(root / vrcx_stats.STATS_FILENAME, incoming)
                 result["stats_updated"] = True
-        try:
-            database_info = archive.getinfo(vrcx_stats.SOURCE_FILENAME)
-        except KeyError:
-            database_info = None
-        if database_info is not None and database_info.file_size > MAX_DATABASE_MEMBER:
-            raise ValueError("备份中的 VRCX 数据库过大，无法导入。")
-        database = archive.read(vrcx_stats.SOURCE_FILENAME) if database_info is not None else None
-        target = root / vrcx_stats.SOURCE_FILENAME
-        if database is not None and not target.exists():
-            temporary = target.with_suffix(".tmp")
-            temporary.write_bytes(database)
-            os.replace(temporary, target)
-            result["source_imported"] = True
+        for name in (vrcx_stats.SOURCE_FILENAME, stats_records.EDITABLE_SOURCE_FILENAME):
+            try:
+                database_info = archive.getinfo(name)
+            except KeyError:
+                continue
+            if database_info.file_size > MAX_DATABASE_MEMBER:
+                raise ValueError("备份中的 VRCX 数据库过大，无法导入。")
+            target = root / name
+            if not target.exists():
+                temporary = target.with_suffix(".tmp")
+                temporary.write_bytes(archive.read(name))
+                os.replace(temporary, target)
+                if name == vrcx_stats.SOURCE_FILENAME:
+                    result["source_imported"] = True
         profile_text = _zip_text(archive, "profile.json")
         if profile_text is not None:
             incoming_profile = json.loads(profile_text)

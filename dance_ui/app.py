@@ -103,6 +103,7 @@ class MainWindow(QMainWindow, Pages):
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
+        self._record_editor = None
         self.setWindowTitle("VRChat 跳舞房助手" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
@@ -655,6 +656,21 @@ class MainWindow(QMainWindow, Pages):
         self.vrcx_sync_button.setEnabled(False)
         self.vrcx_sync_status.setText("正在同步账号资料、共同游玩统计与好友头像…")
         self.play_stats_page.read_vrcx_stats()
+
+    def open_record_editor(self):
+        if self.controller.demo:
+            self.notify("演示模式不提供真实记录编辑。")
+            return
+        if self._record_editor is None:
+            from .record_editor import RecordEditorDialog
+            self._record_editor = RecordEditorDialog(self, on_changed=self._records_changed)
+        self._record_editor.show()
+        self._record_editor.raise_()
+        self._record_editor.activateWindow()
+
+    def _records_changed(self):
+        self.play_stats_page.refresh()
+        self.play_stats_page.read_vrcx_stats(automatic=True)
 
     def apply_storage_mode(self):
         mode = self.storage_mode.currentData()

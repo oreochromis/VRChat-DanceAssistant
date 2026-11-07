@@ -1,5 +1,6 @@
 """Statistics backup export and incremental import tests."""
 import json
+import sqlite3
 import tempfile
 import unittest
 import zipfile
@@ -90,6 +91,42 @@ class StatsBackupTests(unittest.TestCase):
                 again = stats_backup.import_stats_backup(backup)
                 self.assertEqual(again["play_history_added"], 0)
                 self.assertEqual(again["played_history_added"], 0)
+
+    def test_edited_vrcx_copy_is_backed_up_without_overwriting_existing_copy(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            first.mkdir()
+            edited = first / stats_backup.stats_records.EDITABLE_SOURCE_FILENAME
+            connection = sqlite3.connect(edited)
+            connection.execute("CREATE TABLE cookies (key TEXT, value TEXT)")
+            connection.execute("INSERT INTO cookies VALUES ('default', 'sensitive')")
+            connection.execute("CREATE TABLE marker (value TEXT)")
+            connection.execute("INSERT INTO marker VALUES ('edited')")
+            connection.commit()
+            connection.close()
+            backup = root / "edited.zip"
+            with patch.object(stats_backup.core, "data_dir", return_value=str(first)):
+                manifest = stats_backup.export_stats_backup(backup)
+            self.assertIn(stats_backup.stats_records.EDITABLE_SOURCE_FILENAME, manifest["files"])
+            connection = sqlite3.connect(edited)
+            self.assertFalse(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cookies'").fetchone())
+            connection.close()
+            second = root / "second"
+            with patch.object(stats_backup.core, "data_dir", return_value=str(second)):
+                stats_backup.import_stats_backup(backup)
+                imported = second / stats_backup.stats_records.EDITABLE_SOURCE_FILENAME
+                self.assertTrue(imported.is_file())
+                connection = sqlite3.connect(imported)
+                connection.execute("INSERT INTO marker VALUES ('keep')")
+                connection.commit()
+                connection.close()
+                stats_backup.import_stats_backup(backup)
+                connection = sqlite3.connect(imported)
+                values = connection.execute("SELECT value FROM marker ORDER BY rowid").fetchall()
+                connection.close()
+                self.assertCountEqual(values, [("keep",), ("edited",)])
 
 
 if __name__ == "__main__":

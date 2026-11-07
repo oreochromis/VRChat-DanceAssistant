@@ -102,6 +102,9 @@ def resolve_vrcx_path(path=None) -> Path:
     default = default_vrcx_path()
     if default.is_file():
         return default.resolve()
+    edited = Path(core.data_dir()) / "vrcx-edited.sqlite3"
+    if edited.is_file():
+        return edited.resolve()
     archived = archived_vrcx_path()
     if archived.is_file():
         return archived.resolve()

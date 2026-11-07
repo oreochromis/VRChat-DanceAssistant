@@ -144,7 +144,7 @@ def mapping_path():
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
                   "play_history.jsonl", "played_history.jsonl", "vrcx-settings.json", "vrcx-stats.json",
-                  "vrcx-source.sqlite3", "profile.json", "profile-avatar.png", "avatar-index.json")
+                  "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "profile.json", "profile-avatar.png", "avatar-index.json")
 _STORAGE_DIRS = ("avatars",)
 
 
