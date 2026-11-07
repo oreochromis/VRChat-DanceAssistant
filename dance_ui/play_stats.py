@@ -177,12 +177,12 @@ class PlayStatsPage(QWidget):
         self.backup_row = QWidget()
         backup_row = QHBoxLayout(self.backup_row)
         backup_row.setContentsMargins(0, 0, 0, 0)
-        backup_row.addWidget(label("备份点歌历史与 VRCX 原始数据；增量导入不会覆盖现有记录。", muted=True, wrap=True), 1)
+        self.backup_note = label("备份点歌历史与 VRCX 原始数据；增量导入不会覆盖现有记录。", muted=True, wrap=True)
+        backup_row.addWidget(self.backup_note, 1)
         self.backup_export_button = button("导出备份", self._export_backup)
         self.backup_import_button = button("增量导入", self._import_backup)
         backup_row.addWidget(self.backup_export_button)
         backup_row.addWidget(self.backup_import_button)
-        box.addWidget(self.backup_row)
 
         vrcx_card = Card()
         heading = QHBoxLayout()
@@ -217,6 +217,7 @@ class PlayStatsPage(QWidget):
         self.vrcx_table.hide()
         vrcx_card.box.addWidget(self.vrcx_table)
         box.addWidget(vrcx_card)
+        box.addWidget(self.backup_row)
         box.addStretch()
 
         self.controller.result.connect(self._on_result)
@@ -238,12 +239,13 @@ class PlayStatsPage(QWidget):
         advanced = self._main.store.preferences.get("ui_mode", "advanced") == "advanced"
         self.export_button.setVisible(advanced)
         self.vrcx_export_button.setVisible(advanced)
-        self.backup_export_button.setVisible(advanced)
-        self.backup_import_button.setVisible(advanced)
+        self.backup_export_button.setVisible(True)
+        self.backup_import_button.setVisible(True)
         self.vrcx_choose_button.setVisible(advanced)
         self.vrcx_read_button.setVisible(advanced)
         self.history_note.setVisible(advanced)
-        self.backup_row.setVisible(advanced)
+        self.backup_row.setVisible(True)
+        self.backup_note.setVisible(advanced)
         for note in self.vrcx_notes:
             note.setVisible(advanced)
 
