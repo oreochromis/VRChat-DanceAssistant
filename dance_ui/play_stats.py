@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import csv
 import json
+import os
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,27 @@ from .widgets import Card, label, page, section_title, table
 
 _KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
 _KIND_LABELS = {"pypy": "PyPyDance", "wd": "WannaDance"}
+PLAY_STATS_CACHE_FILENAME = "play-stats-cache.json"
+
+
+def _play_cache_path():
+    return Path(core.data_dir()) / PLAY_STATS_CACHE_FILENAME
+
+
+def _load_play_cache():
+    try:
+        value = json.loads(_play_cache_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) and isinstance(value.get("key"), dict) and isinstance(value.get("result"), dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _save_play_cache(key, result):
+    path = _play_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"key": key, "result": result}, ensure_ascii=False) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
 
 
 def _day_start(date: QDate) -> float:
@@ -49,6 +72,7 @@ class PlayStatsPage(QWidget):
         self._report_data = None
         self._report = None
         self._vrcx_data = None
+        self._result_key = None
         self._self_name_value = "小林" if self.controller.demo else saved_self_name()
 
         outer = QVBoxLayout(self)
@@ -201,6 +225,8 @@ class PlayStatsPage(QWidget):
             cached = load_vrcx_stats()
             if cached:
                 self._show_vrcx_stats(cached)
+            self._restore_play_cache()
+            QTimer.singleShot(0, self.refresh)
             self._vrcx_signature = None
             self._vrcx_timer = QTimer(self)
             self._vrcx_timer.setInterval(30000)
@@ -389,6 +415,23 @@ class PlayStatsPage(QWidget):
             index = self.player_filter.findData(selected)
             self.player_filter.setCurrentIndex(max(0, index))
 
+    def _cache_key(self):
+        player = self._self_name_value if self.player_filter.currentData() == "__self__" else self.player_filter.currentData()
+        return {"start_ts": _day_start(self.start.date()), "end_ts": _day_start(self.end.date()) + 86400,
+                "kind": self.source.currentData() or "", "player": player or ""}
+
+    def _restore_play_cache(self):
+        cached = _load_play_cache()
+        if not cached or cached["key"] != self._cache_key():
+            return
+        result = cached["result"]
+        if not result.get("updated_at"):
+            try:
+                result["updated_at"] = _play_cache_path().stat().st_mtime
+            except OSError:
+                pass
+        self._apply_play_stats(result, persist=False)
+
     def refresh(self):
         start_date, end_date = self.start.date(), self.end.date()
         if start_date > end_date:
@@ -403,23 +446,19 @@ class PlayStatsPage(QWidget):
             self._render()
             self.summary.setText("请先从 VRCX 同步当前账号，再查看“我的点歌”。")
             return
-        self.summary.setText("正在读取点歌历史…")
+        key = self._cache_key()
+        if key != self._result_key:
+            self.export_button.setEnabled(False)
+            self.report_button.setEnabled(False)
+        self.summary.setText("正在更新点歌历史；当前显示上次结果…" if self._songs else "正在读取点歌历史…")
         self.loading.show()
-        self.export_button.setEnabled(False)
-        self.report_button.setEnabled(False)
-        self.controller.play_history_stats(
-            _day_start(start_date), _day_start(end_date) + 86400,
-            self.source.currentData(), player or None)
+        self.controller.play_history_stats(key["start_ts"], key["end_ts"], key["kind"], player or None)
 
-    def _on_result(self, operation, result):
-        if operation in ("vrcx_stats", "vrcx_stats_auto") and isinstance(result, dict):
-            self._show_vrcx_stats(result)
-            self._refresh_open_report()
-            return
-        if operation != "play_history_stats" or not isinstance(result, dict):
-            return
+    def _apply_play_stats(self, result, persist=True):
         self.loading.hide()
         self._update_player_options(result.get("available_players"))
+        self._result_key = self._cache_key()
+        result["updated_at"] = float(result.get("updated_at") or time.time())
         self._report_data = result
         self._songs = list(result.get("songs") or [])
         total = result.get("total", 0)
@@ -434,6 +473,17 @@ class PlayStatsPage(QWidget):
             self.summary.setText(text)
         self._render()
         self._refresh_open_report()
+        if persist:
+            _save_play_cache(self._result_key, result)
+
+    def _on_result(self, operation, result):
+        if operation in ("vrcx_stats", "vrcx_stats_auto") and isinstance(result, dict):
+            self._show_vrcx_stats(result)
+            self._refresh_open_report()
+            return
+        if operation != "play_history_stats" or not isinstance(result, dict):
+            return
+        self._apply_play_stats(result)
 
     def _render(self):
         self.table.setSortingEnabled(False)
@@ -468,9 +518,12 @@ class PlayStatsPage(QWidget):
 
     def _report_payload(self):
         report_data = dict(self._report_data)
+        timestamps = [float(self._report_data.get("updated_at") or 0)]
         start_ts, end_ts = _day_start(self.start.date()), _day_start(self.end.date()) + 86400
         if self._vrcx_data and self._vrcx_data.get("start_ts") == start_ts and self._vrcx_data.get("end_ts") == end_ts:
             report_data["vrcx"] = self._vrcx_data
+            timestamps.append(float(self._vrcx_data.get("synced_at") or 0))
+        report_data["updated_at"] = max(timestamps)
         report_data["self_played"] = int(self._report_data.get("total", 0))
         return report_data
 

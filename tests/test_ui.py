@@ -87,6 +87,7 @@ class UIIntegrationTests(unittest.TestCase):
             self.core_mocks[name] = self.patches.enter_context(patch.object(
                 core, name, side_effect=AssertionError("Unexpected real-core operation: " + name),
             ))
+        self.patches.enter_context(patch.object(core, "data_dir", return_value=str(self.root / "data")))
         self.patches.enter_context(patch.object(core, "get_storage_info", return_value={
             "mode": "portable", "portable_dir": str(self.root),
             "roaming_dir": str(self.root / "roaming"), "active_dir": str(self.root),
@@ -446,6 +447,30 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.session_hits.property("metricTone"), "success")
         self.assertEqual(window.session_misses.property("metricTone"), "warning")
         self.assertEqual(window.session_saved.property("metricTone"), "highlight")
+
+    def test_report_cache_restores_before_background_refresh_and_shows_timestamp(self):
+        with patch.object(CoreController, "play_history_stats", Mock()):
+            window, _, _ = self.make_window(demo=False)
+            stats = window.play_stats_page
+            from dance_ui.vrcx_stats import save_self_name
+            stats._self_name_value = "测试人"
+            save_self_name("测试人")
+            stats._apply_play_stats({
+                "total": 1, "songs": [{"rank": 1, "count": 1, "id": 3528, "kind": "pypy", "name": "缓存歌曲"}],
+                "available_players": [], "updated_at": 1000,
+            })
+            from dance_ui.play_stats import _load_play_cache
+            self.assertEqual(_load_play_cache()["key"], stats._cache_key())
+            second, _, _ = self.make_window(demo=False)
+            restored = second.play_stats_page
+            self.assertEqual(_load_play_cache()["key"], restored._cache_key())
+            self.assertEqual(len(restored._songs), 1)
+            self.assertEqual(restored._songs[0]["name"], "缓存歌曲")
+            self.assertTrue(restored.report_button.isEnabled())
+            self.assertIn("上次结果", restored.summary.text())
+            restored.open_report()
+            self.assertIn("1970", restored._report.updated_label.text())
+            restored._report.close()
 
     def test_stats_page_loads_demo_history_only_when_opened(self):
         window, controller, _ = self.make_window()

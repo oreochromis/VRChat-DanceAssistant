@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+from datetime import datetime
 
 from PySide6.QtCore import QDate, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
@@ -609,6 +610,9 @@ class PlayReportDialog(QDialog):
         controls.addWidget(self.summary_combo)
         controls.addStretch()
         box.addLayout(controls)
+        self.updated_label = label("", muted=True)
+        box.addWidget(self.updated_label)
+        self._update_timestamp(data)
         self.scroll = QScrollArea()
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
         self.scroll.setWidgetResizable(True)
@@ -633,6 +637,15 @@ class PlayReportDialog(QDialog):
         self.scroll.setWidget(self.canvas)
         self.scroll.verticalScrollBar().setValue(scroll_value)
         previous.deleteLater()
+        self._update_timestamp(data)
+
+    def _update_timestamp(self, data):
+        try:
+            timestamp = float(data.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            timestamp = 0
+        self.updated_label.setText("数据最后更新于 " + datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M")
+                                   if timestamp > 0 else "数据最后更新时间未知")
 
     def _export_png(self):
         name = f"舞蹈报告_{self.start.toString('yyyyMMdd')}-{self.end.toString('yyyyMMdd')}.png"
