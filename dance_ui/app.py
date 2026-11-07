@@ -100,6 +100,7 @@ class MainWindow(QMainWindow, Pages):
         self._update_manual = False
         self._update_prompted = False
         self._banner_generation = 0
+        self._vrcx_banner_error = ""
         self._row_height = 48
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
@@ -228,7 +229,7 @@ class MainWindow(QMainWindow, Pages):
         self.nav_buttons[0].setChecked(True)
         box.addStretch()
         self.mode_switch = SegmentedSwitch()
-        self.mode_switch.setToolTip("界面模式：极简仅保留缓存服务；简单保留常用功能；高级显示全部选项")
+        self.mode_switch.setToolTip("界面模式：极简仅保留缓存服务；标准保留常用功能；高级显示全部选项")
         self.mode_switch.modeChanged.connect(self.set_ui_mode)
         box.addWidget(self.mode_switch)
         box.addSpacing(12)
@@ -341,7 +342,7 @@ class MainWindow(QMainWindow, Pages):
             QTimer.singleShot(0, self.controller.start)
         message = {
             "minimal": "已切换到极简模式：缓存服务将自动启动。",
-            "simple": "已切换到简单模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。",
+            "simple": "已切换到标准模式：曲库维护、CDN 网络等高级选项已隐藏，随时可在这里切回。",
             "advanced": "已切换到高级模式：全部功能已显示。",
         }[mode]
         self.notify(message)
@@ -1033,11 +1034,11 @@ class MainWindow(QMainWindow, Pages):
     def append_log(self, message):
         self.logs.appendPlainText(str(message))
 
-    def notify(self, message, *, error=False, persistent=False):
+    def notify(self, message, *, error=False, persistent=False, raw=None):
         self._banner_generation += 1
         generation = self._banner_generation
-        raw = str(message)
-        friendly = friendly_message(raw) if error else raw
+        raw = str(message if raw is None else raw)
+        friendly = friendly_message(str(message)) if error else str(message)
         self.banner.set_notice(friendly, raw, error=error, busy=raw.startswith("正在"))
         self.banner.setVisible(bool(raw))
         if error:
@@ -1049,6 +1050,22 @@ class MainWindow(QMainWindow, Pages):
         if generation == self._banner_generation:
             self.banner.clear()
             self.banner.hide()
+
+    def vrcx_auto_error(self, message):
+        message = str(message)
+        if message == self._vrcx_banner_error:
+            return
+        self._vrcx_banner_error = message
+        summary = ("VRCX 自动同步或数据库查找失败：" + friendly_message(message)
+                   + "；现有统计会继续保留，检测到新记录后重试。")
+        self.notify(summary, error=True, persistent=True, raw=message)
+
+    def clear_vrcx_auto_error(self):
+        if not self._vrcx_banner_error:
+            return
+        if self.banner.rawText() == self._vrcx_banner_error:
+            self.clear_notice(self._banner_generation)
+        self._vrcx_banner_error = ""
 
     @staticmethod
     def cell(value, tooltip=""):
@@ -1175,6 +1192,7 @@ class MainWindow(QMainWindow, Pages):
     @Slot(str, object)
     def on_result(self, operation, result):
         if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self.clear_vrcx_auto_error()
             self.vrcx_sync_button.setEnabled(True)
             data = result or {}
             if data.get("profile_error") or data.get("avatar_error"):
@@ -1252,6 +1270,7 @@ class MainWindow(QMainWindow, Pages):
             self.vrcx_sync_button.setEnabled(True)
             self.vrcx_sync_status.setText("同步失败：" + friendly_message(message))
             if operation == "vrcx_stats_auto":
+                self.vrcx_auto_error(message)
                 return
         if operation == "update_check":
             if self._update_manual:

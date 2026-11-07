@@ -172,9 +172,7 @@ class PlayStatsPage(QWidget):
             "按当前日期范围统计 PyPyDance / WannaDance 共同游玩时间。位置与本人离开记录确定正常区间；异常长记录中，连续 14 分钟没有点歌、播放或房间事件会剔除离线间隙，不额外补时。",
             muted=True, wrap=True))
         vrcx_card.box.addWidget(label("“我的点歌”自动使用 VRCX 当前账号昵称，昵称和头像会在同步时更新。", muted=True, wrap=True))
-        self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)
-        self.vrcx_path.setToolTip(self.vrcx_path.text())
-        vrcx_card.box.addWidget(self.vrcx_path)
+        self._update_vrcx_path_tooltip()
         self.vrcx_loading = QProgressBar()
         self.vrcx_loading.setRange(0, 0)
         self.vrcx_loading.setTextVisible(False)
@@ -211,6 +209,8 @@ class PlayStatsPage(QWidget):
         self.vrcx_export_button.setVisible(advanced)
         self.backup_export_button.setVisible(advanced)
         self.backup_import_button.setVisible(advanced)
+        self.vrcx_choose_button.setVisible(advanced)
+        self.vrcx_read_button.setVisible(advanced)
 
     def resizeEvent(self, event):
         self._layout_filters()
@@ -259,7 +259,14 @@ class PlayStatsPage(QWidget):
         if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
             return
         signature = self._vrcx_source_signature()
-        if signature is None or signature == self._vrcx_signature:
+        if signature is None:
+            source = resolve_vrcx_path()
+            if not is_vrcx_archive(source) and not source.is_file():
+                self._main.vrcx_auto_error(
+                    "未找到 VRCX 数据库。请先启动并登录 VRCX，检查 %APPDATA%\\VRCX\\VRCX.sqlite3；"
+                    "也可切换高级模式，在统计页手动选择数据库。")
+            return
+        if signature == self._vrcx_signature:
             return
         self._vrcx_signature = signature
         self.read_vrcx_stats(automatic=True)
@@ -285,6 +292,20 @@ class PlayStatsPage(QWidget):
         if path:
             self.read_vrcx_stats(path)
 
+    def _update_vrcx_path_tooltip(self, current=None):
+        source = resolve_vrcx_path()
+        if source.is_file():
+            lines = ["自动查找到的 VRCX 数据库：\n" + str(source)]
+            if current:
+                current = Path(str(current))
+                if current != source and current.is_file():
+                    lines.append("当前统计使用的软件编辑副本：\n" + str(current))
+            self.vrcx_choose_button.setToolTip("\n\n".join(lines))
+        else:
+            self.vrcx_choose_button.setToolTip(
+                "未自动找到 VRCX 数据库。请先启动并登录 VRCX，再检查 %APPDATA%\\VRCX\\VRCX.sqlite3；"
+                "如果数据库位于其他位置，请点击此按钮手动选择。")
+
     def _show_vrcx_stats(self, result):
         self.vrcx_loading.hide()
         self.vrcx_read_button.setEnabled(True)
@@ -299,8 +320,7 @@ class PlayStatsPage(QWidget):
             self._main.update_profile(result["profile"])
         elif self_names:
             self._main.update_profile({"id": "", "name": self_names[0], "avatar": ""})
-        self.vrcx_path.setText("数据库：" + str(result.get("path") or "未知"))
-        self.vrcx_path.setToolTip(str(result.get("path") or ""))
+        self._update_vrcx_path_tooltip(result.get("path"))
         friends = list(result.get("friends") or [])
         if friends:
             top = friends[0]

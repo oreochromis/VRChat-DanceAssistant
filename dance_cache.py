@@ -3131,6 +3131,8 @@ def describe_queue(items):
             # 不回落 yt_local_path：CDN 源歌曲按 CDN 文件名查找，历史 yt_{id}.mp4
             # 残留不能显示为已缓存（实际播放走 CDN 文件名，会未命中回源）
             local = local_path_for(filename) if filename else None
+            if local is None and valid_id and in_library(sn):
+                local = library_path(sn)
         expect_wd = bool(it.get("wd"))
 
         def matches(task, expect_wd=expect_wd, sn=sn, filename=filename, valid_id=valid_id):

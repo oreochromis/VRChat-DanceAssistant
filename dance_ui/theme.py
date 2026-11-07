@@ -564,7 +564,7 @@ def _preference_value(key: str, value: Any) -> Any:
         return value.strip()
     if key == "ui_mode":
         if value not in ("minimal", "simple", "advanced"):
-            raise ThemeError("界面模式请选择极简、简单或高级。")
+            raise ThemeError("界面模式请选择极简、标准或高级。")
         return value
     if key == "home_style":
         if value not in ("simple", "vivid"):
@@ -844,6 +844,15 @@ class ThemeStore:
         self.end_edit()
         candidate = copy.deepcopy(self._state)
         candidate["active_theme"] = theme_id
+        return self._commit(candidate)
+
+    def reorder(self, theme_ids: list[str]) -> bool:
+        if len(theme_ids) != len(self._state["themes"]) or set(theme_ids) != {
+                theme["id"] for theme in self._state["themes"]}:
+            raise ThemeError("主题顺序包含缺失或重复项目。")
+        candidate = copy.deepcopy(self._state)
+        by_id = {theme["id"]: theme for theme in candidate["themes"]}
+        candidate["themes"] = [by_id[theme_id] for theme_id in theme_ids]
         return self._commit(candidate)
 
     @staticmethod

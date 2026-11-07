@@ -362,6 +362,32 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.banner.close_button, Qt.MouseButton.LeftButton)
         self.assertFalse(window.banner.isVisible())
 
+    def test_vrcx_failure_banner_deduplicates_and_clears_after_success(self):
+        window, _, _ = self.make_window()
+        window.vrcx_auto_error("VRCX 读取失败")
+        self.assertTrue(window.banner.isVisible())
+        self.assertEqual(window.banner.rawText(), "VRCX 读取失败")
+        generation = window._banner_generation
+        window.vrcx_auto_error("VRCX 读取失败")
+        self.assertEqual(window._banner_generation, generation)
+        window.clear_vrcx_auto_error()
+        self.assertFalse(window.banner.isVisible())
+        missing = self.root / "missing.sqlite3"
+        with patch("dance_ui.play_stats.resolve_vrcx_path", return_value=missing):
+            window.play_stats_page._update_vrcx_path_tooltip()
+        tooltip = window.play_stats_page.vrcx_choose_button.toolTip()
+        self.assertIn("未自动找到", tooltip)
+        self.assertIn("VRCX.sqlite3", tooltip)
+        source = self.root / "VRCX.sqlite3"
+        source.write_bytes(b"database")
+        edited = self.root / "edited.sqlite3"
+        edited.write_bytes(b"edited")
+        with patch("dance_ui.play_stats.resolve_vrcx_path", return_value=source):
+            window.play_stats_page._update_vrcx_path_tooltip(edited)
+        tooltip = window.play_stats_page.vrcx_choose_button.toolTip()
+        self.assertIn(str(source), tooltip)
+        self.assertIn(str(edited), tooltip)
+
     def test_utility_buttons_use_muted_text_instead_of_accent(self):
         window, _, store = self.make_window()
         from dance_ui.widgets import stylesheet
@@ -590,7 +616,11 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(stats.export_button.isHidden())
         self.assertTrue(stats.backup_export_button.isHidden())
         self.assertTrue(stats.backup_import_button.isHidden())
+        self.assertTrue(stats.vrcx_choose_button.isHidden())
+        self.assertTrue(stats.vrcx_read_button.isHidden())
         window.set_ui_mode("advanced")
+        self.assertFalse(stats.vrcx_choose_button.isHidden())
+        self.assertFalse(stats.vrcx_read_button.isHidden())
         self.assertFalse(stats.vrcx_export_button.isHidden())
         self.assertFalse(stats.export_button.isHidden())
         self.assertFalse(stats.backup_export_button.isHidden())
@@ -1351,6 +1381,22 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(store.active["name"], "测试主题")
         self.assertEqual(editor.theme_combo.currentText(), "测试主题")
         self.assertFalse(editor.theme_combo.isEditable())
+
+    def test_theme_drag_order_updates_combo_and_persists(self):
+        from PySide6.QtCore import QModelIndex
+        window, _, store = self.make_window()
+        editor = window.appearance_page
+        self.assertTrue(editor.order_list.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(editor.order_list.isHidden())
+        original = [theme["id"] for theme in store.themes]
+        self.assertTrue(editor.order_list.model().moveRow(QModelIndex(), 0, QModelIndex(), 2))
+        expected = [original[1], original[0], *original[2:]]
+        self.assertEqual([theme["id"] for theme in store.themes], expected)
+        self.assertEqual([editor.theme_combo.itemData(index) for index in range(editor.theme_combo.count())], expected)
+        self.assertEqual([theme["id"] for theme in ThemeStore(store.root_dir).themes], expected)
+        with self.assertRaises(ValueError):
+            store.reorder(expected[:-1])
 
     def test_theme_scaling_and_log_preferences_reach_the_whole_window(self):
         window, controller, store = self.make_window()

@@ -579,7 +579,7 @@ class SegmentedSwitch(QWidget):
     modeChanged = Signal(str)
     _PAD = 3
 
-    def __init__(self, modes=(("minimal", "极简"), ("simple", "简单"), ("advanced", "高级")), parent=None):
+    def __init__(self, modes=(("minimal", "极简"), ("simple", "标准"), ("advanced", "高级")), parent=None):
         super().__init__(parent)
         self._modes = list(modes)
         self._index = 0

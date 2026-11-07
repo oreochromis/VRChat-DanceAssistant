@@ -1281,6 +1281,24 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["dead"], [])
         self.assertEqual(result["names"], {9: "Solo - Hide"})
 
+    def test_restart_keeps_known_local_song_cached(self):
+        with self.service_environment():
+            self.queue_song(route="video.mp4")
+            (self.library / "1.mp4").write_bytes(b"video")
+            self.assertEqual(self.dc.get_queue_snapshot()[0]["state_code"], "cached")
+            self.assertIsNone(self.dc.stop_services())
+            self.assertIsNone(self.dc.start_services())
+            self.queue_song(route="video.mp4")
+            self.assertEqual(self.dc.get_queue_snapshot()[0]["state_code"], "cached")
+            self.assertIsNone(self.dc.stop_services())
+
+    def test_local_numbered_song_is_cached_even_when_mapping_is_missing(self):
+        self.queue_song(route=None)
+        (self.library / "1.mp4").write_bytes(b"video")
+        row = self.dc.get_queue_snapshot()[0]
+        self.assertEqual(row["state_code"], "cached")
+        self.assertEqual(row["storage"], "library")
+
     def test_stop_clears_queue_and_preload_state(self):
         # 停止服务必须清空跨会话状态：残留的预载列表会在下次启动时立刻下载
         # 上一个房间的歌，残留队列会被误显示、学到新映射时还会误触发预载
