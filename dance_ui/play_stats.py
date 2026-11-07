@@ -169,7 +169,7 @@ class PlayStatsPage(QWidget):
         heading.addWidget(self.vrcx_read_button)
         vrcx_card.box.addLayout(heading)
         vrcx_card.box.addWidget(label(
-            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的共同游玩时间。连续 13 分钟没有点歌或播放活动会中断计时；头像同步使用当前登录会话，不保存凭据。",
+            "按当前日期范围，仅统计你与本机 VRCX 好友在 PyPyDance / WannaDance 主地图的共同游玩时间。连续 14 分钟没有点歌或播放活动会中断计时；头像同步使用当前登录会话，不保存凭据。",
             muted=True, wrap=True))
         vrcx_card.box.addWidget(label("“我的点歌”自动使用 VRCX 当前账号昵称，昵称和头像会在同步时更新。", muted=True, wrap=True))
         self.vrcx_path = label("数据库：" + str(resolve_vrcx_path()), muted=True, wrap=True)

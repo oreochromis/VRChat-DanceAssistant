@@ -210,7 +210,7 @@ def _friends(connection, table):
     return {str(user_id): str(display_name or user_id) for user_id, display_name in rows if user_id}
 
 
-PLAY_INACTIVITY_SECONDS = 13 * 60
+PLAY_INACTIVITY_SECONDS = 14 * 60
 
 
 def _play_activity_timestamps():
