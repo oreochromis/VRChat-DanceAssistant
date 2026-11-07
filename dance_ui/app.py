@@ -141,7 +141,8 @@ class MainWindow(QMainWindow, Pages):
         self.minimal_page = self.build_minimal_page()
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
                                   self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
-                                  self.storage_location_box, self.vrcx_sync_card]
+                                  self.storage_location_box, self.vrcx_sync_card,
+                                  self.steamvr_detail, self.overlay_note]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)

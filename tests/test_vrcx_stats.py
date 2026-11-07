@@ -179,6 +179,23 @@ class VRCXStatsTests(unittest.TestCase):
         self.assertEqual(offline["friends"], original["friends"])
         self.assertEqual(offline["daily_play"], original["daily_play"])
 
+    def test_archive_is_throttled_for_automatic_reads_and_manual_read_forces_copy(self):
+        self.read()
+        connection = sqlite3.connect(self.path)
+        connection.execute("INSERT INTO gamelog_location VALUES (20,?,?,?)",
+                           (iso(20), "room-later", next(iter(vrcx_stats.DANCE_WORLD_IDS))))
+        connection.commit()
+        connection.close()
+        self.read()
+        archive = vrcx_stats.archived_vrcx_path()
+        connection = sqlite3.connect(archive)
+        self.assertIsNone(connection.execute("SELECT 1 FROM gamelog_location WHERE id=20").fetchone())
+        connection.close()
+        vrcx_stats.read_co_room_stats(self.path, ts(10), ts(12), force_archive=True)
+        connection = sqlite3.connect(archive)
+        self.assertTrue(connection.execute("SELECT 1 FROM gamelog_location WHERE id=20").fetchone())
+        connection.close()
+
     def test_new_friends_require_add_event_inside_dance_room(self):
         result = self.read()
         self.assertEqual([item["user_id"] for item in result["new_friends"]], ["new-pypy"])

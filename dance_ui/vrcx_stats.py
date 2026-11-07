@@ -66,11 +66,19 @@ def sanitize_vrcx_archive(path=None):
     return target
 
 
-def archive_vrcx_database(path) -> Path:
+ARCHIVE_INTERVAL_SECONDS = 300
+_archive_last = {}
+
+
+def archive_vrcx_database(path, force=False) -> Path:
     source = Path(path).expanduser().resolve()
     target = archived_vrcx_path()
     if is_vrcx_archive(source):
         return sanitize_vrcx_archive(target)
+    key = (str(source), str(target))
+    if (not force and target.is_file()
+            and time.monotonic() - _archive_last.get(key, 0) < ARCHIVE_INTERVAL_SECONDS):
+        return target
     target.parent.mkdir(parents=True, exist_ok=True)
     temporary = target.with_suffix(".tmp")
     source_connection = sqlite3.connect(source.as_uri() + "?mode=ro", uri=True)
@@ -82,6 +90,7 @@ def archive_vrcx_database(path) -> Path:
         target_connection = None
         sanitize_vrcx_archive(temporary)
         os.replace(temporary, target)
+        _archive_last[key] = time.monotonic()
     finally:
         source_connection.close()
         if target_connection is not None:
@@ -362,7 +371,7 @@ def _merge_intervals(intervals):
     return merged
 
 
-def read_co_room_stats(path, start_ts, end_ts):
+def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
     start_ts, end_ts = float(start_ts), float(end_ts)
     if end_ts <= start_ts:
         raise ValueError("开始日期必须早于结束日期。")
@@ -445,7 +454,7 @@ def read_co_room_stats(path, start_ts, end_ts):
         "world_play": world_play,
         "new_friends": _new_friend_stats(friend_history, own, start_ts, end_ts),
     }
-    archive_vrcx_database(source)
+    archive_vrcx_database(source, force=force_archive)
     return result
 
 

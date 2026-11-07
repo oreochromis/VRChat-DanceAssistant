@@ -197,15 +197,16 @@ class Pages:
         self.steamvr_refresh_button = button("刷新状态", self.refresh_steamvr_startup)
         actions, _ = row(self.steamvr_apply_button, self.steamvr_refresh_button, stretch=True)
         startup.box.addWidget(actions)
-        startup.box.addWidget(label(
+        self.steamvr_detail = label(
             "仅在 Windows 生效。设置时请先启动 SteamVR，再应用启动设置。开启后 SteamVR 启动时通过计划任务静默拉起本程序，不会再弹管理员授权框；移动程序位置后会自动更新启动路径。关闭 SteamVR 不会关闭本程序。",
-            muted=True, wrap=True,
-        ))
+            muted=True, wrap=True)
+        startup.box.addWidget(self.steamvr_detail)
         self.vr_overlay = QCheckBox("SteamVR 面板页")
         self.vr_overlay.setToolTip("开启后在 SteamVR 菜单中显示「VRChat 跳舞房助手」页面：查看当前歌曲、队列与缓存状态，可用激光指针操作。需先启动 SteamVR。")
         self.vr_overlay.toggled.connect(lambda: self.mark_dirty("settings"))
         startup.box.addWidget(self.vr_overlay)
-        startup.box.addWidget(label("开启后应用设置即生效，无需重启服务。", muted=True, wrap=True))
+        self.overlay_note = label("开启后应用设置即生效，无需重启服务。", muted=True, wrap=True)
+        startup.box.addWidget(self.overlay_note)
         self.close_to_tray = QCheckBox("点 X 最小化到托盘，不退出软件")
         self.close_to_tray.setToolTip("开启后点击右上角 X 会把窗口收进系统托盘（屏幕右下角），缓存服务保持运行；双击托盘图标恢复窗口，右键托盘图标可选择退出。")
         self.close_to_tray.toggled.connect(lambda: self.mark_dirty("settings"))

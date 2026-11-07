@@ -139,22 +139,25 @@ class PlayStatsPage(QWidget):
         results.box.addWidget(self.table)
         box.addWidget(results)
 
-        box.addWidget(label(
+        self.history_note = label(
             "仅统计本软件运行期间检测到并已实际开始播放的点歌，从本功能上线起累积；同一首歌再次播放会记为新的一次。",
-            muted=True, wrap=True))
+            muted=True, wrap=True)
+        box.addWidget(self.history_note)
         report_row = QHBoxLayout()
-        report_row.addWidget(label("把当前日期和来源的统计结果变成一份可分享的年度风格报告。", muted=True, wrap=True), 1)
+        report_row.addStretch()
         self.report_button = button("查看报告", self.open_report, primary=True)
         self.report_button.setEnabled(False)
         report_row.addWidget(self.report_button)
         box.addLayout(report_row)
-        backup_row = QHBoxLayout()
+        self.backup_row = QWidget()
+        backup_row = QHBoxLayout(self.backup_row)
+        backup_row.setContentsMargins(0, 0, 0, 0)
         backup_row.addWidget(label("备份点歌历史与 VRCX 原始数据；增量导入不会覆盖现有记录。", muted=True, wrap=True), 1)
         self.backup_export_button = button("导出备份", self._export_backup)
         self.backup_import_button = button("增量导入", self._import_backup)
         backup_row.addWidget(self.backup_export_button)
         backup_row.addWidget(self.backup_import_button)
-        box.addLayout(backup_row)
+        box.addWidget(self.backup_row)
 
         vrcx_card = Card()
         heading = QHBoxLayout()
@@ -168,10 +171,11 @@ class PlayStatsPage(QWidget):
         heading.addWidget(self.vrcx_choose_button)
         heading.addWidget(self.vrcx_read_button)
         vrcx_card.box.addLayout(heading)
-        vrcx_card.box.addWidget(label(
+        self.vrcx_notes = [label(
             "按当前日期范围统计 PyPyDance / WannaDance 共同游玩时间。位置与本人离开记录确定正常区间；异常长记录中，连续 14 分钟没有点歌、播放或房间事件会剔除离线间隙，不额外补时。",
-            muted=True, wrap=True))
-        vrcx_card.box.addWidget(label("“我的点歌”自动使用 VRCX 当前账号昵称，昵称和头像会在同步时更新。", muted=True, wrap=True))
+            muted=True, wrap=True), label("“我的点歌”自动使用 VRCX 当前账号昵称，昵称和头像会在同步时更新。", muted=True, wrap=True)]
+        for note in self.vrcx_notes:
+            vrcx_card.box.addWidget(note)
         self._update_vrcx_path_tooltip()
         self.vrcx_loading = QProgressBar()
         self.vrcx_loading.setRange(0, 0)
@@ -211,6 +215,10 @@ class PlayStatsPage(QWidget):
         self.backup_import_button.setVisible(advanced)
         self.vrcx_choose_button.setVisible(advanced)
         self.vrcx_read_button.setVisible(advanced)
+        self.history_note.setVisible(advanced)
+        self.backup_row.setVisible(advanced)
+        for note in self.vrcx_notes:
+            note.setVisible(advanced)
 
     def resizeEvent(self, event):
         self._layout_filters()

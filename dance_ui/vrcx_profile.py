@@ -80,7 +80,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/3.9.9.47",
+        "User-Agent": "VRChatDanceAssistant/3.9.9.48",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })
@@ -169,19 +169,14 @@ def sync_friend_avatars(path, friends, force=False):
         return index
     cookies = _cookie_header(Path(path).expanduser().resolve())
 
-    def read_profile(item):
+    def sync_avatar(item):
         user_id, entry = item
         try:
             url = "https://api.vrchat.cloud/api/1/users/" + urllib.parse.quote(user_id, safe="")
             payload = json.loads(_download(url, cookies, MAX_PROFILE_BYTES))
-            return user_id, entry, _avatar_url(payload)
+            avatar_url = _avatar_url(payload)
         except Exception:
-            return user_id, entry, None
-
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        results = list(pool.map(read_profile, stale))
-    for user_id, entry, avatar_url in results:
+            avatar_url = ""
         target = friend_avatar_path(user_id)
         if avatar_url and (force or avatar_url != entry.get("url") or not target.is_file()):
             try:
@@ -195,7 +190,11 @@ def sync_friend_avatars(path, friends, force=False):
                 pass
         entry["checked_at"] = now
         entry["version"] = AVATAR_INDEX_VERSION
-        index[user_id] = entry
+        return user_id, entry
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        index.update(pool.map(sync_avatar, stale))
     avatar_index_path().parent.mkdir(parents=True, exist_ok=True)
     temporary = avatar_index_path().with_suffix(".tmp")
     temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

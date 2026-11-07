@@ -120,6 +120,35 @@ class FriendAvatarTests(unittest.TestCase):
                 self.assertEqual(index["friend-1"]["url"], payload["iconUrl"])
                 self.assertEqual(vrcx_profile.friend_avatar_path("friend-1").read_bytes(), b"friend icon")
 
+    def test_friend_profiles_and_images_download_in_parallel(self):
+        import threading
+        import time
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lock = threading.Lock()
+            active = 0
+            maximum = 0
+
+            def download(url, cookies, size):
+                nonlocal active, maximum
+                with lock:
+                    active += 1
+                    maximum = max(maximum, active)
+                time.sleep(0.03)
+                with lock:
+                    active -= 1
+                if "/users/" in url:
+                    user_id = url.rsplit("/", 1)[-1]
+                    return json.dumps({"iconUrl": "https://api.vrchat.cloud/" + user_id + ".png"}).encode()
+                return b"avatar"
+
+            friends = [{"user_id": f"friend-{index}"} for index in range(4)]
+            with (patch.object(vrcx_profile.core, "data_dir", return_value=str(root)),
+                  patch.object(vrcx_profile, "_cookie_header", return_value="session"),
+                  patch.object(vrcx_profile, "_download", side_effect=download)):
+                vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", friends)
+            self.assertGreater(maximum, 1)
+
     def test_failed_friend_avatar_request_waits_before_retrying(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
