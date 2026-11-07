@@ -449,6 +449,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("84 次已播放点歌", stats.summary.text())
         self.assertTrue(stats.export_button.isEnabled())
         self.assertTrue(stats.report_button.isEnabled())
+        self.assertIn(stats.report_button.parentWidget(), stats.filter_widgets)
         self.assertFalse(stats.loading.isVisible())
         self.assertEqual(stats.filter_columns, 3)
         window.resize(850, 720)

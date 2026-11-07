@@ -100,8 +100,15 @@ class PlayStatsPage(QWidget):
         presets.addWidget(button("近 30 天", self._preset_month))
         presets.addWidget(button("全部", self._preset_all))
         preset_box.addLayout(presets)
+        report_group = QWidget()
+        report_box = QVBoxLayout(report_group)
+        report_box.setContentsMargins(0, 0, 0, 0)
+        report_box.addStretch()
+        self.report_button = button("查看报告", self.open_report, primary=True)
+        self.report_button.setEnabled(False)
+        report_box.addWidget(self.report_button, 0, Qt.AlignmentFlag.AlignRight)
         self.filter_widgets = [source_field, player_field, field("开始日期", self.start),
-                               field("结束日期", self.end), preset_group]
+                               field("结束日期", self.end), preset_group, report_group]
         self.filters_panel.box.addLayout(self.filters_grid)
         self._layout_filters()
         box.addWidget(self.filters_panel)
@@ -143,12 +150,6 @@ class PlayStatsPage(QWidget):
             "仅统计本软件运行期间检测到并已实际开始播放的点歌，从本功能上线起累积；同一首歌再次播放会记为新的一次。",
             muted=True, wrap=True)
         box.addWidget(self.history_note)
-        report_row = QHBoxLayout()
-        report_row.addStretch()
-        self.report_button = button("查看报告", self.open_report, primary=True)
-        self.report_button.setEnabled(False)
-        report_row.addWidget(self.report_button)
-        box.addLayout(report_row)
         self.backup_row = QWidget()
         backup_row = QHBoxLayout(self.backup_row)
         backup_row.setContentsMargins(0, 0, 0, 0)
