@@ -117,7 +117,7 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read(end=18)
         self.assertNotIn("friend-4", {item["user_id"] for item in result["friends"]})
 
-    def test_inactivity_ends_play_and_later_activity_starts_a_new_segment(self):
+    def test_inactivity_does_not_fabricate_time_and_activity_can_resume(self):
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
         entered = datetime(2026, 1, 1, 23, 30)
         resumed = datetime(2026, 1, 2, 12)
@@ -127,23 +127,28 @@ class VRCXStatsTests(unittest.TestCase):
             (left.isoformat(), "other", "wrld_other"),
         ]
         intervals = vrcx_stats._own_intervals(rows, left.timestamp())
-        self.assertEqual(intervals["room"], [(
-            entered.timestamp(), entered.timestamp() + vrcx_stats.PLAY_INACTIVITY_SECONDS)])
+        self.assertEqual(intervals.get("room", []), [])
+        intervals = vrcx_stats._own_intervals(rows, left.timestamp(), [
+            resumed.timestamp(), (resumed + timedelta(minutes=5)).timestamp()])
         daily = vrcx_stats._daily_play_stats(intervals, entered.timestamp(), left.timestamp())
-        self.assertEqual(daily, [{
-            "day": "2026-01-01", "seconds": vrcx_stats.PLAY_INACTIVITY_SECONDS}])
-        intervals = vrcx_stats._own_intervals(rows, left.timestamp(), [resumed.timestamp()])
-        daily = vrcx_stats._daily_play_stats(intervals, entered.timestamp(), left.timestamp())
-        self.assertEqual(daily, [
-            {"day": "2026-01-01", "seconds": vrcx_stats.PLAY_INACTIVITY_SECONDS},
-            {"day": "2026-01-02", "seconds": vrcx_stats.PLAY_INACTIVITY_SECONDS},
-        ])
+        self.assertEqual(daily, [{"day": "2026-01-02", "seconds": 300}])
+
+    def test_room_activity_preserves_the_complete_location_interval(self):
+        pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
+        entered = datetime(2026, 8, 31, 23, 33, 1)
+        left = datetime(2026, 8, 31, 23, 51, 44)
+        rows = [(entered.isoformat(), "room", pypy), (left.isoformat(), "other", "wrld_other")]
+        activity = [datetime(2026, 8, 31, 23, minute).timestamp() for minute in (42, 49)]
+        intervals = vrcx_stats._own_intervals(rows, left.timestamp(), activity)
+        self.assertEqual(intervals["room"], [(entered.timestamp(), left.timestamp())])
+        daily = vrcx_stats._daily_play_stats(intervals, entered.timestamp(), left.timestamp() + 1)
+        self.assertEqual(daily, [{"day": "2026-08-31", "seconds": 1123}])
 
     def test_daily_play_self_names_and_sync_result_persistence(self):
         result = self.read()
-        self.assertEqual(result["total_play_seconds"], 7200)
-        self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 7200}])
-        self.assertEqual(result["world_play"], {"pypy": 7200, "wd": 0})
+        self.assertEqual(result["total_play_seconds"], 6600)
+        self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 6600}])
+        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0})
         self.assertEqual(result["self_names"], ["本人旧昵称"])
         with patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "cached")):
             vrcx_stats.save_vrcx_stats(result)

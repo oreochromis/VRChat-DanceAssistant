@@ -213,8 +213,8 @@ def _friends(connection, table):
 PLAY_INACTIVITY_SECONDS = 14 * 60
 
 
-def _play_activity_timestamps():
-    timestamps = set()
+def _activity_timestamps(vrcx_timestamps=()):
+    timestamps = {float(timestamp) for timestamp in vrcx_timestamps}
     for path in (core.history_path(), core.played_history_path()):
         try:
             with open(path, "r", encoding="utf-8") as handle:
@@ -231,7 +231,7 @@ def _play_activity_timestamps():
     return sorted(timestamps)
 
 
-def _own_intervals(rows, observed_end, activity_timestamps=()):
+def _own_intervals(rows, observed_end, activity_timestamps=(), own_leaves=()):
     intervals = {}
     events = []
     for created_at, location, world_id in rows:
@@ -242,6 +242,12 @@ def _own_intervals(rows, observed_end, activity_timestamps=()):
     events.sort(key=lambda item: item[0])
     for index, (start, location, world_id) in enumerate(events):
         end = events[index + 1][0] if index + 1 < len(events) else observed_end
+        for leave, leave_location in own_leaves:
+            if leave <= start:
+                continue
+            if not leave_location or leave_location == location:
+                end = min(end, leave)
+                break
         if not location or world_id not in DANCE_WORLD_IDS or end <= start:
             continue
         segment_start = start
@@ -252,11 +258,11 @@ def _own_intervals(rows, observed_end, activity_timestamps=()):
             if timestamp >= end:
                 break
             if timestamp - last_activity > PLAY_INACTIVITY_SECONDS:
-                intervals.setdefault(location, []).append(
-                    (segment_start, last_activity + PLAY_INACTIVITY_SECONDS))
+                if last_activity > segment_start:
+                    intervals.setdefault(location, []).append((segment_start, last_activity))
                 segment_start = timestamp
             last_activity = timestamp
-        segment_end = min(end, last_activity + PLAY_INACTIVITY_SECONDS)
+        segment_end = end if end - last_activity <= PLAY_INACTIVITY_SECONDS else last_activity
         if segment_end > segment_start:
             intervals.setdefault(location, []).append((segment_start, segment_end))
     return intervals
@@ -384,8 +390,18 @@ def read_co_room_stats(path, start_ts, end_ts):
                 pass
     if not timestamps:
         raise ValueError("VRCX 数据库中没有可用的时间记录。")
-    observed_end = max(timestamps)
-    own = _own_intervals(location_rows, observed_end, _play_activity_timestamps())
+    activity = _activity_timestamps(timestamps)
+    observed_end = max(activity)
+    self_id = friend_table.removesuffix("_friend_log_current")
+    own_leaves = []
+    for user_id, _, kind, created_at, location in join_rows:
+        if user_id != self_id or kind != "OnPlayerLeft":
+            continue
+        try:
+            own_leaves.append((_timestamp(created_at), str(location or "")))
+        except (ValueError, OverflowError, OSError):
+            pass
+    own = _own_intervals(location_rows, observed_end, activity, sorted(own_leaves))
     players, skipped = _player_intervals(join_rows, friends, observed_end)
     friends_stats = []
     for user_id, intervals in players.items():
@@ -404,7 +420,6 @@ def read_co_room_stats(path, start_ts, end_ts):
             })
     friends_stats.sort(key=lambda item: (-item["seconds"], item["name"].casefold()))
     daily_play = _daily_play_stats(own, start_ts, end_ts)
-    self_id = friend_table.removesuffix("_friend_log_current")
     self_names = sorted({str(row[1]).strip() for row in join_rows
                          if row[0] == self_id and str(row[1] or "").strip()})
     world_play = {"pypy": 0, "wd": 0}
