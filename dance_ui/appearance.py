@@ -10,7 +10,7 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPixmap, QFont, QImageReader, 
 from PySide6.QtWidgets import (
     QWidget, QFrame, QLabel, QPushButton, QToolButton, QLineEdit, QComboBox,
     QSlider, QDoubleSpinBox, QCheckBox, QVBoxLayout, QHBoxLayout, QScrollArea,
-    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication, QInputDialog,
+    QColorDialog, QFileDialog, QSizePolicy, QMenu, QApplication,
 )
 
 from .theme import ThemeStore, ThemeError, NUMBER_RANGES, normalize_color, theme_contrast_warnings
@@ -417,8 +417,15 @@ class AppearancePage(QWidget):
         right.addLayout(top)
         self.theme_combo = QComboBox()
         self.theme_combo.setAccessibleName("选择主题")
+        self.theme_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.theme_combo.currentIndexChanged.connect(self._select_theme)
-        right.addWidget(self.theme_combo)
+        theme_row = QHBoxLayout()
+        theme_row.addWidget(self.theme_combo, 1)
+        self.name_button = _button("修改名称", self._edit_name)
+        self.name_button.setAccessibleName("修改主题名称")
+        self.name_button.setToolTip("点击后在主题框中修改当前主题名称")
+        theme_row.addWidget(self.name_button)
+        right.addLayout(theme_row)
         home_row = QHBoxLayout()
         home_row.addWidget(QLabel("界面风格"))
         home_style = QComboBox()
@@ -429,13 +436,6 @@ class AppearancePage(QWidget):
         self._preference_fields["home_style"] = home_style
         home_row.addWidget(home_style, 1)
         right.addLayout(home_row)
-        name_row = QHBoxLayout()
-        name_row.addWidget(QLabel("名称"))
-        self.name_button = _button("", self._edit_name)
-        self.name_button.setAccessibleName("修改主题名称")
-        self.name_button.setToolTip("点击修改主题名称")
-        name_row.addWidget(self.name_button, 1)
-        right.addLayout(name_row)
         actions = QHBoxLayout()
         actions.setSpacing(8)
         actions.addWidget(_button("新建主题", self._create, primary=True))
@@ -771,12 +771,12 @@ class AppearancePage(QWidget):
         self._refreshing = True
         try:
             active = self.store.active
+            self.theme_combo.setEditable(False)
             with QSignalBlocker(self.theme_combo):
                 self.theme_combo.clear()
                 for theme in self.store.themes:
                     self.theme_combo.addItem(theme["name"], theme["id"])
                 self.theme_combo.setCurrentIndex(self.theme_combo.findData(active["id"]))
-            self.name_button.setText(active["name"])
         finally:
             self._refreshing = False
         self._sync_fields()
@@ -794,9 +794,21 @@ class AppearancePage(QWidget):
     def _edit_name(self) -> None:
         if self._refreshing:
             return
-        current = self.store.active["name"]
-        name, accepted = QInputDialog.getText(self, "修改主题名称", "主题名称", QLineEdit.Normal, current)
-        if not accepted or name == current:
+        if not self.theme_combo.isEditable():
+            self.theme_combo.setEditable(True)
+            editor = self.theme_combo.lineEdit()
+            editor.setMaxLength(60)
+            editor.setAccessibleName("当前主题名称")
+            editor.editingFinished.connect(self._save_name)
+        self.theme_combo.setFocus()
+        self.theme_combo.lineEdit().selectAll()
+
+    def _save_name(self) -> None:
+        if self._refreshing or not self.theme_combo.isEditable():
+            return
+        name = self.theme_combo.currentText()
+        if name == self.store.active["name"]:
+            self.theme_combo.setEditable(False)
             return
         if self._flush_pending():
             self._perform(lambda: self.store.rename(self.store.active_id, name), refresh=True, message="主题名称已保存。")

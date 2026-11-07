@@ -1286,16 +1286,21 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(stopped.call_count, 2)
         self.core_mocks["start_services"].assert_not_called()
 
-    def test_theme_name_is_edited_through_a_button_dialog(self):
+    def test_theme_name_is_edited_inline_from_button(self):
         window, _, store = self.make_window()
         window.navigate(4)
         editor = window.appearance_page
         self.assertFalse(hasattr(editor, "name_edit"))
-        self.assertEqual(editor.name_button.text(), store.active["name"])
-        with patch("dance_ui.appearance.QInputDialog.getText", return_value=("测试主题", True)):
-            editor.name_button.click()
+        self.assertEqual(editor.name_button.text(), "修改名称")
+        self.assertFalse(editor.theme_combo.isEditable())
+        editor.name_button.click()
+        self.assertTrue(editor.theme_combo.isEditable())
+        self.assertEqual(editor.theme_combo.currentText(), store.active["name"])
+        editor.theme_combo.lineEdit().setText("测试主题")
+        QTest.keyClick(editor.theme_combo.lineEdit(), Qt.Key.Key_Return)
         self.assertEqual(store.active["name"], "测试主题")
-        self.assertEqual(editor.name_button.text(), "测试主题")
+        self.assertEqual(editor.theme_combo.currentText(), "测试主题")
+        self.assertFalse(editor.theme_combo.isEditable())
 
     def test_theme_scaling_and_log_preferences_reach_the_whole_window(self):
         window, controller, store = self.make_window()
