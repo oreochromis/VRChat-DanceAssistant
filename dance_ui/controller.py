@@ -451,7 +451,7 @@ class CoreController(QObject):
                 result["profile_error"] = str(exc)
             try:
                 from .vrcx_profile import sync_friend_avatars
-                sync_friend_avatars(source, result["friends"])
+                sync_friend_avatars(source, result["friends"], force=not automatic)
             except Exception as exc:
                 result["avatar_error"] = str(exc)
             if not vrcx.is_vrcx_archive(source):

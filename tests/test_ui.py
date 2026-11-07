@@ -271,6 +271,18 @@ class UIIntegrationTests(unittest.TestCase):
             page.close()
             page.deleteLater()
 
+    def test_advanced_settings_offer_manual_vrcx_sync(self):
+        window, _, _ = self.make_window()
+        self.assertTrue(window.vrcx_sync_card.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.vrcx_sync_card.isHidden())
+        QTest.mouseClick(window.vrcx_sync_button, Qt.MouseButton.LeftButton)
+        self.assertTrue(window.vrcx_sync_button.isEnabled())
+        self.assertIn("已同步", window.vrcx_sync_status.text())
+        self.assertEqual(window.play_stats_page.vrcx_table.rowCount(), 2)
+        window.set_ui_mode("simple")
+        self.assertTrue(window.vrcx_sync_card.isHidden())
+
     def test_profile_name_and_avatar_render_in_header_and_hide_in_minimal_mode(self):
         window, _, _ = self.make_window()
         self.assertEqual(window.profile_name.text(), "演示账号")

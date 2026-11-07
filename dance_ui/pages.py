@@ -245,6 +245,18 @@ class Pages:
         )
         startup.box.addWidget(self.hosts_clean_hint)
         box.addWidget(startup)
+        vrcx_sync = Card()
+        self.vrcx_sync_card = vrcx_sync
+        vrcx_sync.box.addWidget(label("VRCX 数据同步", subheading=True))
+        vrcx_sync.box.addWidget(label(
+            "立即同步当前账号昵称与 VRChat 头像、好友共同游玩统计和排名头像；手动同步会刷新全部好友头像，无需等待 24 小时缓存到期。",
+            muted=True, wrap=True))
+        self.vrcx_sync_button = button("立即同步 VRCX 数据", self.sync_vrcx_now, primary=True)
+        self.vrcx_sync_status = label("软件也会在启动后及 VRCX 数据变化时自动同步。", muted=True, wrap=True)
+        sync_row, sync_box = row(self.vrcx_sync_button, self.vrcx_sync_status)
+        sync_box.setStretch(1, 1)
+        vrcx_sync.box.addWidget(sync_row)
+        box.addWidget(vrcx_sync)
         general = Card()
         self.general_card = general
         general.box.addWidget(label("缓存行为", subheading=True))

@@ -80,7 +80,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/3.9.9.38",
+        "User-Agent": "VRChatDanceAssistant/3.9.9.39",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })
@@ -89,6 +89,12 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if len(data) > maximum:
         raise ValueError("账号资料或头像文件过大。")
     return data
+
+
+def _avatar_url(payload):
+    return (payload.get("profilePicOverride") or payload.get("profilePicOverrideThumbnail")
+            or payload.get("iconUrl") or payload.get("currentAvatarThumbnailUrl")
+            or payload.get("currentAvatarThumbnailImageUrl") or payload.get("currentAvatarImageUrl") or "")
 
 
 def sync_vrcx_profile(path):
@@ -101,8 +107,7 @@ def sync_vrcx_profile(path):
     name = str(payload.get("displayName") or "").strip()
     if not name:
         raise ValueError("VRChat 账号资料中没有昵称。")
-    avatar_url = (payload.get("profilePicOverride") or payload.get("currentAvatarThumbnailUrl")
-                  or payload.get("currentAvatarImageUrl") or "")
+    avatar_url = _avatar_url(payload)
     avatar = _download(avatar_url, cookies, MAX_AVATAR_BYTES) if avatar_url else b""
     profile = {"id": account_id, "name": name, "synced_at": time.time()}
     profile_path().parent.mkdir(parents=True, exist_ok=True)
@@ -127,6 +132,7 @@ def sync_vrcx_profile(path):
 
 AVATAR_INDEX_FILENAME = "avatar-index.json"
 AVATAR_REFRESH_SECONDS = 86400
+AVATAR_INDEX_VERSION = 1
 
 
 def avatar_index_path() -> Path:
@@ -147,7 +153,7 @@ def friend_avatar_path(user_id) -> Path:
     return Path(core.data_dir()) / "avatars" / (digest + ".png")
 
 
-def sync_friend_avatars(path, friends):
+def sync_friend_avatars(path, friends, force=False):
     index = load_avatar_index()
     now = time.time()
     stale = []
@@ -156,7 +162,8 @@ def sync_friend_avatars(path, friends):
         if not user_id:
             continue
         entry = index.get(user_id) or {}
-        if now - float(entry.get("checked_at", 0)) >= AVATAR_REFRESH_SECONDS:
+        if (force or entry.get("version") != AVATAR_INDEX_VERSION
+                or now - float(entry.get("checked_at", 0)) >= AVATAR_REFRESH_SECONDS):
             stale.append((user_id, entry))
     if not stale:
         return index
@@ -167,10 +174,7 @@ def sync_friend_avatars(path, friends):
         try:
             url = "https://api.vrchat.cloud/api/1/users/" + urllib.parse.quote(user_id, safe="")
             payload = json.loads(_download(url, cookies, MAX_PROFILE_BYTES))
-            avatar_url = (payload.get("profilePicOverride") or payload.get("profilePicOverrideThumbnail")
-                          or payload.get("iconUrl") or payload.get("currentAvatarThumbnailUrl")
-                          or payload.get("currentAvatarImageUrl") or "")
-            return user_id, entry, avatar_url
+            return user_id, entry, _avatar_url(payload)
         except Exception:
             return user_id, entry, None
 
@@ -178,10 +182,10 @@ def sync_friend_avatars(path, friends):
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(read_profile, stale))
     for user_id, entry, avatar_url in results:
-        if avatar_url and avatar_url != entry.get("url"):
+        target = friend_avatar_path(user_id)
+        if avatar_url and (force or avatar_url != entry.get("url") or not target.is_file()):
             try:
                 data = _download(avatar_url, cookies, MAX_AVATAR_BYTES)
-                target = friend_avatar_path(user_id)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 temporary = target.with_suffix(".tmp")
                 temporary.write_bytes(data)
@@ -190,6 +194,7 @@ def sync_friend_avatars(path, friends):
             except Exception:
                 pass
         entry["checked_at"] = now
+        entry["version"] = AVATAR_INDEX_VERSION
         index[user_id] = entry
     avatar_index_path().parent.mkdir(parents=True, exist_ok=True)
     temporary = avatar_index_path().with_suffix(".tmp")

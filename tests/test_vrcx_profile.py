@@ -26,7 +26,8 @@ class VRCXProfileTests(unittest.TestCase):
             connection.commit()
             connection.close()
             profile = {"id": "usr_test", "displayName": "测试昵称",
-                       "currentAvatarThumbnailUrl": "https://api.vrchat.cloud/avatar.png"}
+                       "iconUrl": "https://api.vrchat.cloud/icon.png",
+                       "currentAvatarThumbnailImageUrl": "https://api.vrchat.cloud/avatar.png"}
             calls = []
 
             def download(url, cookie_header, maximum):
@@ -42,6 +43,7 @@ class VRCXProfileTests(unittest.TestCase):
                 self.assertEqual(vrcx_profile.avatar_path().read_bytes(), b"avatar bytes")
                 self.assertNotIn("not-a-real-session", vrcx_profile.profile_path().read_text(encoding="utf-8"))
                 self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[1][0], profile["iconUrl"])
                 loaded = vrcx_profile.load_vrcx_profile()
                 self.assertEqual(loaded["name"], "测试昵称")
                 self.assertTrue(loaded["avatar"])
@@ -75,7 +77,31 @@ class FriendAvatarTests(unittest.TestCase):
                 vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", [
                     {"user_id": "friend-1", "name": "Friend"},
                 ])
-            self.assertEqual(len(calls), 2)
+                self.assertEqual(len(calls), 2)
+                vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", [
+                    {"user_id": "friend-1", "name": "Friend"},
+                ], force=True)
+                self.assertEqual(len(calls), 4)
+
+    def test_legacy_avatar_index_refreshes_without_waiting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "avatar-index.json").write_text(json.dumps({
+                "friend-1": {"checked_at": 1e12},
+            }), encoding="utf-8")
+            payload = {"iconUrl": "https://api.vrchat.cloud/icon.png"}
+
+            def download(url, cookies, maximum):
+                return json.dumps(payload).encode() if "/users/" in url else b"friend icon"
+
+            with (patch.object(vrcx_profile.core, "data_dir", return_value=str(root)),
+                  patch.object(vrcx_profile, "_cookie_header", return_value="session"),
+                  patch.object(vrcx_profile, "_download", side_effect=download) as request):
+                index = vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", [
+                    {"user_id": "friend-1", "name": "Friend"},
+                ])
+                self.assertEqual(request.call_count, 2)
+                self.assertEqual(index["friend-1"]["version"], vrcx_profile.AVATAR_INDEX_VERSION)
 
     def test_friend_avatar_uses_vrcx_icon_url_fallback(self):
         with tempfile.TemporaryDirectory() as directory:

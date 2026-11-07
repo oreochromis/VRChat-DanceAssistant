@@ -139,7 +139,7 @@ class MainWindow(QMainWindow, Pages):
         self.minimal_page = self.build_minimal_page()
         self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
                                   self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
-                                  self.storage_location_box]
+                                  self.storage_location_box, self.vrcx_sync_card]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -648,6 +648,14 @@ class MainWindow(QMainWindow, Pages):
             self.storage_mode.setCurrentIndex(index)
         self.storage_mode_hint.setText("当前位置：" + info.get("active_dir", "?"))
 
+    def sync_vrcx_now(self):
+        if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
+            self.vrcx_sync_status.setText("VRCX 数据正在同步，请稍候。")
+            return
+        self.vrcx_sync_button.setEnabled(False)
+        self.vrcx_sync_status.setText("正在同步账号资料、共同游玩统计与好友头像…")
+        self.play_stats_page.read_vrcx_stats()
+
     def apply_storage_mode(self):
         mode = self.storage_mode.currentData()
         if mode == self.controller.storage_info().get("mode"):
@@ -1150,7 +1158,14 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, object)
     def on_result(self, operation, result):
-        if operation == "steamvr_startup":
+        if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self.vrcx_sync_button.setEnabled(True)
+            data = result or {}
+            if data.get("profile_error") or data.get("avatar_error"):
+                self.vrcx_sync_status.setText("统计数据已更新；部分账号资料或头像同步失败，可在统计页查看详情。")
+            else:
+                self.vrcx_sync_status.setText("VRCX 数据、账号头像与好友头像已同步。")
+        elif operation == "steamvr_startup":
             self.show_steamvr_status(result)
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
@@ -1217,8 +1232,11 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, str)
     def on_error(self, operation, message):
-        if operation == "vrcx_stats_auto":
-            return
+        if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self.vrcx_sync_button.setEnabled(True)
+            self.vrcx_sync_status.setText("同步失败：" + friendly_message(message))
+            if operation == "vrcx_stats_auto":
+                return
         if operation == "update_check":
             if self._update_manual:
                 self._update_manual = False
@@ -1250,7 +1268,9 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, bool)
     def on_busy(self, operation, busy):
-        if operation == "steamvr_startup":
+        if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self.vrcx_sync_button.setEnabled(not busy)
+        elif operation == "steamvr_startup":
             self._steamvr_busy = busy
             if busy:
                 self.steamvr_hint.setText("正在保存启动设置…" if self._steamvr_pending == "save" else "正在读取启动设置…")
