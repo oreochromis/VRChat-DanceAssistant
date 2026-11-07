@@ -641,12 +641,16 @@ class SegmentedSwitch(QWidget):
     def mode(self) -> str:
         return self._modes[self._index][0]
 
+    def _display_modes(self):
+        active = self._modes[self._index]
+        return [item for item in self._modes if item != active] + [active]
+
     def set_mode(self, mode: str):
         index = next((i for i, (m, _) in enumerate(self._modes) if m == mode), None)
         if index is None:
             return
         self._index = index
-        self._pos = float(index)
+        self._pos = float(len(self._modes) - 1)
         self.update()
 
     def _segment_at(self, x: float) -> int:
@@ -659,8 +663,8 @@ class SegmentedSwitch(QWidget):
             event.accept()
             return
         index = self._segment_at(event.position().x())
-        if index >= 0 and index != self._index:
-            self.set_mode(self._modes[index][0])
+        if 0 <= index < len(self._modes) - 1:
+            self.set_mode(self._display_modes()[index][0])
             self.modeChanged.emit(self.mode())
         super().mouseReleaseEvent(event)
 
@@ -700,7 +704,7 @@ class SegmentedSwitch(QWidget):
         painter.drawRoundedRect(thumb, inner_h / 2, inner_h / 2)
         painter.setFont(self.font())
         active = round(self._pos)
-        for index, (_, text) in enumerate(self._modes):
+        for index, (_, text) in enumerate(self._display_modes()):
             if not self._expanded and index != active:
                 continue
             segment = QRectF(self._PAD + (index if self._expanded else 0) * self._seg_w,
