@@ -5,8 +5,10 @@ import csv
 import json
 import zipfile
 from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtCore import QDate, Qt, QSignalBlocker
+from PySide6.QtCore import QDate, Qt, QSignalBlocker, QTimer, QSize
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QMessageBox,
     QProgressBar, QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
@@ -15,8 +17,9 @@ from PySide6.QtWidgets import (
 import dance_cache as core
 from . import stats_backup
 from .pages import button, field
+from .vrcx_profile import friend_avatar_path
 from .vrcx_stats import (
-    format_duration, load_vrcx_stats, resolve_vrcx_path, save_self_name, saved_self_name,
+    format_duration, is_vrcx_archive, load_vrcx_stats, resolve_vrcx_path, save_self_name, saved_self_name,
 )
 from .widgets import Card, label, page, section_title, table
 
@@ -195,6 +198,12 @@ class PlayStatsPage(QWidget):
             cached = load_vrcx_stats()
             if cached:
                 self._show_vrcx_stats(cached)
+            self._vrcx_signature = None
+            self._vrcx_timer = QTimer(self)
+            self._vrcx_timer.setInterval(30000)
+            self._vrcx_timer.timeout.connect(self._auto_sync_vrcx)
+            self._vrcx_timer.start()
+            QTimer.singleShot(2000, self._auto_sync_vrcx)
 
     def apply_ui_mode(self):
         advanced = self._main.store.preferences.get("ui_mode", "advanced") == "advanced"
@@ -231,16 +240,43 @@ class PlayStatsPage(QWidget):
         self.start.setDate(QDate(2000, 1, 1))
         self.end.setDate(QDate.currentDate())
 
-    def read_vrcx_stats(self, path=None):
+    def _vrcx_source_signature(self):
+        source = resolve_vrcx_path()
+        if is_vrcx_archive(source) or not source.is_file():
+            return None
+        values = []
+        for path in (source, Path(str(source) + "-wal")):
+            try:
+                stat = path.stat()
+                values.append((path.name, stat.st_mtime_ns, stat.st_size))
+            except OSError:
+                values.append(None)
+        return tuple(values)
+
+    def _auto_sync_vrcx(self):
+        if self.controller.demo or self._main._closing:
+            return
+        if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
+            return
+        signature = self._vrcx_source_signature()
+        if signature is None or signature == self._vrcx_signature:
+            return
+        self._vrcx_signature = signature
+        self.read_vrcx_stats(automatic=True)
+
+    def read_vrcx_stats(self, path=None, automatic=False):
         start_date, end_date = self.start.date(), self.end.date()
         if start_date > end_date:
-            self.vrcx_summary.setText("开始日期晚于结束日期，请调整后再读取。")
+            if not automatic:
+                self.vrcx_summary.setText("开始日期晚于结束日期，请调整后再读取。")
             return
-        self.vrcx_loading.show()
-        self.vrcx_read_button.setEnabled(False)
-        self.vrcx_choose_button.setEnabled(False)
-        self.vrcx_summary.setText("正在只读分析 VRCX 房间记录…")
-        self.controller.vrcx_stats(_day_start(start_date), _day_start(end_date) + 86400, path)
+        if not automatic:
+            self.vrcx_loading.show()
+            self.vrcx_read_button.setEnabled(False)
+            self.vrcx_choose_button.setEnabled(False)
+            self.vrcx_summary.setText("正在只读分析 VRCX 房间记录…")
+        self.controller.vrcx_stats(_day_start(start_date), _day_start(end_date) + 86400,
+                                   path, automatic=automatic)
 
     def choose_vrcx_database(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -277,6 +313,8 @@ class PlayStatsPage(QWidget):
             self.vrcx_summary.setText(self.vrcx_summary.text() + "；账号头像未更新，请在 VRCX 重新登录后同步。")
             self.vrcx_summary.setToolTip(str(result["profile_error"]))
         self.vrcx_export_button.setEnabled(bool(friends))
+        self.vrcx_table.setIconSize(QSize(24, 24))
+        self.vrcx_table.verticalHeader().setDefaultSectionSize(36)
         self.vrcx_table.setSortingEnabled(False)
         self.vrcx_table.setRowCount(0)
         for friend in friends:
@@ -291,6 +329,10 @@ class PlayStatsPage(QWidget):
                     item.setData(Qt.ItemDataRole.DisplayRole, value)
                 else:
                     item.setText(str(value))
+                if column == 1:
+                    avatar = friend_avatar_path(friend.get("user_id"))
+                    if avatar.is_file():
+                        item.setIcon(QIcon(str(avatar)))
                 self.vrcx_table.setItem(row_index, column, item)
         self.vrcx_table.setVisible(bool(friends))
         if friends:
@@ -337,7 +379,7 @@ class PlayStatsPage(QWidget):
             self.source.currentData(), player or None)
 
     def _on_result(self, operation, result):
-        if operation == "vrcx_stats" and isinstance(result, dict):
+        if operation in ("vrcx_stats", "vrcx_stats_auto") and isinstance(result, dict):
             self._show_vrcx_stats(result)
             return
         if operation != "play_history_stats" or not isinstance(result, dict):
@@ -488,11 +530,12 @@ class PlayStatsPage(QWidget):
             f"补充设置 {result['settings_added']} 项。现有记录和原始数据库不会被覆盖。")
 
     def _on_error(self, operation, message):
-        if operation == "vrcx_stats":
+        if operation in ("vrcx_stats", "vrcx_stats_auto"):
             self.vrcx_loading.hide()
             self.vrcx_read_button.setEnabled(True)
             self.vrcx_choose_button.setEnabled(True)
-            self.vrcx_summary.setText(f"读取 VRCX 统计失败：{message}")
+            self.vrcx_summary.setText(f"读取 VRCX 统计失败：{message}" if operation == "vrcx_stats"
+                                      else "VRCX 自动同步暂不可用，将在数据变化时重试。")
         elif operation == "play_history_stats":
             self.loading.hide()
             self.summary.setText(f"读取点歌历史失败: {message}")

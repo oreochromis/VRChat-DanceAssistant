@@ -19,13 +19,14 @@ from unittest.mock import Mock, patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 try:
-    from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt, QDate, QPoint, QPointF
+    from PySide6.QtCore import QEvent, QEventLoop, QTimer, Qt, QDate, QPoint, QPointF, QSize
     from PySide6.QtGui import QFont, QFontDatabase, QImage, QMouseEvent
     from PySide6.QtTest import QTest
     from PySide6.QtWidgets import QApplication, QLabel, QProgressBar
     import dance_cache as core
     from dance_ui.app import MainWindow
     from dance_ui.controller import CoreController
+    from dance_ui.play_stats import PlayStatsPage
     from dance_ui.theme import ThemeStore
     QT_READY = True
 except ImportError:
@@ -245,6 +246,30 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.qWait(10)
         self.assertTrue(startup_controller._demo_running)
         self.assertEqual(startup_window.stack.currentWidget(), startup_window.minimal_page)
+
+    def test_vrcx_auto_sync_runs_once_per_database_change(self):
+        controller = Mock()
+        controller.demo = False
+        controller.busy.return_value = False
+        source = self.root / "VRCX.sqlite3"
+        source.write_bytes(b"database")
+        from PySide6.QtWidgets import QWidget
+        owner = QWidget()
+        owner.controller = controller
+        owner.store = ThemeStore(self.root / "auto-theme")
+        owner._closing = False
+        with (patch("dance_ui.play_stats.load_vrcx_stats", return_value=None),
+              patch("dance_ui.play_stats.resolve_vrcx_path", return_value=source),
+              patch("dance_ui.play_stats.is_vrcx_archive", return_value=False)):
+            page = PlayStatsPage(owner)
+            page._auto_sync_vrcx()
+            self.assertEqual(controller.vrcx_stats.call_count, 1)
+            self.assertTrue(controller.vrcx_stats.call_args.kwargs["automatic"])
+            page._auto_sync_vrcx()
+            self.assertEqual(controller.vrcx_stats.call_count, 1)
+            page._vrcx_timer.stop()
+            page.close()
+            page.deleteLater()
 
     def test_profile_name_and_avatar_render_in_header_and_hide_in_minimal_mode(self):
         window, _, _ = self.make_window()
@@ -486,11 +511,18 @@ class UIIntegrationTests(unittest.TestCase):
         friends = [{"user_id": f"friend-{index}", "name": f"Friend {index:02d}",
                     "seconds": (13 - index) * 600, "sessions": index, "last_ts": 1000 + index}
                    for index in range(1, 13)]
-        controller.result.emit("vrcx_stats", {
-            "path": "演示 VRCX 数据", "friends": friends, "self_names": ["小林"],
-        })
+        avatar = self.root / "friend-avatar.png"
+        image = QImage(32, 32, QImage.Format.Format_RGB32)
+        image.fill(Qt.GlobalColor.blue)
+        self.assertTrue(image.save(str(avatar)))
+        with patch("dance_ui.play_stats.friend_avatar_path", return_value=avatar):
+            controller.result.emit("vrcx_stats", {
+                "path": "演示 VRCX 数据", "friends": friends, "self_names": ["小林"],
+            })
         QApplication.processEvents()
         self.assertEqual(stats.vrcx_table.rowCount(), 12)
+        self.assertFalse(stats.vrcx_table.item(0, 1).icon().isNull())
+        self.assertEqual(stats.vrcx_table.iconSize(), QSize(24, 24))
         self.assertGreater(stats.vrcx_table.verticalScrollBar().maximum(), 0)
         self.assertTrue(stats.vrcx_export_button.isHidden())
         self.assertTrue(stats.export_button.isHidden())

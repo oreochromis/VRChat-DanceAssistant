@@ -112,6 +112,10 @@ def _migrate_legacy_portable_data():
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(ROAMING_ROOT, name))
                 copied += 1
+        for name in _STORAGE_DIRS:
+            src = os.path.join(SCRIPT_DIR, name)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(ROAMING_ROOT, name), dirs_exist_ok=True)
         with open(_pointer_path(), "w", encoding="utf-8") as f:
             json.dump({"mode": "roaming"}, f)
         log(f"检测到旧版本的数据文件，已迁移到系统用户目录（{ROAMING_ROOT}，{copied} 个文件，原位置保留）；"
@@ -140,7 +144,8 @@ def mapping_path():
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
                   "play_history.jsonl", "played_history.jsonl", "vrcx-settings.json", "vrcx-stats.json",
-                  "vrcx-source.sqlite3", "profile.json", "profile-avatar.png")
+                  "vrcx-source.sqlite3", "profile.json", "profile-avatar.png", "avatar-index.json")
+_STORAGE_DIRS = ("avatars",)
 
 
 def set_storage_mode(mode):
@@ -164,6 +169,10 @@ def set_storage_mode(mode):
             if os.path.isfile(src):
                 shutil.copy2(src, os.path.join(target, name))
                 copied += 1
+        for name in _STORAGE_DIRS:
+            src = os.path.join(source, name)
+            if os.path.isdir(src):
+                shutil.copytree(src, os.path.join(target, name), dirs_exist_ok=True)
         os.makedirs(ROAMING_ROOT, exist_ok=True)
         fd, temporary = tempfile.mkstemp(prefix="storage-mode-", suffix=".tmp", dir=ROAMING_ROOT)
         try:

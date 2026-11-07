@@ -1217,6 +1217,8 @@ class MainWindow(QMainWindow, Pages):
 
     @Slot(str, str)
     def on_error(self, operation, message):
+        if operation == "vrcx_stats_auto":
+            return
         if operation == "update_check":
             if self._update_manual:
                 self._update_manual = False

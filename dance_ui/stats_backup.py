@@ -89,11 +89,13 @@ def export_stats_backup(path):
     target = Path(path).expanduser().resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     root = Path(core.data_dir())
-    files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, vrcx_stats.SETTINGS_FILENAME,
-                                vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME)
+    files = [name for name in (*HISTORY_FILES, *PROFILE_FILES, "avatar-index.json",
+                                vrcx_stats.SETTINGS_FILENAME, vrcx_stats.STATS_FILENAME, vrcx_stats.SOURCE_FILENAME)
              if (root / name).is_file()]
     if vrcx_stats.SOURCE_FILENAME in files:
         vrcx_stats.sanitize_vrcx_archive(root / vrcx_stats.SOURCE_FILENAME)
+    avatars = sorted((root / "avatars").rglob("*.png")) if (root / "avatars").is_dir() else []
+    files.extend(path.relative_to(root).as_posix() for path in avatars)
     manifest = {"format": FORMAT, "version": VERSION, "created_at": time.time(), "files": files}
     temporary = target.with_suffix(target.suffix + ".tmp")
     try:
@@ -122,7 +124,7 @@ def import_stats_backup(path):
         result = {
             "play_history_added": 0, "played_history_added": 0,
             "settings_added": 0, "stats_updated": False, "source_imported": False,
-            "profile_imported": False,
+            "profile_imported": False, "avatars_added": 0,
         }
         root = Path(core.data_dir())
         root.mkdir(parents=True, exist_ok=True)
@@ -186,4 +188,30 @@ def import_stats_backup(path):
                 temporary = avatar_target.with_suffix(".tmp")
                 temporary.write_bytes(archive.read("profile-avatar.png"))
                 os.replace(temporary, avatar_target)
+        incoming_index = _zip_text(archive, "avatar-index.json")
+        if incoming_index is not None:
+            incoming = json.loads(incoming_index)
+            if not isinstance(incoming, dict):
+                raise ValueError("备份中的头像索引格式无效。")
+            index_path = root / "avatar-index.json"
+            current = _read_json(index_path)
+            merged = {**incoming, **current}
+            if merged != current:
+                _write_json(index_path, merged)
+        for info in archive.infolist():
+            name = info.filename
+            parts = Path(name).parts
+            if (not name.startswith("avatars/") or not name.endswith(".png")
+                    or ".." in parts or Path(name).is_absolute()):
+                continue
+            if info.file_size > 10 * 1024 * 1024:
+                raise ValueError("备份中的好友头像过大。")
+            target = root / name
+            if target.exists():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            temporary = target.with_suffix(".tmp")
+            temporary.write_bytes(archive.read(info))
+            os.replace(temporary, target)
+            result["avatars_added"] += 1
     return result

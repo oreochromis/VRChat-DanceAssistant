@@ -406,7 +406,8 @@ class CoreController(QObject):
         self._run("play_history_stats", lambda: core.play_history_stats(
             start_ts, end_ts, kind or None, player or None))
 
-    def vrcx_stats(self, start_ts, end_ts, path=None):
+    def vrcx_stats(self, start_ts, end_ts, path=None, automatic=False):
+        operation = "vrcx_stats_auto" if automatic else "vrcx_stats"
         if self.demo:
             today = QDate.currentDate()
             month_start = QDate(today.year(), today.month(), 1)
@@ -421,7 +422,7 @@ class CoreController(QObject):
                                            "seconds": durations[len(daily_play) % len(durations)]})
             pypy_seconds = sum(item["seconds"] for index, item in enumerate(daily_play) if index % 3 != 2)
             wd_seconds = sum(item["seconds"] for index, item in enumerate(daily_play) if index % 3 == 2)
-            self.result.emit("vrcx_stats", {
+            self.result.emit(operation, {
                 "path": "演示 VRCX 数据", "friend_count": 2, "matched_friends": 2,
                 "friends": [
                     {"user_id": "demo-1", "name": "小林", "seconds": 45000, "sessions": 18,
@@ -448,12 +449,17 @@ class CoreController(QObject):
                 vrcx.save_self_name(result["profile"]["name"])
             except Exception as exc:
                 result["profile_error"] = str(exc)
+            try:
+                from .vrcx_profile import sync_friend_avatars
+                sync_friend_avatars(source, result["friends"])
+            except Exception as exc:
+                result["avatar_error"] = str(exc)
             if not vrcx.is_vrcx_archive(source):
                 vrcx.save_vrcx_path(source)
             vrcx.save_vrcx_stats(result)
             return result
 
-        self._run("vrcx_stats", read)
+        self._run(operation, read)
 
     def cooldown(self):
         if self.demo:

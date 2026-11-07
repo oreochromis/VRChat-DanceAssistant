@@ -80,7 +80,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/3.9.9.37",
+        "User-Agent": "VRChatDanceAssistant/3.9.9.38",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })
@@ -123,3 +123,76 @@ def sync_vrcx_profile(path):
     result = load_vrcx_profile()
     result["name"] = name
     return result
+
+
+AVATAR_INDEX_FILENAME = "avatar-index.json"
+AVATAR_REFRESH_SECONDS = 86400
+
+
+def avatar_index_path() -> Path:
+    return Path(core.data_dir()) / AVATAR_INDEX_FILENAME
+
+
+def load_avatar_index():
+    try:
+        value = json.loads(avatar_index_path().read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def friend_avatar_path(user_id) -> Path:
+    import hashlib
+    digest = hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:32]
+    return Path(core.data_dir()) / "avatars" / (digest + ".png")
+
+
+def sync_friend_avatars(path, friends):
+    index = load_avatar_index()
+    now = time.time()
+    stale = []
+    for friend in friends:
+        user_id = str(friend.get("user_id") or "")
+        if not user_id:
+            continue
+        entry = index.get(user_id) or {}
+        if now - float(entry.get("checked_at", 0)) >= AVATAR_REFRESH_SECONDS:
+            stale.append((user_id, entry))
+    if not stale:
+        return index
+    cookies = _cookie_header(Path(path).expanduser().resolve())
+
+    def read_profile(item):
+        user_id, entry = item
+        try:
+            url = "https://api.vrchat.cloud/api/1/users/" + urllib.parse.quote(user_id, safe="")
+            payload = json.loads(_download(url, cookies, MAX_PROFILE_BYTES))
+            avatar_url = (payload.get("profilePicOverride") or payload.get("profilePicOverrideThumbnail")
+                          or payload.get("iconUrl") or payload.get("currentAvatarThumbnailUrl")
+                          or payload.get("currentAvatarImageUrl") or "")
+            return user_id, entry, avatar_url
+        except Exception:
+            return user_id, entry, None
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(read_profile, stale))
+    for user_id, entry, avatar_url in results:
+        if avatar_url and avatar_url != entry.get("url"):
+            try:
+                data = _download(avatar_url, cookies, MAX_AVATAR_BYTES)
+                target = friend_avatar_path(user_id)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                temporary = target.with_suffix(".tmp")
+                temporary.write_bytes(data)
+                os.replace(temporary, target)
+                entry["url"] = avatar_url
+            except Exception:
+                pass
+        entry["checked_at"] = now
+        index[user_id] = entry
+    avatar_index_path().parent.mkdir(parents=True, exist_ok=True)
+    temporary = avatar_index_path().with_suffix(".tmp")
+    temporary.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, avatar_index_path())
+    return index
