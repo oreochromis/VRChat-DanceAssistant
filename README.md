@@ -10,7 +10,7 @@
 
 ## 下载与使用
 
-1. 下载 `VRChatDanceAssistant-windows-x64.zip`，将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
+1. 下载 `VRChatDanceAssistant-windows-版本号_x64.zip`（例如 `VRChatDanceAssistant-windows-3.9.9.51_x64.zip`），将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
 2. 双击 `VRChatDanceAssistant.exe`，确认 Windows 管理员授权。程序启动后会自动开启缓存服务，无需安装 Python。**不要把 exe 重命名为中文**：SteamVR 的客户端库无法用中文进程名写日志文件，VR 面板和跟随 SteamVR 启动会连不上（报 NoLogPath）。
 3. 服务显示运行中后，进入 VRChat 的 PyPyDance 房间正常点歌。
 4. 根据需要，在“存储”页设置永久曲库，在“设置”页调整预加载数量和 CDN，在“外观”页调整主题。

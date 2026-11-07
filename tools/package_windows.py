@@ -127,7 +127,7 @@ def main() -> int:
     build_info = {
         "application": "VRChatDanceAssistant",
         "application_version": __version__,
-        "asset": "VRChatDanceAssistant-windows-x64.zip",
+        "asset": f"VRChatDanceAssistant-windows-{__version__}_x64.zip",
         "git_sha": commit,
         "git_ref": os.environ.get("GITHUB_REF"),
         "repository": os.environ.get("GITHUB_REPOSITORY"),
@@ -166,12 +166,14 @@ def main() -> int:
         "distribution": "Extract and keep the complete VRChatDanceAssistant folder, including _internal.",
     }
     build_info_text = json.dumps(build_info, ensure_ascii=False, indent=2) + "\n"
-    (bundle / "docs/build-info.json").write_text(build_info_text, encoding="utf-8")
-
     args.output.mkdir(parents=True, exist_ok=True)
     archive = args.output / build_info["asset"]
+    if archive.exists():
+        raise SystemExit(f"Release archive already exists; refusing to overwrite it: {archive}")
+    (bundle / "docs/build-info.json").write_text(build_info_text, encoding="utf-8")
+
     files = sorted(path for path in bundle.rglob("*") if path.is_file())
-    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
+    with zipfile.ZipFile(archive, "x", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zipped:
         for path in files:
             if path.is_symlink():
                 raise SystemExit(f"Unexpected symbolic link in the Windows bundle: {path}")

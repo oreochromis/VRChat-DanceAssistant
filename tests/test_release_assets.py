@@ -168,6 +168,7 @@ class ReleaseAssetTests(unittest.TestCase):
         self.info = {
             "git_sha": self.SHA,
             "application_version": publisher.TAG.removeprefix("v"),
+            "asset": f"VRChatDanceAssistant-windows-{publisher.TAG.removeprefix('v')}_x64.zip",
             "build_platform": "Windows synthetic test fixture",
             "bundled_cooldown_video": dict(self.cooldown_info),
             "bundled_application_icons": copy.deepcopy(self.icon_info),
@@ -193,7 +194,7 @@ class ReleaseAssetTests(unittest.TestCase):
     def write_assets(self, info=None, extra_files=None):
         info = copy.deepcopy(self.info if info is None else info)
         text = json.dumps(info, ensure_ascii=False)
-        archive = self.assets / "VRChatDanceAssistant-windows-x64.zip"
+        archive = self.assets / f"VRChatDanceAssistant-windows-{publisher.TAG.removeprefix('v')}_x64.zip"
         with ZipFile(archive, "w") as zipped:
             for name in ("_internal/python312.dll",):
                 zipped.writestr("VRChatDanceAssistant/" + name, b"tiny synthetic fixture")
@@ -608,6 +609,11 @@ class ReleaseAssetTests(unittest.TestCase):
             preset.parent.mkdir(parents=True)
             preset.write_bytes(b"excluded large image fixture")
             with self.assertRaisesRegex(SystemExit, "must not include bundled preset"):
+                packager.main()
+            preset.unlink()
+            preset.parent.rmdir()
+            preset.parent.parent.rmdir()
+            with self.assertRaisesRegex(SystemExit, "refusing to overwrite"):
                 packager.main()
 
 

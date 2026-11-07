@@ -67,12 +67,14 @@ def verify_taskbar_report(report: object) -> None:
 
 
 def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
-    archive = assets / "VRChatDanceAssistant-windows-x64.zip"
-    checksum = assets / (archive.name + ".sha256")
     info_path = assets / "build-info.json"
+    info = json.loads(info_path.read_text(encoding="utf-8"))
+    archive = assets / info["asset"]
+    checksum = assets / (archive.name + ".sha256")
+    if archive.name != f"VRChatDanceAssistant-windows-{TAG.removeprefix('v')}_x64.zip":
+        raise ValueError("The release ZIP filename does not match the application version.")
     if digest(archive) != checksum.read_text(encoding="ascii").split()[0]:
         raise ValueError("The release ZIP does not match its checksum.")
-    info = json.loads(info_path.read_text(encoding="utf-8"))
     if info["git_sha"] != expected_sha:
         raise ValueError("The artifact was not built from this workflow's exact commit.")
     if "v" + info.get("application_version", "") != TAG:
@@ -108,9 +110,12 @@ def verify_assets(assets: Path, expected_sha: str) -> tuple[dict, list[Path]]:
         if any("presets" in tuple(part.casefold() for part in Path(name.replace("\\", "/")).parts)
                for name in members):
             raise ValueError("Stable release assets must not include bundled preset resources.")
-        for path in ("VRChatDanceAssistant.exe", "_internal/python312.dll", "docs/build-info.json"):
+        for path in ("VRChatDanceAssistant.exe", "docs/build-info.json"):
             if "VRChatDanceAssistant/" + path not in members:
                 raise ValueError("The release ZIP is incomplete: " + path)
+        if not any(name.startswith("VRChatDanceAssistant/_internal/python3") and name.endswith(".dll")
+                   for name in members):
+            raise ValueError("The release ZIP is missing the Python runtime DLL.")
         if COOLDOWN_ARCHIVE_PATH not in members:
             raise ValueError("The release ZIP is missing the bundled cooldown video.")
         if validate_cooldown_bytes(zipped.read(COOLDOWN_ARCHIVE_PATH)) != source_video:
@@ -169,7 +174,7 @@ def notes(info: dict, checksum: str) -> str:
 
 ## 下载与启动
 
-下载下方 **VRChatDanceAssistant-windows-x64.zip**，完整解压后运行 `VRChatDanceAssistant/VRChatDanceAssistant.exe`，无需安装 Python。必须保留 `_internal` 等全部文件，其中包含默认视频；不能只复制 exe。exe 文件名必须保持纯英文（SteamVR 客户端库无法用中文进程名写日志，VR 面板会报 NoLogPath）；文件夹放在中文路径不受影响。
+下载下方 **{info['asset']}**，完整解压后运行 `VRChatDanceAssistant/VRChatDanceAssistant.exe`，无需安装 Python。必须保留 `_internal` 等全部文件，其中包含默认视频；不能只复制 exe。exe 文件名必须保持纯英文（SteamVR 客户端库无法用中文进程名写日志，VR 面板会报 NoLogPath）；文件夹放在中文路径不受影响。
 
 正常入口按 UAC 提示启动并自动开启缓存服务。程序未签名，UAC 发布者显示为未知。完整步骤见包内 `docs/WINDOWS_PREVIEW.md`。
 

@@ -2,7 +2,7 @@
 
 当前正式版为 `3.0.1`。用户已反馈在 Windows + VRChat 实际使用正常；以下步骤供首次使用、升级及环境差异检查。无需安装 Python。
 
-1. 下载 `VRChatDanceAssistant-windows-x64.zip`，将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的独立目录（中文路径也可以）。
+1. 下载带版本号的 `VRChatDanceAssistant-windows-版本号_x64.zip`，将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的独立目录（中文路径也可以）。
 2. 保留 `VRChatDanceAssistant.exe` 旁的 `_internal` 等全部文件，不能只复制 exe；也不要把 exe 重命名为中文（SteamVR 客户端库无法用中文进程名写日志，VR 面板会报 NoLogPath）。升级前备份旧 `config.json`、`mapping.json` 和视频目录，在独立目录解压新包；确认旧相对路径后再迁入配置，不覆盖或合并 `_internal`。
 3. 双击 `VRChatDanceAssistant.exe`，按 UAC 提示启动；此入口会自动启动真实缓存服务。程序未签名，发布者显示为未知。
 4. 在“存储／设置”填写实际目录和所需选项并应用。修改保存目录、YouTube 缓存开关前先停止服务，应用后重新启动；等待活动任务结束再改目录。

@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [string]$Python = "",
     [switch]$InstallDependencies
@@ -103,7 +103,7 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
     $bundleDocs = Join-Path $bundleRoot "docs"
     New-Item -ItemType Directory -Force -Path $bundleDocs | Out-Null
     foreach ($fileName in @("README.md", "LICENSE", "启动.bat", "演示.bat")) {
-        Copy-Item -LiteralPath (Join-Path $projectRoot $fileName) -Destination $bundleRoot
+        [System.IO.File]::Copy((Join-Path $projectRoot $fileName), (Join-Path $bundleRoot $fileName), $true)
     }
     foreach ($fileName in @("requirements.txt", "requirements-dev.txt")) {
         Copy-Item -LiteralPath (Join-Path $projectRoot $fileName) -Destination $bundleDocs
