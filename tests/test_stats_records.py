@@ -80,6 +80,8 @@ class StatsRecordTests(unittest.TestCase):
         original = {"created_at": "2026-01-01T10:00:00Z", "location": "room-A", "world_id": "world-edited"}
         stats_records.save_vrcx_record("location", original, 1)
         snapshot = stats_records.create_record_snapshot()
+        snapshot = stats_records.create_record_snapshot()
+        self.assertEqual(len(list((self.data / "record-backups").iterdir())), 2)
         stats_records.save_vrcx_record("location", dict(original, world_id="world-later"), 1)
         stats_records.restore_record_snapshot(snapshot)
         records = {record["id"]: record for record in stats_records.list_vrcx_records("location")}

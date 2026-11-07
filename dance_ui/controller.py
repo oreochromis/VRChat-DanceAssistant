@@ -49,6 +49,8 @@ class CoreController(QObject):
         self._demo_maintenance_timer.timeout.connect(self._finish_demo_maintenance)
         self._startup_events = []
         self._vrcx_pending = None
+        self._vrcx_last_success = 0.0
+        self._vrcx_last_key = None
         self._initializing = not demo
         self._maintenance_cancel = threading.Event()
         self._listener = self._receive
@@ -453,6 +455,9 @@ class CoreController(QObject):
             })
             return
 
+        key = (start_ts, end_ts, path)
+        if automatic and self._vrcx_last_key == key and time.time() - self._vrcx_last_success < 5:
+            return
         self._vrcx_pending = (start_ts, end_ts, path, automatic)
         self._schedule_vrcx()
 
@@ -498,6 +503,8 @@ class CoreController(QObject):
             if not vrcx.is_vrcx_archive(source):
                 vrcx.save_vrcx_path(source)
             vrcx.save_vrcx_stats(result)
+            self._vrcx_last_success = time.time()
+            self._vrcx_last_key = (start_ts, end_ts, path)
             return result
 
         self._run(operation, read)

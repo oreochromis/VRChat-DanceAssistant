@@ -1084,6 +1084,10 @@ class MainWindow(QMainWindow, Pages):
         self.banner.set_action("重建索引", "rebuild")
 
     def _on_banner_action(self, operation):
+        if operation == "vrcx_retry":
+            self.clear_notice(self._banner_generation)
+            self.play_stats_page.read_vrcx_stats(automatic=True)
+            return
         if operation != "rebuild":
             return
         self._index_notice_dismissed = self._index_notice_key
@@ -1094,14 +1098,27 @@ class MainWindow(QMainWindow, Pages):
         else:
             self.notify("请先启动缓存服务，再点击“重建索引”。", error=True, persistent=True)
 
+    @staticmethod
+    def _vrcx_error_reason(message):
+        text = str(message).lower()
+        if "database is locked" in text:
+            return "数据库正被占用，将自动重试"
+        if "没有找到" in text or "未找到" in text or "missing" in text or "不存在" in text:
+            return "未找到 VRCX 数据库，请检查自动查找结果或手动选择"
+        if "cookie" in text or "credential" in text or "401" in text or "登录" in text:
+            return "VRCX 登录状态不可用，请重新登录后重试"
+        if "没有可用的时间记录" in text:
+            return "记录不完整，当前只能还原部分数据"
+        return "同步或读取失败，请查看技术详情后重试"
+
     def vrcx_auto_error(self, message):
         message = str(message)
         if message == self._vrcx_banner_error:
             return
         self._vrcx_banner_error = message
-        summary = ("VRCX 自动同步或数据库查找失败：" + friendly_message(message)
-                   + "；现有统计会继续保留，检测到新记录后重试。")
+        summary = "VRCX 同步提示：" + self._vrcx_error_reason(message) + "；现有统计会继续保留。"
         self.notify(summary, error=True, persistent=True, raw=message)
+        self.banner.set_action("手动重试", "vrcx_retry")
 
     def clear_vrcx_auto_error(self):
         if not self._vrcx_banner_error:

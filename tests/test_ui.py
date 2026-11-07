@@ -10,6 +10,7 @@ import io
 import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack, redirect_stderr
 from pathlib import Path
@@ -324,6 +325,20 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 3])
 
+    def test_vrcx_success_is_reused_for_five_seconds(self):
+        for name in ("load_config", "load_mapping", "add_listener", "remove_listener"):
+            self.allow_core(name)
+        self.allow_core("get_config", result=copy.deepcopy(self.config))
+        controller = CoreController(demo=False)
+        self.addCleanup(controller.dispose)
+        controller._vrcx_last_key = (0, 1, "custom.sqlite3")
+        controller._vrcx_last_success = time.time()
+        controller._run = Mock()
+        controller.vrcx_stats(0, 1, path="custom.sqlite3", automatic=True)
+        controller._run.assert_not_called()
+        controller.vrcx_stats(0, 1, path="custom.sqlite3", automatic=False)
+        controller._run.assert_called_once()
+
     def test_statistics_and_report_actions_force_vrcx_sync(self):
         window, _, _ = self.make_window()
         stats = window.play_stats_page
@@ -460,6 +475,12 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window._banner_generation, generation)
         window.clear_vrcx_auto_error()
         self.assertFalse(window.banner.isVisible())
+        window.vrcx_auto_error("database is locked")
+        self.assertIn("数据库正被占用", window.banner.text())
+        self.assertEqual(window.banner.action_button.text(), "手动重试")
+        with patch.object(window.play_stats_page, "read_vrcx_stats") as retry:
+            QTest.mouseClick(window.banner.action_button, Qt.MouseButton.LeftButton)
+            retry.assert_called_once_with(automatic=True)
         missing = self.root / "missing.sqlite3"
         with patch("dance_ui.play_stats.resolve_vrcx_path", return_value=missing):
             window.play_stats_page._update_vrcx_path_tooltip()
