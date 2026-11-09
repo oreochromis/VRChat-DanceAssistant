@@ -223,8 +223,10 @@ class PlayStatsPage(QWidget):
         box.addWidget(self.backup_row)
         box.addStretch()
 
+        self._pending_play_key = None
         self.controller.result.connect(self._on_result)
         self.controller.error.connect(self._on_error)
+        self.controller.busy_changed.connect(self._on_busy)
         if not self.controller.demo:
             cached = load_vrcx_stats()
             if cached:
@@ -472,10 +474,19 @@ class PlayStatsPage(QWidget):
             self.report_button.setEnabled(False)
         self.summary.setText("正在更新点歌历史；当前显示上次结果…" if self._songs else "正在读取点歌历史…")
         self.loading.show()
+        self._pending_play_key = key
+        if self.controller.busy("play_history_stats"):
+            return
+        self._pending_play_key = None
         self.controller.play_history_stats(key["start_ts"], key["end_ts"], key["kind"], player or None)
+
+    def _on_busy(self, operation, busy):
+        if operation == "play_history_stats" and not busy and self._pending_play_key is not None:
+            self.refresh()
 
     def _apply_play_stats(self, result, persist=True):
         self.loading.hide()
+        self._pending_play_key = None
         self._update_player_options(result.get("available_players"))
         self._result_key = self._cache_key()
         result["updated_at"] = float(result.get("updated_at") or time.time())
@@ -502,6 +513,9 @@ class PlayStatsPage(QWidget):
             self._refresh_open_report()
             return
         if operation != "play_history_stats" or not isinstance(result, dict):
+            return
+        request_key = result.pop("_request_key", None)
+        if request_key is not None and request_key != self._cache_key():
             return
         self._apply_play_stats(result)
 

@@ -109,7 +109,7 @@ def describe_embedded_icon(executable: bytes, expected_ico: bytes) -> dict:
     resources = _pe_resources(executable)
     groups = [(key, value) for key, value in resources.items() if key[0] == 14]
     if len(groups) != 1:
-        raise ValueError("The executable must contain exactly one approved PY icon group.")
+        raise ValueError("The executable must contain exactly one approved DA icon group.")
     for (_, group_id, language), group in groups:
         reserved, type_, count = _unpack("<HHH", group, 0)
         if reserved or type_ != 1 or count != len(frames) or len(group) != 6 + count * 14:
@@ -136,4 +136,4 @@ def describe_embedded_icon(executable: bytes, expected_ico: bytes) -> dict:
                 "frame_sizes": [[frame["width"], frame["height"]] for frame in frames],
                 "frame_count": len(frames), "group_id": group_id, "language": language,
             }
-    raise ValueError("The executable does not embed the approved PY application icon.")
+    raise ValueError("The executable does not embed the approved DA application icon.")

@@ -193,6 +193,7 @@ class UIIntegrationTests(unittest.TestCase):
 
     def test_all_five_navigation_buttons_open_their_page(self):
         window, controller, _ = self.make_window()
+        self.assertEqual(window.windowTitle(), "VRChat DanceAssistant · 界面演示")
         self.assertEqual([button.text() for button in window.nav_buttons], ["运行", "存储", "统计", "设置", "外观"])
         self.assertEqual(window.stack.count(), 6)
         for index, button in enumerate(window.nav_buttons):
@@ -325,6 +326,27 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(len(attempts), 3)
         self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 3])
 
+    def test_vrcx_profile_sync_still_runs_when_no_time_records_exist(self):
+        for name in ("load_config", "load_mapping", "add_listener", "remove_listener"):
+            self.allow_core(name)
+        self.allow_core("get_config", result=copy.deepcopy(self.config))
+        controller = CoreController(demo=False)
+        self.addCleanup(controller.dispose)
+        errors = []
+        controller.error.connect(lambda operation, message: errors.append((operation, message)))
+        with (patch("dance_ui.vrcx_stats.resolve_vrcx_path", return_value=Path("custom.sqlite3")),
+              patch("dance_ui.vrcx_stats.read_co_room_stats",
+                    side_effect=ValueError("VRCX 与本软件日志中都没有可用的时间记录。")),
+              patch("dance_ui.vrcx_profile.sync_vrcx_profile",
+                    return_value={"id": "usr_test", "name": "测试账号", "avatar": "avatar.png"}) as profile,
+              patch("dance_ui.vrcx_profile.sync_friend_avatars") as friends,
+              patch("dance_ui.vrcx_stats.save_self_name")):
+            controller.vrcx_stats(0, 1, path="custom.sqlite3")
+            self.wait_until(lambda: bool(errors))
+        profile.assert_called_once()
+        friends.assert_not_called()
+        self.assertIn("没有可用的时间记录", errors[0][1])
+
     def test_vrcx_success_is_reused_for_five_seconds(self):
         for name in ("load_config", "load_mapping", "add_listener", "remove_listener"):
             self.allow_core(name)
@@ -354,7 +376,7 @@ class UIIntegrationTests(unittest.TestCase):
         window, _, _ = self.make_window()
         self.assertTrue(window.vrcx_sync_card.isHidden())
         self.assertTrue(window.vrcx_group_heading.isHidden())
-        self.assertTrue(window.network_group_heading.isHidden())
+        self.assertFalse(window.network_group_heading.isHidden())
         window.set_ui_mode("advanced")
         self.assertFalse(window.vrcx_sync_card.isHidden())
         self.assertFalse(window.vrcx_group_heading.isHidden())
@@ -366,6 +388,42 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.play_stats_page.vrcx_table.rowCount(), 2)
         window.set_ui_mode("simple")
         self.assertTrue(window.vrcx_sync_card.isHidden())
+
+    def test_favorite_cdn_scan_is_standard_and_threads_are_advanced(self):
+        window, controller, _ = self.make_window()
+        window.navigate(3)
+        self.assertFalse(window.network_card.isHidden())
+        self.assertFalse(window.quick_scan_button.isHidden())
+        self.assertFalse(window.full_scan_button.isHidden())
+        self.assertTrue(window.speedtest_threads_row.isHidden())
+        self.assertFalse(window.favorite_scan_button.isEnabled())
+        favorites = ["104.16.0.1", "104.17.0.1", "8.8.8.8"]
+        window.save_favorites(favorites)
+        self.assertTrue(window.favorite_scan_button.isEnabled())
+        with patch.object(controller, "scan", wraps=controller.scan) as scan:
+            QTest.mouseClick(window.favorite_scan_button, Qt.MouseButton.LeftButton)
+        scan.assert_called_once_with(full=False, ips=favorites)
+        self.assertEqual(window.scan_table.rowCount(), 2)
+        self.assertEqual(window._scan_results[0]["ip"], "104.16.0.1")
+        controller.event.emit("speedtest_result", {"ip": "8.8.8.8", "mbps": 2.0, "error": None})
+        self.assertNotIn("扩大范围", window.scan_status.text())
+        self.assertIn("3 条结果", window.scan_status.text())
+        self.assertTrue(window.speedtest_candidates_row.isHidden())
+        self.assertTrue(window.speedtest_sample_row.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.full_scan_button.isHidden())
+        self.assertFalse(window.speedtest_threads_row.isHidden())
+        self.assertFalse(window.speedtest_candidates_row.isHidden())
+        self.assertFalse(window.speedtest_sample_row.isHidden())
+        window.speedtest_threads.setValue(5)
+        window.speedtest_candidates.setValue(12)
+        window.speedtest_sample_mb.setValue(6)
+        window.apply_settings("settings")
+        self.assertEqual(controller.config()["speedtest_threads"], 5)
+        self.assertEqual(controller.config()["speedtest_candidates"], 12)
+        self.assertEqual(controller.config()["speedtest_sample_mb"], 6)
+        self.assertIn("最多 12 个候选", window.scan_status.text())
+        self.assertIn("下载 6MB", window.scan_status.text())
 
     def test_record_editor_supports_real_crud_on_an_isolated_copy(self):
         import sqlite3
@@ -547,18 +605,31 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertGreaterEqual(contrast_ratio(colors["on_thumb"].name(), colors["thumb"].name()), 4.5)
         self.assertEqual(theme_contrast_warnings(store.active, store.preferences), [])
 
-    def test_mouse_wheel_does_not_change_combo_selection(self):
+    def test_mouse_wheel_does_not_change_input_values(self):
         window, _, _ = self.make_window()
-        from PySide6.QtCore import QPoint, QPointF
         from PySide6.QtGui import QWheelEvent
+        from PySide6.QtWidgets import QDateTimeEdit, QDoubleSpinBox
+
+        def wheel(control):
+            event = QWheelEvent(QPointF(8, 8), QPointF(8, 8), QPoint(0, 0), QPoint(0, -120),
+                                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                                Qt.ScrollPhase.NoScrollPhase, False)
+            QApplication.sendEvent(control, event)
+            self.assertFalse(event.isAccepted())
+
         combo = window.appearance_page.theme_combo
         combo.setCurrentIndex(0)
-        event = QWheelEvent(QPointF(8, 8), QPointF(8, 8), QPoint(0, 0), QPoint(0, -120),
-                            Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
-                            Qt.ScrollPhase.NoScrollPhase, False)
-        QApplication.sendEvent(combo, event)
+        wheel(combo)
         self.assertEqual(combo.currentIndex(), 0)
-        self.assertFalse(event.isAccepted())
+
+        controls = [window.preload_count, window.speedtest_threads, QDoubleSpinBox(),
+                    window.play_stats_page.start, QDateTimeEdit()]
+        for control in controls:
+            with self.subTest(control=control.metaObject().className()):
+                before = control.date() if hasattr(control, "date") else control.value()
+                wheel(control)
+                after = control.date() if hasattr(control, "date") else control.value()
+                self.assertEqual(after, before)
 
     def test_session_metrics_use_distinct_semantic_colors(self):
         window, _, _ = self.make_window()
@@ -568,6 +639,39 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.session_hits.property("metricTone"), "success")
         self.assertEqual(window.session_misses.property("metricTone"), "warning")
         self.assertEqual(window.session_saved.property("metricTone"), "highlight")
+
+    def test_play_stats_discards_stale_result_and_loads_latest_filter(self):
+        with patch.object(CoreController, "play_history_stats", Mock()):
+            window, _, _ = self.make_window(demo=False)
+            QApplication.processEvents()
+        stats = window.play_stats_page
+        stats._self_name_value = "Tester"
+        first_entered, second_entered = threading.Event(), threading.Event()
+        first_release, second_release = threading.Event(), threading.Event()
+        self.release_events.extend((first_release, second_release))
+        kinds = []
+
+        def read(start_ts, end_ts, kind, player):
+            kinds.append(kind)
+            entered = first_entered if kind == "pypy" else second_entered
+            release = first_release if kind == "pypy" else second_release
+            entered.set()
+            release.wait(2)
+            return {"total": 1, "songs": [{"rank": 1, "count": 1, "id": 1, "kind": kind,
+                                           "name": kind, "first_ts": start_ts, "last_ts": start_ts}],
+                    "available_players": ["Tester"], "earliest": start_ts}
+
+        with patch.object(core, "play_history_stats", side_effect=read):
+            stats.source.setCurrentIndex(stats.source.findData("pypy"))
+            self.wait_until(first_entered.is_set)
+            stats.source.setCurrentIndex(stats.source.findData("wd"))
+            first_release.set()
+            self.wait_until(second_entered.is_set)
+            self.assertFalse(any(song["kind"] == "pypy" for song in stats._songs))
+            second_release.set()
+            self.wait_until(lambda: stats._songs and stats._songs[0]["kind"] == "wd")
+        self.assertEqual(kinds, ["pypy", "wd"])
+        self.assertEqual(stats.table.item(0, 4).text(), "WannaDance")
 
     def test_report_cache_restores_before_background_refresh_and_shows_timestamp(self):
         with patch.object(CoreController, "play_history_stats", Mock()):
@@ -682,11 +786,35 @@ class UIIntegrationTests(unittest.TestCase):
         rich_data["vrcx"] = {"daily_play": [
             {"day": f"{year}-01-01", "seconds": 180},
             {"day": f"{year}-01-02", "seconds": 181},
-        ], "friends": [{"user_id": "friend-1", "name": "Friend", "seconds": 181, "sessions": 1}]}
-        rich = ReportCanvas(rich_data, QDate(year, 1, 1), QDate.currentDate(), "全部来源", store.active)
+        ], "friends": [
+            {"user_id": f"friend-{index}", "name": f"Friend {index}",
+             "seconds": 500 - index, "days": 5 - index}
+            for index in range(1, 5)
+        ], "play_day_count": 2, "average_play_seconds": 1800,
+           "favorite_hour": 20, "favorite_hour_seconds": 2400}
+        for index, color in ((1, Qt.GlobalColor.blue), (3, Qt.GlobalColor.red)):
+            avatar = QImage(48, 64, QImage.Format.Format_RGB32)
+            avatar.fill(color)
+            self.assertTrue(avatar.save(str(self.root / f"friend-{index}.png")))
+        with patch("dance_ui.play_report.friend_avatar_path",
+                   side_effect=lambda user_id: self.root / f"{user_id}.png"):
+            rich = ReportCanvas(rich_data, QDate(year, 1, 1), QDate.currentDate(), "全部来源", store.active)
         self.assertEqual(rich.active_days, 1)
-        self.assertEqual(rich.dance_partners, 1)
+        self.assertEqual(rich.dance_partners, 4)
+        self.assertEqual(set(rich.friend_avatars), {"friend-1", "friend-3"})
+        self.assertEqual(rich.play_day_count, 2)
+        self.assertEqual(rich.average_play_seconds, 1800)
+        self.assertEqual(rich.favorite_hour, 20)
         self.assertLess(sparse._report_height(900), rich._report_height(900))
+        rich.resize(900, rich._report_height(900))
+        self.assertFalse(rich.grab().isNull())
+        self.assertEqual(len(rich._metric_card_rects), 6)
+        self.assertEqual(len({rect.x() for rect in rich._metric_card_rects}), 2)
+        self.assertEqual(len({rect.y() for rect in rich._metric_card_rects}), 3)
+        self.assertEqual(len(rich._friend_row_rects), 3)
+        self.assertEqual([friend["user_id"] for friend in rich.vrcx_friends[:3]],
+                         ["friend-1", "friend-2", "friend-3"])
+        self.assertTrue(rich.save_png(str(self.root / "friends-report.png")))
         rich.close()
         sparse.resize(900, sparse._report_height(900))
         self.assertFalse(sparse.grab().isNull())
@@ -989,6 +1117,23 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(order, ["admin", "claim"])
         application.assert_not_called()
 
+    def test_gui_entry_reports_qt_dll_load_failure(self):
+        import builtins
+        import dance_cache_gui
+
+        original_import = builtins.__import__
+
+        def blocked_import(name, *args, **kwargs):
+            if name == "dance_ui.vr_panel_worker":
+                raise ImportError("DLL load failed while importing QtCore")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=blocked_import), \
+                patch("ctypes.windll.user32.MessageBoxW", return_value=1) as dialog:
+            self.assertEqual(dance_cache_gui.main(), 1)
+        self.assertIn("DLL load failed", dialog.call_args.args[1])
+        self.assertIn("requirements.txt", dialog.call_args.args[1])
+
     def test_taskbar_identity_is_set_before_qapplication_even_in_demo(self):
         from dance_ui import app as app_module
 
@@ -1019,8 +1164,8 @@ class UIIntegrationTests(unittest.TestCase):
 
         original_window = app_module.MainWindow
 
-        def make_window(controller, store):
-            window = original_window(controller, store)
+        def make_window(controller, store, auto_start=True):
+            window = original_window(controller, store, auto_start=auto_start)
             self.windows.append((window, controller))
             return window
 
@@ -1045,6 +1190,29 @@ class UIIntegrationTests(unittest.TestCase):
         store.assert_not_called()
         critical.assert_called_once()
         self.assertIn("app-icon.png", critical.call_args.args[2])
+
+    def test_main_no_autostart_reaches_window_without_starting_service(self):
+        from dance_ui import app as app_module
+
+        instance = Mock()
+        instance.wake_event = None
+        controller = Mock()
+        controller.demo = False
+        store = Mock()
+        store.warnings = []
+        with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
+                patch.dict("sys.modules", {"dance_ui.single_instance": SimpleNamespace(claim_instance=Mock(return_value=instance))}), \
+                patch.object(app_module.QApplication, "instance", return_value=self.app), \
+                patch.object(app_module.QFontDatabase, "families", return_value=["PingFang SC"]), \
+                patch.object(app_module, "ThemeStore", return_value=store), \
+                patch.object(app_module, "CoreController", return_value=controller), \
+                patch.object(app_module, "MainWindow") as window_type, \
+                patch.object(core, "count_stale_hosts", return_value=0), \
+                patch.object(self.app, "exec", return_value=0):
+            self.assertEqual(app_module.main(["--no-autostart", "--state-dir", str(self.root)]), 0)
+        window_type.assert_called_once_with(controller, store, auto_start=False)
+        controller.start.assert_not_called()
+        instance.close.assert_called_once_with()
 
     def test_no_autostart_still_claims_instance_and_releases_on_initialization_failure(self):
         from dance_ui import app as app_module
@@ -1115,6 +1283,54 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertNotIn("正在", window.apply_hints["settings"].text())
         self.assertIn("失败", window.apply_hints["settings"].text())
         self.assertIn("IP 地址格式无效", window.banner.text())
+
+    def test_cooldown_trigger_is_standard_saved_and_reflected_in_hints(self):
+        window, controller, _ = self.make_window()
+        self.assertFalse(window.cooldown_trigger_row.isHidden())
+        self.assertFalse(window.auto_prefer_cdn.isHidden())
+        self.assertFalse(window.auto_start_service.isHidden())
+        self.assertEqual(window.cooldown_trigger.currentData(), "next")
+        self.assertEqual(window.cooldown_trigger.itemText(0), "播放至下一首歌时自动触发")
+        self.assertEqual(window.cooldown_trigger.itemText(1), "通过点击房间“重新载入视频”按键触发")
+        explanation = self.cell_text(window.cooldown_trigger_row)
+        self.assertIn("播放至下一首歌时自动触发", explanation)
+        self.assertIn("重新载入视频", explanation)
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.cooldown_trigger_row.isHidden())
+        window.cooldown_trigger.setCurrentIndex(window.cooldown_trigger.findData("reload"))
+        window.apply_settings("settings")
+        self.assertEqual(controller.config()["cooldown_trigger"], "reload")
+        self.assertIn("刷新", window.cooldown_hint.text())
+        window.set_ui_mode("simple")
+        self.assertFalse(window.cooldown_trigger_row.isHidden())
+
+    def test_reset_all_settings_restores_defaults_without_deleting_user_data(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window()
+        window.navigate(3)
+        for mode in ("simple", "advanced"):
+            window.set_ui_mode(mode)
+            self.assertFalse(window.reset_row.isHidden())
+            self.assertFalse(window.reset_settings_button.isHidden())
+        controller.event.emit("state", {"running": False, "phase": "stopped", "warnings": []})
+        window.preload_count.setValue(8)
+        window.speedtest_threads.setValue(5)
+        window.cooldown_trigger.setCurrentIndex(window.cooldown_trigger.findData("reload"))
+        window.library_path.setText("D:/custom-library")
+        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.reset_all_settings()
+        self.assertEqual(controller.config()["preload_count"], 3)
+        self.assertEqual(controller.config()["speedtest_threads"], 3)
+        self.assertEqual(controller.config()["cooldown_trigger"], "next")
+        self.assertEqual(controller.config()["library_dir"], "")
+        self.assertEqual(window.cooldown_trigger.currentData(), "next")
+        self.assertTrue(window.reset_settings_button.isEnabled())
+        self.assertIn("已恢复默认", window.banner.text())
+        controller.event.emit("state", {"running": True, "phase": "running", "warnings": []})
+        with patch.object(QMessageBox, "question") as question:
+            window.reset_all_settings()
+        question.assert_not_called()
+        self.assertIn("停止服务", window.banner.text())
 
     def test_demo_default_cooldown_is_presented_and_arms_without_real_service(self):
         window, controller, _ = self.make_window()
@@ -1405,6 +1621,68 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("已取消", window.maintenance_status.text())
         self.assertNotIn("维护完成", window.maintenance_status.text())
         self.assertIsNone(window._maintenance)
+
+    def test_empty_library_automatically_shows_full_catalog_as_missing(self):
+        window, controller, _ = self.make_window()
+        empty = {"dir": "空曲库", "kind": "pypy", "songs": [], "parts": 0, "total_bytes": 0}
+        with patch.object(controller, "_demo_library_scan", return_value=empty):
+            window.open_library_browser("pypy")
+        browser = window._library_browser
+        self.assertIn("共 0 首", browser.summary.text())
+        self.assertEqual(browser.table.rowCount(), 2)
+        self.assertEqual(browser.table.item(0, 0).text(), "9998")
+        self.assertEqual(browser.table.item(0, 2).text(), "已下架")
+        self.assertEqual(browser.table.item(1, 0).text(), "9999")
+        self.assertEqual(browser.table.item(1, 2).text(), "缺失")
+        self.assertIn("缺失 2 首", browser.missing_label.text())
+        browser.close()
+
+    def test_library_browser_shows_and_filters_wd_favorites(self):
+        window, controller, _ = self.make_window()
+        window.open_library_browser("wd")
+        browser = window._library_browser
+        controller.result.emit("library_scan", {
+            "dir": self.root, "kind": "wd", "parts": 0, "total_bytes": 15,
+            "songs": [
+                {"id": 7, "name": "Favorite", "size": 7, "mtime": 100, "favorite": True},
+                {"id": 8, "name": "Other", "size": 8, "mtime": 100, "favorite": False},
+            ],
+        })
+        self.assertIn("💗", browser.table.item(0, 1).text())
+        self.assertNotIn("💗", browser.table.item(1, 1).text())
+        self.assertIn("1 首收藏", browser.summary.text())
+        browser.only_favorites.setChecked(True)
+        self.assertFalse(browser.table.isRowHidden(0))
+        self.assertTrue(browser.table.isRowHidden(1))
+        browser.source.setCurrentIndex(browser.source.findData("pypy"))
+        self.assertTrue(browser.only_favorites.isHidden())
+        browser.close()
+        QApplication.processEvents()
+        self.assertIsNone(window._library_browser)
+
+    def test_auto_cdn_result_updates_ip_without_overwriting_other_drafts(self):
+        window, controller, _ = self.make_window()
+        window.preload_count.setValue(7)
+        window.preferred_ip.setText("9.9.9.9")
+        controller._demo_config["preferred_cdn_ip"] = "1.1.1.1"
+        controller.event.emit("config", {"changed": ["preferred_cdn_ip"]})
+        self.assertEqual(window.preferred_ip.text(), "1.1.1.1")
+        self.assertEqual(window.preload_count.value(), 7)
+        self.assertTrue(window._dirty["settings"])
+
+    def test_double_click_ip_fills_draft_without_applying_other_settings(self):
+        window, controller, _ = self.make_window()
+        original = controller.config()["preferred_cdn_ip"]
+        window.finish_scan([{"ip": "1.1.1.1", "mbps": 2.5, "error": None},
+                            {"ip": "8.8.8.8", "mbps": 4.0, "error": None}])
+        window.scan_table.selectRow(0)
+        window.scan_table.doubleClicked.emit(window.scan_table.model().index(0, 0))
+        self.assertEqual(window.preferred_ip.text(), "8.8.8.8")
+        self.assertEqual(controller.config()["preferred_cdn_ip"], original)
+        window.save_favorites(["1.1.1.1"])
+        window.favorites_table.doubleClicked.emit(window.favorites_table.model().index(0, 0))
+        self.assertEqual(window.preferred_ip.text(), "1.1.1.1")
+        self.assertEqual(controller.config()["preferred_cdn_ip"], original)
 
     def test_cdn_results_favorites_persist_without_applying_settings(self):
         from dance_ui.cdn_favorites import CDNFavorites

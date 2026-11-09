@@ -9,7 +9,7 @@ from PIL.ImageQt import ImageQt
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QObject, QPoint, QPointF, Signal, QTimer
 from PySide6.QtGui import QColor, QIcon, QImage, QLinearGradient, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
+    QAbstractSpinBox, QComboBox, QFrame, QGraphicsEffect, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy,
     QTableWidget, QHeaderView, QAbstractItemView, QVBoxLayout, QWidget,
 )
 
@@ -352,18 +352,21 @@ class TextHalo(QGraphicsEffect):
         painter.drawPixmap(offset, pixmap)
 
 
-class ComboWheelFilter(QObject):
+class InputWheelFilter(QObject):
     def eventFilter(self, obj, event):
-        if isinstance(obj, QComboBox) and event.type() == QEvent.Type.Wheel and not obj.view().isVisible():
+        if event.type() != QEvent.Type.Wheel:
+            return False
+        if isinstance(obj, QAbstractSpinBox) or (
+                isinstance(obj, QComboBox) and not obj.view().isVisible()):
             event.ignore()
             return True
-        return super().eventFilter(obj, event)
+        return False
 
 
-def install_combo_wheel_filter(app):
-    if getattr(app, "_dance_combo_wheel_filter", None) is None:
-        app._dance_combo_wheel_filter = ComboWheelFilter(app)
-        app.installEventFilter(app._dance_combo_wheel_filter)
+def install_input_wheel_filter(app):
+    if getattr(app, "_dance_input_wheel_filter", None) is None:
+        app._dance_input_wheel_filter = InputWheelFilter(app)
+        app.installEventFilter(app._dance_input_wheel_filter)
 
 
 class NoticeBanner(QFrame):

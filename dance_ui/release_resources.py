@@ -15,17 +15,17 @@ COOLDOWN_SIZE_BYTES = 5_073_920
 COOLDOWN_SHA256 = "453650779b315339a1c68b29a4b486d9fe0c85b49b3c8e0a5af94ff770d7b135"
 APP_ICON_PNG_RELATIVE_PATH = "assets/app-icon.png"
 APP_ICON_ICO_RELATIVE_PATH = "assets/app-icon.ico"
-APP_ICON_PNG_SHA256 = "bc3c9218c861c121da0a8053442ac5882a9e40fb8d4c3b35c570405fcc345193"
-APP_ICON_ICO_SHA256 = "5e8ca9a06eb693f0c1d8e679357480e31a48d8208751fc06ce0a9112ec67d129"
+APP_ICON_PNG_SHA256 = "dfeb90cb509d7e65d7afa0c2e86e6eed6a0ffec83391268f6f5e2e928b5e3e89"
+APP_ICON_ICO_SHA256 = "f8135478e9e7ce428d95840b71c723c426861a1c269a1e07455042d96eee20a2"
 APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
 def validate_app_icon_bytes(png: bytes, ico: bytes) -> dict:
     """Identify the approved PNG and its seven-size Windows ICO conversion."""
     if not png.startswith(b"\x89PNG\r\n\x1a\n") or hashlib.sha256(png).hexdigest() != APP_ICON_PNG_SHA256:
-        raise ValueError("The application PNG icon differs from the approved PY icon.")
+        raise ValueError("The application PNG icon differs from the approved DA icon.")
     if hashlib.sha256(ico).hexdigest() != APP_ICON_ICO_SHA256:
-        raise ValueError("The application ICO icon differs from the approved PY icon.")
+        raise ValueError("The application ICO icon differs from the approved DA icon.")
     frames = ico_frames(ico)
     if [(frame["width"], frame["height"]) for frame in frames] != [(size, size) for size in APP_ICON_SIZES]:
         raise ValueError("The application ICO must contain all seven approved image sizes.")

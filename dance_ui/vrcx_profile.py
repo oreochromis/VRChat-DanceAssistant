@@ -80,7 +80,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/3.9.9.65",
+        "User-Agent": "VRChatDanceAssistant/4.0.0",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })
@@ -119,12 +119,10 @@ def sync_vrcx_profile(path):
         avatar_temporary.write_bytes(avatar)
         os.replace(avatar_temporary, avatar_path())
     else:
-        current = load_vrcx_profile()
-        if not current or current.get("id") != account_id:
-            try:
-                avatar_path().unlink()
-            except FileNotFoundError:
-                pass
+        try:
+            avatar_path().unlink()
+        except FileNotFoundError:
+            pass
     result = load_vrcx_profile()
     result["name"] = name
     return result

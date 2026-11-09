@@ -3,8 +3,10 @@ import copy
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import threading
+import time
 import unittest
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
@@ -419,6 +421,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(before, self.dc.get_config())
         self.assertEqual(saved, (self.root / "config.json").read_bytes())
 
+    def test_speedtest_settings_are_validated_and_used(self):
+        before = self.dc.get_config()
+        for name, values in (("speedtest_threads", (0, 9, True, 1.5)),
+                             ("speedtest_candidates", (1, 65, True, 1.5)),
+                             ("speedtest_sample_mb", (0, 33, True, 1.5))):
+            for value in values:
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    self.dc.update_config({name: value})
+        self.assertEqual(self.dc.get_config(), before)
+        self.assertEqual(self.dc._speedtest_candidate_count(), 8)
+        self.assertEqual(self.dc._speedtest_sample_bytes(), 8 * 1048576)
+        self.dc.update_config({"speedtest_threads": 4, "speedtest_candidates": 12,
+                               "speedtest_sample_mb": 6})
+        self.assertEqual(self.dc._speedtest_candidate_count(), 12)
+        self.assertEqual(self.dc._speedtest_sample_bytes(), 6 * 1048576)
+        with mock.patch.object(self.dc, "_download_test", return_value=(2.0, None)) as download:
+            self.dc._measure_ips(["1.1.1.1"], "video.mp4")
+        self.assertEqual(download.call_args.args[2], 6 * 1048576)
+
     def test_atomic_save_failure_preserves_previous_configuration(self):
         before = self.dc.get_config()
         saved = (self.root / "config.json").read_bytes()
@@ -461,12 +482,99 @@ class CoreTests(unittest.TestCase):
             self.dc.update_config({"enable_youtube_cache": False})
         self.dc._running = False
 
+    def test_favorite_speedtest_skips_dns_and_uses_configured_concurrency(self):
+        self.dc._config["speedtest_threads"] = 3
+        favorites = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "8.8.8.8"]
+        lock = threading.Lock()
+        release = threading.Event()
+        active = 0
+        peak = 0
+
+        def download(ip, filename, nbytes):
+            nonlocal active, peak
+            with lock:
+                active += 1
+                peak = max(peak, active)
+                if active == 3:
+                    release.set()
+            release.wait(2)
+            with lock:
+                active -= 1
+            return 1.0, None
+
+        with mock.patch.object(self.dc, "gather_candidate_ips",
+                               side_effect=AssertionError("favorites must not use DNS")), \
+             mock.patch.object(self.dc, "_download_test", side_effect=download) as download_test:
+            self.dc.speed_test_ips(favorites)
+        self.assertEqual(download_test.call_count, len(favorites))
+        self.assertEqual(peak, 3)
+        done = self.events_of("speedtest_done")[-1]
+        self.assertEqual({item["ip"] for item in done["results"]}, set(favorites))
+
+    def test_cdn_pool_persists_results_and_discards_repeated_failures(self):
+        result = {"ip": "1.1.1.1", "mbps": 2.5, "error": None}
+        self.dc._record_speedtest_results([result])
+        path = Path(self.dc.cdn_pool_path())
+        saved = json.loads(path.read_text(encoding="utf-8"))["items"]["1.1.1.1"]
+        self.assertEqual(saved["mbps"], 2.5)
+        self.assertEqual(saved["failures"], 0)
+        self.assertGreater(saved["last_success"], 0)
+        self.dc._record_speedtest_results([{**result, "mbps": 9.0}], update_speed=False)
+        saved = json.loads(path.read_text(encoding="utf-8"))["items"]["1.1.1.1"]
+        self.assertEqual(saved["mbps"], 2.5)
+        for expected in (1, 2):
+            self.dc._record_speedtest_results([{"ip": "1.1.1.1", "mbps": None, "error": "timeout"}])
+            saved = json.loads(path.read_text(encoding="utf-8"))["items"]["1.1.1.1"]
+            self.assertEqual(saved["failures"], expected)
+        self.dc._record_speedtest_results([{"ip": "1.1.1.1", "mbps": None, "error": "timeout"}])
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["items"], {})
+        self.assertIn("cdn-pool.json", self.dc._STORAGE_FILES)
+
+    def test_quick_candidates_include_history_favorites_and_new_ips(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        (self.root / "cdn-favorites.json").write_text(json.dumps(["3.3.3.3"]), encoding="utf-8")
+        self.dc._record_speedtest_results([{"ip": "4.4.4.4", "mbps": 8.0, "error": None}])
+        random_ips = [f"104.16.0.{index}" for index in range(1, 21)]
+        with mock.patch.object(self.dc, "gather_candidate_ips", return_value=["2.2.2.2"]), \
+             mock.patch.object(self.dc, "_sample_cf_ips", return_value=random_ips):
+            candidates = self.dc._quick_cdn_candidates()
+        self.assertEqual(candidates[:4], ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4"])
+        self.assertEqual(len(candidates), self.dc.QUICK_CANDIDATE_LIMIT)
+        self.assertEqual(len(candidates), len(set(candidates)))
+        self.assertIn("104.16.0.1", candidates)
+
+    def test_quick_candidate_limit_also_caps_dns_and_favorites(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        self.dc._config["speedtest_candidates"] = 2
+        (self.root / "cdn-favorites.json").write_text(json.dumps(["3.3.3.3", "4.4.4.4"]), encoding="utf-8")
+        with mock.patch.object(self.dc, "gather_candidate_ips", return_value=["2.2.2.2", "5.5.5.5"]):
+            candidates = self.dc._quick_cdn_candidates()
+        self.assertEqual(candidates, ["1.1.1.1", "2.2.2.2"])
+
+    def test_quick_speedtest_probes_all_then_measures_top_four_and_current(self):
+        self.dc._config["preferred_cdn_ip"] = "6.6.6.6"
+        candidates = [f"{index}.{index}.{index}.{index}" for index in range(1, 7)]
+        speeds = {ip: float(11 - int(ip[0])) for ip in candidates}
+        calls = []
+
+        def download(ip, filename, nbytes, timeout=20):
+            calls.append((ip, nbytes))
+            return speeds[ip], None
+
+        with mock.patch.object(self.dc, "_download_test", side_effect=download):
+            results = self.dc._quick_speedtest(candidates, "video.mp4")
+        probed = {ip for ip, nbytes in calls if nbytes == self.dc.QUICK_PROBE_BYTES}
+        measured = {ip for ip, nbytes in calls if nbytes == self.dc.SPEEDTEST_BYTES}
+        self.assertEqual(probed, set(candidates))
+        self.assertEqual(measured, {"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "6.6.6.6"})
+        self.assertEqual({item["ip"] for item in results}, measured)
+
     def test_auto_speedtest_applies_fastest_ip(self):
         self.dc._config["preferred_cdn_ip"] = ""
-        with mock.patch.object(self.dc, "gather_candidate_ips", return_value=["1.1.1.1", "2.2.2.2"]), \
-             mock.patch.object(self.dc, "_download_test",
-                               side_effect=lambda ip, fn, n: (1.0 if ip == "1.1.1.1" else 5.0, None)), \
-             mock.patch.object(self.dc.time, "sleep", side_effect=AssertionError("no sleep")), \
+        results = [{"ip": "1.1.1.1", "mbps": 1.0, "error": None},
+                   {"ip": "2.2.2.2", "mbps": 5.0, "error": None}]
+        with mock.patch.object(self.dc, "_quick_cdn_candidates", return_value=["1.1.1.1", "2.2.2.2"]), \
+             mock.patch.object(self.dc, "_quick_speedtest", return_value=results), \
              mock.patch.object(self.dc._stop_event, "wait", return_value=False):
             self.dc.auto_speedtest_apply()
         self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "2.2.2.2")
@@ -475,10 +583,37 @@ class CoreTests(unittest.TestCase):
 
     def test_auto_speedtest_keeps_current_when_all_fail(self):
         self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
-        with mock.patch.object(self.dc, "gather_candidate_ips", return_value=["1.1.1.1"]), \
-             mock.patch.object(self.dc, "_download_test", return_value=(None, "HTTP 503")), \
+        results = [{"ip": "1.1.1.1", "mbps": None, "error": "HTTP 503"},
+                   {"ip": "2.2.2.2", "mbps": 0.0, "error": None}]
+        with mock.patch.object(self.dc, "_quick_cdn_candidates", return_value=["1.1.1.1", "2.2.2.2"]), \
+             mock.patch.object(self.dc, "_quick_speedtest", return_value=results), \
              mock.patch.object(self.dc._stop_event, "wait", return_value=False):
             self.dc.auto_speedtest_apply()
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
+
+    def test_auto_speedtest_does_not_replace_a_faster_current_ip(self):
+        self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
+        results = [{"ip": "1.1.1.1", "mbps": 5.0, "error": None},
+                   {"ip": "3.3.3.3", "mbps": 6.0, "error": None}]
+        with mock.patch.object(self.dc, "_quick_cdn_candidates", return_value=["1.1.1.1", "3.3.3.3"]), \
+             mock.patch.object(self.dc, "_quick_speedtest", return_value=results), \
+             mock.patch.object(self.dc._stop_event, "wait", return_value=False):
+            self.dc.auto_speedtest_apply()
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
+
+    def test_favorite_speedtest_auto_applies_best_and_compares_current(self):
+        self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
+        speeds = {"1.1.1.1": 5.0, "3.3.3.3": 4.0}
+        with mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes: (speeds[ip], None)) as download:
+            self.dc.speed_test_ips(["1.1.1.1"])
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "1.1.1.1")
+        self.assertEqual({call.args[0] for call in download.call_args_list}, {"1.1.1.1", "3.3.3.3"})
+        self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
+        speeds["3.3.3.3"] = 6.0
+        with mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes: (speeds[ip], None)):
+            self.dc.speed_test_ips(["1.1.1.1"])
         self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
 
     def test_preferred_cdn_ip_applies_to_redirected_subdomain(self):
@@ -699,6 +834,79 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(done["source"], "youtube")
         self.assertEqual(done["song_id"], 1)
 
+    def test_youtube_mapping_uses_bundle_direct_only_when_enabled(self):
+        self.dc._bundle_ytid = {99: "YouTubeID"}
+        self.dc._bundle_miss.clear()
+        self.dc._bundle_retry_at.clear()
+        self.dc._mapping[99] = "yt:https://www.youtube.com/watch?v=YouTubeID"
+        self.dc._config["bundle_direct"] = True
+        self.dc._config["preload_sequential"] = True
+        with mock.patch.object(self.dc, "_open_upstream_once",
+                               return_value=(FakeConnection(), FakeResponse(status=206))), \
+             mock.patch.object(self.dc, "resolve_video_filename", side_effect=self.dc._bundle_probe):
+            self.dc.submit_preload([{"songNum": 99}])
+        self.assertEqual(self.dc.song_route(99), ("cdn", "YouTubeID.mp4"))
+        self.assertEqual(self.dc._preload_dl_items, [
+            ("cdn", "YouTubeID.mp4", 99, self.dc.YOUTUBE_DIRECT_STALL_SECONDS),
+        ])
+        self.dc._mapping[99] = "yt:https://www.youtube.com/watch?v=YouTubeID"
+        self.dc._config["bundle_direct"] = False
+        with mock.patch.object(self.dc, "_bundle_probe") as probe:
+            self.dc.submit_preload([{"songNum": 99}])
+        probe.assert_not_called()
+        self.assertEqual(self.dc._preload_dl_items, [])
+
+    def test_bundle_direct_stall_aborts_partial_file(self):
+        response = FakeResponse([b"abc"], total=10)
+        with mock.patch.object(self.dc, "open_upstream", return_value=(FakeConnection(), response)):
+            self.assertFalse(self.dc.download_file("YouTubeID.mp4", 99, stall_timeout=0))
+        self.assertFalse((self.cache / "YouTubeID.mp4").exists())
+        self.assertFalse((self.cache / "YouTubeID.mp4.part").exists())
+        self.assertIn("没有新数据", self.events_of("download_done")[-1]["error"])
+
+    def test_sequential_preload_waits_for_current_playback_download(self):
+        self.dc._stop_event.clear()
+        first_started = threading.Event()
+        second_started = threading.Event()
+        calls = []
+        self.dc._begin_download(self.dc.target_path("one.mp4", 1), "one.mp4", 1)
+        self.dc._preload_dl_items[:] = [
+            ("cdn", "one.mp4", 1, None), ("cdn", "two.mp4", 2, None),
+        ]
+
+        def download(filename, *args, **kwargs):
+            calls.append(filename)
+            (first_started if filename == "one.mp4" else second_started).set()
+            return False
+
+        with mock.patch.object(self.dc, "download_file", side_effect=download):
+            thread = threading.Thread(target=self.dc._preload_download_loop, daemon=True)
+            thread.start()
+            try:
+                self.assertTrue(first_started.wait(2))
+                self.assertFalse(second_started.wait(.15))
+                with self.dc._downloads_lock:
+                    self.dc._downloads_in_progress.pop(self.dc._canonical_path(self.dc.target_path("one.mp4", 1)))
+                self.assertTrue(second_started.wait(2))
+            finally:
+                self.dc._stop_event.set()
+                thread.join(2)
+                self.dc._stop_event.clear()
+        self.assertEqual(calls, ["one.mp4", "two.mp4"])
+        self.assertFalse(thread.is_alive())
+
+    def test_range_playback_uses_the_sequential_preload_queue(self):
+        handler = self.proxy()
+        handler.headers = {"Range": "bytes=0-2"}
+        self.dc._config["preload_sequential"] = True
+        with mock.patch.object(self.dc, "open_upstream",
+                               return_value=(FakeConnection(), FakeResponse([b"abc"], total=3, status=206))), \
+             mock.patch.object(self.dc, "start_background_download") as background:
+            handler._proxy()
+        background.assert_not_called()
+        self.assertEqual(self.dc._preload_dl_items, [("cdn", "video.mp4", None, None)])
+        self.assertEqual(handler.wfile.getvalue(), b"abc")
+
     def test_proxy_error_body_is_forwarded_without_caching(self):
         response = FakeResponse([b"not found"], total=9, status=404)
         handler = self.proxy()
@@ -838,12 +1046,40 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([event["phase"] for event in self.events_of("cooldown")], ["armed", "serving", "idle"])
         self.dc._running = False
 
+    def test_cooldown_reload_follows_the_current_song_and_triggers_once(self):
+        self.queue_song()
+        clip = self.root / "relax.mp4"
+        clip.write_bytes(b"relax")
+        self.dc._config["cooldown_file"] = str(clip)
+        self.dc._config["cooldown_trigger"] = "reload"
+        self.dc._running = True
+        self.assertTrue(self.dc.cooldown_arm())
+        self.assertIsNone(self.dc.cooldown_check("video.mp4"))
+        self.assertIsNone(self.dc.cooldown_check("video.mp4", consume=False))
+        self.assertIsNone(self.dc.cooldown_check("next.mp4"))
+        self.dc.mark_mapping(3, "three.mp4")
+        third = [{"songNum": 3, "videoName": "Third", "playerName": "Player"}]
+        watcher = self.dc.LogWatcher()
+        watcher._on_queue(third)
+        self.assertIsNone(self.dc.cooldown_check("three.mp4"))
+        watcher._on_queue(third)
+        self.assertEqual(self.dc.cooldown_check("three.mp4"), str(clip))
+        self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
+        self.assertEqual(self.dc.cooldown_check("three.mp4"), str(clip))
+        self.assertIsNone(self.dc.cooldown_check("after.mp4"))
+        self.assertEqual(self.dc.get_cooldown_state()["phase"], "idle")
+        self.dc._running = False
+
     def test_cooldown_cannot_change_file_while_active(self):
         clip = self.root / "relax.mp4"
         clip.write_bytes(b"relax")
         self.dc._cooldown_armed = True
         with self.assertRaises(ValueError):
             self.dc.update_config({"cooldown_file": str(clip)})
+        with self.assertRaises(ValueError):
+            self.dc.update_config({"cooldown_trigger": "reload"})
+        with self.assertRaises(ValueError):
+            self.dc.update_config({"cooldown_trigger": "invalid"})
 
     def test_cooldown_cannot_arm_after_stop_has_been_requested(self):
         clip = self.root / "relax.mp4"
@@ -944,8 +1180,9 @@ class CoreTests(unittest.TestCase):
             {"i": 29, "o": ["https://example.com/not-youtube"]},
             {"i": 30},
         ]}
-        self.assertEqual(self.dc._load_bundle_data(data), 2)
+        self.assertEqual(self.dc._load_bundle_data(data), 4)
         self.assertEqual(self.dc._bundle_ytid, {3528: "IDMXoNj4xOU", 7152: "abcdef12345"})
+        self.assertEqual(self.dc._bundle_ids, {3528, 7152, 29, 30})
         # 空数据不清空旧表
         self.assertEqual(self.dc._load_bundle_data({"songs": []}), 0)
         self.assertEqual(self.dc._bundle_ytid[3528], "IDMXoNj4xOU")
@@ -1220,6 +1457,46 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["songs"][0]["id"], 7)
         self.assertEqual(result["songs"][0]["name"], "Song A - Group B")
 
+    def test_wd_favorites_are_saved_and_marked_in_library(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        (wd_dir / "wd_7.mp4").write_bytes(b"7")
+        (wd_dir / "wd_8.mp4").write_bytes(b"8")
+        (wd_dir / "wannadance_catalog.json").write_text(json.dumps({
+            "7": {"name": "Favorite Song", "artist": "Group"},
+            "8": {"name": "Other Song", "artist": "Group"},
+        }), encoding="utf-8")
+        lines = ["2026.11.07 Debug - [VideoListManager] loaded favorite dance ids from VRCPlayerData WannaFavorite:7,9"]
+        with mock.patch.object(self.dc, "find_newest_log", return_value=None):
+            self.assertTrue(self.dc.record_wd_favorites(lines))
+            result = self.dc.scan_library("wd")
+        self.assertEqual(self.dc.get_wd_favorites(), {7, 9})
+        self.assertTrue(result["songs"][0]["favorite"])
+        self.assertFalse(result["songs"][1]["favorite"])
+        self.assertEqual(json.loads((self.root / self.dc.WD_FAVORITES_FILENAME).read_text()), [7, 9])
+        self.assertTrue(self.dc.record_wd_favorites([
+            "[VideoListManager] saved favorite dance ids from VRCPlayerData WannaFavorite:8",
+        ]))
+        self.assertEqual(self.dc.get_wd_favorites(), {8})
+        self.assertFalse(self.dc.record_wd_favorites([]))
+        self.assertEqual(self.dc.get_wd_favorites(), {8})
+        self.assertTrue(self.dc.record_wd_favorites([
+            "[VideoListManager] saved favorite dance ids from VRCPlayerData WannaFavorite:",
+        ]))
+        self.assertEqual(self.dc.get_wd_favorites(), set())
+
+    def test_wd_favorites_fall_back_to_older_logs(self):
+        older = self.root / "output_log_2026-01-01.txt"
+        newer = self.root / "output_log_2026-01-02.txt"
+        older.write_text(
+            "[VideoListManager] loaded favorite dance ids from VRCPlayerData WannaFavorite:7,9\n",
+            encoding="utf-8")
+        newer.write_text("no favorites in this log\n", encoding="utf-8")
+        self.dc.VRC_LOG_DIR = str(self.root)
+        self.assertTrue(self.dc.refresh_wd_favorites())
+        self.assertEqual(self.dc.get_wd_favorites(), {7, 9})
+
     def test_scan_library_unset_dir_returns_none(self):
         self.dc._config["library_dir"] = ""
         self.assertIsNone(self.dc.scan_library("pypy"))
@@ -1230,14 +1507,16 @@ class CoreTests(unittest.TestCase):
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
             self.dc._bundle_ytid.update({100: "aaaaaaaaaaa", 101: "bbbbbbbbbbb"})
+            self.dc._bundle_ids = {100, 101}
         result = self.dc.library_missing("pypy")
-        self.assertEqual(result["source"], "官方歌单直取表")
+        self.assertEqual(result["source"], "官方歌单")
         self.assertEqual(result["expected"], 2)
         self.assertEqual(result["missing"], [101])
 
     def test_library_missing_pypy_without_bundle_returns_no_source(self):
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
+            self.dc._bundle_ids.clear()
         result = self.dc.library_missing("pypy")
         self.assertIsNone(result["source"])
         self.assertEqual(result["missing"], [])
@@ -1259,8 +1538,34 @@ class CoreTests(unittest.TestCase):
         wd_dir = self.root / "wdlib"
         wd_dir.mkdir()
         self.dc._config["wd_library_dir"] = str(wd_dir)
-        result = self.dc.library_missing("wd")
+        with mock.patch.object(self.dc, "_fetch_wd_catalog", side_effect=OSError("offline")):
+            result = self.dc.library_missing("wd")
         self.assertIsNone(result["source"])
+
+    def test_wd_catalog_fetches_empty_library_and_uses_stale_cache_offline(self):
+        wd_dir = self.root / "wdlib"
+        wd_dir.mkdir()
+        self.dc._config["wd_library_dir"] = str(wd_dir)
+        payload = {"groups": {"contents": [{"groupName": "Group", "songInfos": [
+            {"id": 7, "name": "Available", "artist": "Singer", "disable_public": 0},
+            {"id": 8, "name": "Disabled", "disable_public": 1},
+        ]}]}}
+        response = FakeResponse([json.dumps(payload).encode("utf-8")])
+        with mock.patch.object(self.dc.urllib.request, "urlopen", return_value=response):
+            result = self.dc.library_missing("wd")
+        self.assertEqual(result["source"], "WannaDance 官方清单")
+        self.assertEqual(result["expected"], 1)
+        self.assertEqual(result["missing"], [7])
+        self.assertEqual(result["names"], {7: "Available - Singer"})
+        cache = Path(self.dc.data_dir()) / self.dc.WD_CATALOG_CACHE_FILENAME
+        self.assertTrue(cache.is_file())
+        with mock.patch.object(self.dc.urllib.request, "urlopen",
+                               side_effect=AssertionError("fresh cache must not use network")):
+            self.assertEqual(self.dc.library_missing("wd")["missing"], [7])
+        old = time.time() - self.dc.WD_CATALOG_CACHE_SECONDS - 10
+        os.utime(cache, (old, old))
+        with mock.patch.object(self.dc.urllib.request, "urlopen", side_effect=OSError("offline")):
+            self.assertEqual(self.dc.library_missing("wd")["missing"], [7])
 
     def test_delete_library_songs(self):
         (self.library / "1.mp4").write_bytes(b"\0" * 10)
@@ -1294,6 +1599,7 @@ class CoreTests(unittest.TestCase):
         with self.dc._bundle_lock:
             self.dc._bundle_ytid.clear()
             self.dc._bundle_ytid.update({100: "aaaaaaaaaaa", 101: "bbbbbbbbbbb", 102: "ccccccccccc"})
+            self.dc._bundle_ids = {100, 101, 102}
             self.dc._bundle_names.clear()
             self.dc._bundle_names.update({101: "Dead Song", 102: "Missing Song"})
         self.dc._note_dead(101)  # 历史播放 404 确认下架
@@ -1341,6 +1647,95 @@ class CoreTests(unittest.TestCase):
         row = self.dc.get_queue_snapshot()[0]
         self.assertEqual(row["state_code"], "cached")
         self.assertEqual(row["storage"], "library")
+
+    def test_mapping_update_removes_stale_reverse_lookup(self):
+        (self.library / "1.mp4").write_bytes(b"local")
+        self.dc.mark_mapping(1, "old.mp4")
+        self.dc.mark_mapping(1, "new.mp4")
+        self.assertNotIn("old.mp4", self.dc._reverse_mapping)
+        self.assertIsNone(self.dc.local_path_for("old.mp4"))
+        self.assertEqual(self.dc.local_path_for("new.mp4"), str(self.library / "1.mp4"))
+
+    def test_mapping_save_failure_preserves_file_and_retries(self):
+        path = Path(self.dc.mapping_path())
+        path.write_text(json.dumps({"9": "keep.mp4"}), encoding="utf-8")
+        self.dc.mark_mapping(1, "video.mp4")
+        with mock.patch.object(self.dc.os, "replace", side_effect=OSError("disk busy")):
+            self.dc.flush_mapping()
+        self.assertTrue(self.dc._mapping_dirty)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"9": "keep.mp4"})
+        self.assertEqual(list(self.root.glob("mapping-*.tmp")), [])
+        self.dc.flush_mapping()
+        self.assertFalse(self.dc._mapping_dirty)
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["1"], "video.mp4")
+
+    def test_failed_history_room_and_favorite_writes_are_retried(self):
+        items = [{"songNum": 1, "videoName": "Song", "playerName": "Player"}]
+        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+            self.dc.record_queue_snapshot(items)
+            self.dc.record_playing_snapshot(items)
+        self.assertEqual(self.dc._history_last_keys, set())
+        self.assertIsNone(self.dc._last_playing_key)
+        self.dc.record_queue_snapshot(items)
+        self.dc.record_playing_snapshot(items)
+        self.assertEqual(len(Path(self.dc.history_path()).read_text(encoding="utf-8").splitlines()), 1)
+        self.assertEqual(len(Path(self.dc.played_history_path()).read_text(encoding="utf-8").splitlines()), 1)
+
+        line = "2026.01.01 10:00:00 Log - [Behaviour] Joining wrld_abcdef:123"
+        with mock.patch("builtins.open", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                self.dc.record_room_events([line])
+        self.assertEqual(self.dc._room_event_keys, set())
+        self.assertEqual(self.dc.record_room_events([line]), 1)
+
+        favorite_line = "[VideoListManager] WannaFavorite:1,2"
+        with mock.patch.object(self.dc, "_save_wd_favorites", side_effect=OSError("disk full")):
+            self.assertFalse(self.dc.record_wd_favorites([favorite_line]))
+        self.assertEqual(self.dc.get_wd_favorites(), set())
+        self.assertTrue(self.dc.record_wd_favorites([favorite_line]))
+        self.assertEqual(self.dc.get_wd_favorites(), {1, 2})
+
+    def test_preload_retry_covers_failed_cdn_youtube_and_wd_songs(self):
+        scenarios = [
+            ({"songNum": 1, "videoName": "CDN", "playerName": "P"}, "cdn", "video.mp4"),
+            ({"songNum": 1, "videoName": "YT", "playerName": "P"}, "yt", "yt:https://youtu.be/abcdef12345"),
+            ({"songNum": 1, "videoName": "WD", "playerName": "P", "wd": True}, "wd", None),
+        ]
+        for item, kind, route in scenarios:
+            with self.subTest(kind=kind):
+                self.dc._stop_event.clear()
+                self.dc._mapping.clear()
+                self.dc._reverse_mapping.clear()
+                if route:
+                    self.dc.mark_mapping(1, route)
+                self.dc._last_queue_items = [item]
+                with mock.patch.object(self.dc._stop_event, "wait", side_effect=[False, True]), \
+                     mock.patch.object(self.dc, "submit_preload_async") as submit:
+                    self.dc._preload_retry_loop()
+                submit.assert_called_once_with([item])
+                local = (self.cache / "video.mp4" if kind == "cdn" else
+                         self.cache / "yt_1.mp4" if kind == "yt" else self.cache / "wd_1.mp4")
+                local.write_bytes(b"cached")
+                with mock.patch.object(self.dc._stop_event, "wait", side_effect=[False, True]), \
+                     mock.patch.object(self.dc, "submit_preload_async") as submit:
+                    self.dc._preload_retry_loop()
+                submit.assert_not_called()
+                local.unlink()
+
+    def test_library_missing_includes_songs_without_youtube_id(self):
+        count = self.dc._load_bundle_data({"songs": [
+            {"i": 1, "n": "Direct", "o": ["https://youtu.be/abcdef12345"]},
+            {"i": 2, "n": "API only", "o": []},
+        ]})
+        self.assertEqual(count, 2)
+        result = self.dc.library_missing("pypy")
+        self.assertEqual(result["expected"], 2)
+        self.assertEqual(result["missing"], [1, 2])
+        self.assertEqual(result["names"][2], "API only")
+
+    def test_redirect_learning_accepts_dynamic_cdn_subdomain(self):
+        self.dc.learn_mapping_from_redirect(7, "http://new-hash.cdn.pypy.dance/video.mp4")
+        self.assertEqual(self.dc.song_route(7), ("cdn", "video.mp4"))
 
     def test_stop_clears_queue_and_preload_state(self):
         # 停止服务必须清空跨会话状态：残留的预载列表会在下次启动时立刻下载

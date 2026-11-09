@@ -317,10 +317,15 @@ def create_record_snapshot():
     finally:
         source_connection.close()
         destination_connection.close()
-    for name in (*HISTORY_FILES.values(), core.ROOM_EVENT_FILENAME):
-        path = Path(core.data_dir()) / name
+    with core._history_lock:
+        for name in HISTORY_FILES.values():
+            path = Path(core.data_dir()) / name
+            if path.is_file():
+                shutil.copy2(path, target / name)
+    with core._room_event_lock:
+        path = Path(core.data_dir()) / core.ROOM_EVENT_FILENAME
         if path.is_file():
-            shutil.copy2(path, target / name)
+            shutil.copy2(path, target / path.name)
     return target
 
 
@@ -338,10 +343,21 @@ def restore_record_snapshot(path):
         source_connection.close()
         destination_connection.close()
     os.replace(temporary, target)
-    for name in (*HISTORY_FILES.values(), core.ROOM_EVENT_FILENAME):
-        source = snapshot / name
+    with core._history_lock:
+        for name in HISTORY_FILES.values():
+            source = snapshot / name
+            target_history = Path(core.data_dir()) / name
+            if source.is_file():
+                shutil.copy2(source, target_history)
+            else:
+                target_history.unlink(missing_ok=True)
+    with core._room_event_lock:
+        source = snapshot / core.ROOM_EVENT_FILENAME
+        target_events = Path(core.data_dir()) / source.name
         if source.is_file():
-            shutil.copy2(source, Path(core.data_dir()) / name)
+            shutil.copy2(source, target_events)
+        else:
+            target_events.unlink(missing_ok=True)
     shutil.rmtree(snapshot)
 
 

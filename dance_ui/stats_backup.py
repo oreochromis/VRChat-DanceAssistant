@@ -184,7 +184,7 @@ def inspect_stats_backup(path):
         if incoming_stats is not None:
             incoming = json.loads(incoming_stats)
             current = _read_json(root / vrcx_stats.STATS_FILENAME)
-            result["stats_updated"] = bool(incoming.get("friends") and (
+            result["stats_updated"] = bool(incoming and (
                 not current or float(incoming.get("synced_at", 0)) > float(current.get("synced_at", 0))))
         for name, key in ((vrcx_stats.SOURCE_FILENAME, "source_imported"),
                           (stats_records.EDITABLE_SOURCE_FILENAME, "edited_source_imported")):
@@ -214,13 +214,15 @@ def import_stats_backup(path):
         }
         root = Path(core.data_dir())
         root.mkdir(parents=True, exist_ok=True)
-        for name in HISTORY_FILES:
-            incoming = _zip_text(archive, name)
-            if incoming is not None:
-                result[name.removesuffix(".jsonl") + "_added"] = _merge_history(root / name, incoming)
+        with core._history_lock:
+            for name in HISTORY_FILES:
+                incoming = _zip_text(archive, name)
+                if incoming is not None:
+                    result[name.removesuffix(".jsonl") + "_added"] = _merge_history(root / name, incoming)
         incoming_room_events = _zip_text(archive, ROOM_EVENTS_FILENAME)
         if incoming_room_events is not None:
-            result["room_events_added"] = _merge_room_events(root / ROOM_EVENTS_FILENAME, incoming_room_events)
+            with core._room_event_lock:
+                result["room_events_added"] = _merge_room_events(root / ROOM_EVENTS_FILENAME, incoming_room_events)
         incoming_settings = _zip_text(archive, vrcx_stats.SETTINGS_FILENAME)
         if incoming_settings is not None:
             incoming = json.loads(incoming_settings)

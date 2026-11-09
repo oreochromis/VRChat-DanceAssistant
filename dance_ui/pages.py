@@ -298,6 +298,14 @@ class Pages:
         file_row, file_box = row(self.cooldown_path, button("选择视频", self.browse_cooldown), self.default_cooldown_button)
         file_box.setStretch(0, 1)
         cooldown.box.addWidget(file_row)
+        self.cooldown_trigger = QComboBox()
+        self.cooldown_trigger.addItem("播放至下一首歌时自动触发", "next")
+        self.cooldown_trigger.addItem("通过点击房间“重新载入视频”按键触发", "reload")
+        self.cooldown_trigger.currentIndexChanged.connect(lambda: self.mark_dirty("settings"))
+        self.cooldown_trigger_row = field(
+            "CoolDown 触发时机", self.cooldown_trigger,
+            "下一首模式：播放至下一首歌时自动触发；刷新模式：点击房间“重新载入视频”后，由当前歌曲触发。两种模式均为一次性替换。")
+        cooldown.box.addWidget(self.cooldown_trigger_row)
         cooldown.box.addWidget(label("默认使用随程序附带的放松视频，也可以自选本地 MP4。应用更改后在“运行”页启用；等待替换时可以取消，正在替换时可以退出。", muted=True, wrap=True))
         box.addWidget(cooldown)
 
@@ -312,13 +320,42 @@ class Pages:
         self.auto_prefer_cdn.setToolTip("每次启动服务时自动做一次快速测速，把最快的节点写入上面的优选 CDN IP；失效时会自动回落默认节点，可随时关闭。")
         self.auto_prefer_cdn.toggled.connect(lambda: self.mark_dirty("settings"))
         network.box.addWidget(self.auto_prefer_cdn)
+        self.speedtest_threads = QSpinBox()
+        self.speedtest_threads.setRange(1, 8)
+        self.speedtest_threads.setSuffix(" 个")
+        self.speedtest_threads.setMinimumWidth(110)
+        self.speedtest_threads.valueChanged.connect(lambda: self.mark_dirty("settings"))
+        self.speedtest_threads_row = field(
+            "测速并发线程数", self.speedtest_threads,
+            "默认 3 个；仅影响 CDN 测速，不影响视频下载。线程过多会分摊带宽，建议根据网络情况调整。")
+        network.box.addWidget(self.speedtest_threads_row)
+        self.speedtest_candidates = QSpinBox()
+        self.speedtest_candidates.setRange(2, 64)
+        self.speedtest_candidates.setSuffix(" 个")
+        self.speedtest_candidates.setMinimumWidth(110)
+        self.speedtest_candidates.valueChanged.connect(lambda: self.mark_dirty("settings"))
+        self.speedtest_candidates_row = field(
+            "快速测速候选数量", self.speedtest_candidates,
+            "默认 8 个；增加候选可提高发现新节点的概率，但会延长初筛并增加流量。")
+        network.box.addWidget(self.speedtest_candidates_row)
+        self.speedtest_sample_mb = QSpinBox()
+        self.speedtest_sample_mb.setRange(1, 32)
+        self.speedtest_sample_mb.setSuffix(" MB")
+        self.speedtest_sample_mb.setMinimumWidth(110)
+        self.speedtest_sample_mb.valueChanged.connect(lambda: self.mark_dirty("settings"))
+        self.speedtest_sample_row = field(
+            "每个节点测速样本", self.speedtest_sample_mb,
+            "默认 8MB；较小样本可能低估持续下载速度，较大样本更稳定但更耗时。")
+        network.box.addWidget(self.speedtest_sample_row)
         self.quick_scan_button = button("快速测速", lambda: self.start_scan(False))
         self.full_scan_button = button("扩大范围测速（抽样）", lambda: self.start_scan(True))
+        self.full_scan_button.setToolTip("从更大范围随机抽样探测，再对较快节点完整测速；耗时较长，不会穷举全部 IP。")
         actions, _ = row(self.quick_scan_button, self.full_scan_button, stretch=True)
         network.box.addWidget(actions)
-        self.scan_status = label("测速会下载少量样本数据。扩大范围测速采用抽样，不会穷举全部 CDN IP，耗时更长。", muted=True, wrap=True)
+        self.scan_status = label("快速测速会从当前、DNS、收藏、历史与新节点中选取最多 8 个候选，先小样本初筛，再对前 4 名及当前 IP 下载 8MB 复测。", muted=True, wrap=True)
         network.box.addWidget(self.scan_status)
         self.scan_table = table(["IP 地址", "实测速度", "结果"], 0)
+        self.scan_table.doubleClicked.connect(lambda: self.use_selected_ip())
         self.scan_table.hide()
         network.box.addWidget(self.scan_table)
         self.use_ip_button = button("使用选中的 IP", self.use_selected_ip)
@@ -331,8 +368,11 @@ class Pages:
         self.favorites_hint = label("", muted=True, wrap=True)
         network.box.addWidget(self.favorites_hint)
         self.favorites_table = table(["收藏的 IP 地址"], 0)
+        self.favorites_table.doubleClicked.connect(lambda: self.use_favorite_ip())
         network.box.addWidget(self.favorites_table)
-        favorite_actions, _ = row(button("使用选中的收藏", self.use_favorite_ip),
+        self.favorite_scan_button = button("测速全部收藏", self.start_favorite_scan)
+        favorite_actions, _ = row(self.favorite_scan_button,
+                                  button("使用选中的收藏", self.use_favorite_ip),
                                   button("删除选中的收藏", self.remove_favorite_ip), stretch=True)
         network.box.addWidget(favorite_actions)
 
@@ -362,6 +402,12 @@ class Pages:
         contributors.box.addWidget(label("Contributors", subheading=True))
         contributors.box.addWidget(label("鲨鲨比亚Sharkspeare　小余12", muted=True))
         box.addWidget(contributors)
+        self.reset_row, reset_box = row(label("将全部选项恢复为默认设置，不会删除视频、统计数据和外观。", muted=True, wrap=False))
+        self.reset_settings_button = button("全部恢复默认", self.reset_all_settings)
+        self.reset_settings_button.setProperty("danger", True)
+        reset_box.addStretch(1)
+        reset_box.addWidget(self.reset_settings_button)
+        box.addWidget(self.reset_row)
         self.vrcx_sync_card = vrcx_sync
         vrcx_sync.box.addWidget(self.storage_location_box)
         box.insertWidget(1, label("缓存与曲库", subheading=True))
@@ -453,7 +499,7 @@ class Pages:
         self.youtube_permanent.toggled.connect(lambda: self.mark_dirty("storage"))
         library.box.addWidget(self.cdn_permanent)
         library.box.addWidget(self.youtube_permanent)
-        library.box.addWidget(label("YouTube 视频在实际播放并解析到视频地址后缓存。"
+        library.box.addWidget(label("歌单直取开启时，YouTube 源会优先尝试 CDN 同名文件并参与预载；CDN 无文件时再于实际播放后录制。"
                                     "永久保存需先填写曲库目录才会生效，未填写时自动暂缓。", muted=True, wrap=True))
         library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("pypy"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(library)

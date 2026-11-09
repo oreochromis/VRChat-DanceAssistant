@@ -24,8 +24,12 @@ class StatsBackupTests(unittest.TestCase):
                 (first / name).write_text(json.dumps(entries[0]) + "\n", encoding="utf-8")
             (first / "vrcx-settings.json").write_text(json.dumps({"self_name": "Current"}), encoding="utf-8")
             (first / "vrcx-stats.json").write_text(json.dumps({"friends": [], "synced_at": 10}), encoding="utf-8")
-            database = b"SQLite format 3\x00" + bytes(range(32))
-            (first / "vrcx-source.sqlite3").write_bytes(database)
+            connection = sqlite3.connect(first / "vrcx-source.sqlite3")
+            connection.execute("CREATE TABLE marker (value TEXT)")
+            connection.execute("INSERT INTO marker VALUES ('original')")
+            connection.commit()
+            connection.close()
+            database = (first / "vrcx-source.sqlite3").read_bytes()
             (first / "profile.json").write_text(json.dumps({"id": "usr_test", "name": "测试昵称"}), encoding="utf-8")
             (first / "profile-avatar.png").write_bytes(b"avatar")
             (first / "avatar-index.json").write_text(json.dumps({
@@ -142,6 +146,25 @@ class StatsBackupTests(unittest.TestCase):
                 values = connection.execute("SELECT value FROM marker ORDER BY rowid").fetchall()
                 connection.close()
                 self.assertCountEqual(values, [("keep",), ("edited",)])
+
+    def test_newer_empty_friend_stats_match_preview_and_import(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data"
+            data.mkdir()
+            (data / "vrcx-stats.json").write_text(json.dumps({
+                "friends": [{"name": "Existing"}], "synced_at": 20,
+            }), encoding="utf-8")
+            backup = root / "empty-friends.zip"
+            with zipfile.ZipFile(backup, "w") as archive:
+                archive.writestr("manifest.json", json.dumps({
+                    "format": stats_backup.FORMAT, "version": stats_backup.VERSION,
+                }))
+                archive.writestr("vrcx-stats.json", json.dumps({"friends": [], "synced_at": 30}))
+            with patch.object(stats_backup.core, "data_dir", return_value=str(data)):
+                self.assertTrue(stats_backup.inspect_stats_backup(backup)["stats_updated"])
+                self.assertTrue(stats_backup.import_stats_backup(backup)["stats_updated"])
+                self.assertEqual(json.loads((data / "vrcx-stats.json").read_text())["friends"], [])
 
 
 if __name__ == "__main__":

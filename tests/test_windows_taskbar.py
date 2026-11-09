@@ -57,7 +57,7 @@ class NativeIconPixelTests(unittest.TestCase):
         self.assertEqual(taskbar._verify_pixels(bytes((0, 80, 255)), bytes((2, 79, 254))), 2)
 
     def test_colored_python_or_another_artwork_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "differs from the approved PY artwork"):
+        with self.assertRaisesRegex(ValueError, "differs from the approved DA artwork"):
             taskbar._verify_pixels(bytes((45, 98, 147)), bytes((0, 0, 0)))
 
     def test_missing_or_differently_sized_pixels_are_rejected(self):

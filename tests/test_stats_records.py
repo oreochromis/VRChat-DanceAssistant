@@ -109,6 +109,17 @@ class StatsRecordTests(unittest.TestCase):
         stats_records.save_history_record("played", new)
         self.assertEqual(len(stats_records.list_history_records("played")), 1)
 
+    def test_undo_restores_initially_missing_history_files(self):
+        stats_records.ensure_editable_vrcx(self.source)
+        snapshot = stats_records.create_record_snapshot()
+        stats_records.save_history_record("queue", {
+            "ts": 1000, "kind": "pypy", "id": 1, "name": "First", "player": "Alice",
+        })
+        path = self.data / core.HISTORY_FILENAME
+        self.assertTrue(path.is_file())
+        stats_records.restore_record_snapshot(snapshot)
+        self.assertFalse(path.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

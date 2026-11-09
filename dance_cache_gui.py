@@ -11,15 +11,16 @@ def main():
     from dance_ui.openvr_probe import PROBE_ARG, probe_main
     if PROBE_ARG in sys.argv[1:]:
         return probe_main()
-    from dance_ui.vr_panel_worker import WORKER_ARG, worker_main
-    if WORKER_ARG in sys.argv[1:]:
-        return worker_main()
     try:
+        from dance_ui.vr_panel_worker import WORKER_ARG, worker_main
+        if WORKER_ARG in sys.argv[1:]:
+            return worker_main()
         from dance_ui.app import main as run
-    except ModuleNotFoundError as exc:
-        if exc.name not in ("PySide6", "PIL"):
-            raise
-        message = "缺少界面运行依赖。请在项目目录执行：\npython -m pip install -r requirements.txt"
+    except ImportError as exc:
+        message = (f"界面运行依赖无法正常加载：{exc}\n\n当前 Python：{sys.executable}\n"
+                   "请使用依赖完整的 Python 环境，并在项目目录执行：\n"
+                   "python -m pip install -r requirements.txt\n\n"
+                   "如果电脑装有多个 Python，请确认启动脚本选择的是安装了依赖的环境。")
         if sys.stderr is not None:
             print(message, file=sys.stderr)
         if os.name == "nt":

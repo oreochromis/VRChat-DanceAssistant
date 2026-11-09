@@ -257,6 +257,22 @@ class CoreController(QObject):
             return result
         self._run(operation, apply)
 
+    def reset_settings(self):
+        if self.demo:
+            self._demo_config = copy.deepcopy(core.DEFAULT_CONFIG)
+            self.result.emit("reset_settings", {"restart_required": False,
+                                                "changed": list(core.DEFAULT_CONFIG), "demo": True})
+            self._publish_demo_cooldown()
+            return
+
+        def reset():
+            result = core.update_config(copy.deepcopy(core.DEFAULT_CONFIG))
+            self._config_cache = core.get_config()
+            self.event.emit("cooldown", core.get_cooldown_state())
+            return result
+
+        self._run("reset_settings", reset)
+
     def clear_cache(self):
         if self.demo:
             self.result.emit("clear_cache", {"removed_count": 0, "removed_bytes": 0, "skipped_busy": 0,
@@ -358,14 +374,17 @@ class CoreController(QObject):
                 "cancelled": cancelled, "demo": True,
             })
 
-    def scan(self, *, full=False):
+    def scan(self, *, full=False, ips=None):
         if self.demo:
-            self.event.emit("speedtest_done", {"results": [
+            results = [
                 {"ip": "104.16.0.1", "mbps": 7.8, "error": None},
                 {"ip": "104.17.0.1", "mbps": 5.2, "error": None},
-            ], "demo": True})
+            ]
+            if ips is not None:
+                results = [item for item in results if item["ip"] in ips]
+            self.event.emit("speedtest_done", {"results": results, "demo": True})
             return
-        self._run("scan", core.full_scan_ips if full else core.speed_test_ips)
+        self._run("scan", core.full_scan_ips if full else lambda: core.speed_test_ips(ips))
 
     def check_updates(self):
         if self.demo:
@@ -421,8 +440,12 @@ class CoreController(QObject):
                             if player else [{"player": name, "count": count} for name, count in player_counts.items()]),
                 "earliest": start_ts, "months": months, "active_days": min(total, 37)})
             return
-        self._run("play_history_stats", lambda: core.play_history_stats(
-            start_ts, end_ts, kind or None, player or None))
+        def read():
+            result = core.play_history_stats(start_ts, end_ts, kind or None, player or None)
+            result["_request_key"] = {"start_ts": start_ts, "end_ts": end_ts,
+                                      "kind": kind or "", "player": player or ""}
+            return result
+        self._run("play_history_stats", read)
 
     def vrcx_stats(self, start_ts, end_ts, path=None, automatic=False):
         operation = "vrcx_stats_auto" if automatic else "vrcx_stats"
@@ -450,6 +473,11 @@ class CoreController(QObject):
                 ], "start_ts": start_ts, "end_ts": end_ts, "demo": True,
                 "self_names": ["小林"], "daily_play": daily_play,
                 "total_play_seconds": sum(item["seconds"] for item in daily_play),
+                "play_day_count": sum(int(item["seconds"]) > 0 for item in daily_play),
+                "average_play_seconds": round(sum(item["seconds"] for item in daily_play)
+                                               / max(1, sum(int(item["seconds"]) > 0 for item in daily_play))) if daily_play else 0,
+                "favorite_hour": 20 if daily_play else None,
+                "favorite_hour_seconds": round(sum(item["seconds"] for item in daily_play) / 4) if daily_play else 0,
                 "world_play": {"pypy": pypy_seconds, "wd": wd_seconds},
                 "new_friends": [{"user_id": "demo-2", "name": "Momo", "ts": end_ts - 172800}],
             })
@@ -473,9 +501,10 @@ class CoreController(QObject):
         def read():
             from . import vrcx_stats as vrcx
             result = None
+            stats_error = None
+            source = vrcx.resolve_vrcx_path(path)
             for attempt, delay in enumerate((1, 3, 10)):
                 try:
-                    source = vrcx.resolve_vrcx_path(path)
                     statistics_source = source
                     if path is None:
                         from .stats_records import prepare_statistics_source
@@ -485,16 +514,26 @@ class CoreController(QObject):
                     break
                 except Exception as exc:
                     if "database is locked" not in str(exc).lower() or attempt == 2:
-                        raise
+                        stats_error = exc
+                        break
                     time.sleep(delay)
-            if not result.get("self_names") and vrcx.saved_self_name():
-                result["self_names"] = [vrcx.saved_self_name()]
+            profile_error = None
             try:
                 from .vrcx_profile import sync_vrcx_profile
-                result["profile"] = sync_vrcx_profile(source)
-                vrcx.save_self_name(result["profile"]["name"])
+                profile = sync_vrcx_profile(source)
+                vrcx.save_self_name(profile["name"])
             except Exception as exc:
-                result["profile_error"] = str(exc)
+                profile = None
+                profile_error = str(exc)
+            if stats_error is not None:
+                if profile_error:
+                    raise RuntimeError(f"{stats_error}；账号资料同步失败：{profile_error}") from stats_error
+                raise stats_error
+            result["profile"] = profile
+            if profile_error:
+                result["profile_error"] = profile_error
+            if not result.get("self_names") and vrcx.saved_self_name():
+                result["self_names"] = [vrcx.saved_self_name()]
             try:
                 from .vrcx_profile import sync_friend_avatars
                 sync_friend_avatars(source, result["friends"], force=not automatic)

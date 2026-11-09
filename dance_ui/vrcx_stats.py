@@ -60,8 +60,8 @@ def sanitize_vrcx_archive(path=None):
             connection.execute("DROP TABLE cookies")
             connection.commit()
             connection.execute("VACUUM")
-    except sqlite3.DatabaseError:
-        return target
+    except sqlite3.DatabaseError as error:
+        raise ValueError("无法安全移除 VRCX 副本中的登录会话，已停止归档或导出：" + str(error)) from None
     finally:
         connection.close()
     return target
@@ -303,6 +303,36 @@ def _daily_play_stats(own_intervals, start_ts, end_ts):
     return [{"day": day, "seconds": round(days[day])} for day in sorted(days)]
 
 
+def _play_summary_stats(own_intervals, start_ts, end_ts):
+    hourly = [0.0] * 24
+    play_days = set()
+    total_seconds = 0.0
+    for intervals in own_intervals.values():
+        for start, end in intervals:
+            cursor = max(start, start_ts)
+            end = min(end, end_ts)
+            if end <= cursor:
+                continue
+            total_seconds += end - cursor
+            while cursor < end:
+                current = datetime.fromtimestamp(cursor)
+                next_hour = current.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                segment_end = min(end, next_hour.timestamp())
+                duration = max(0, segment_end - cursor)
+                hourly[current.hour] += duration
+                if duration:
+                    play_days.add(current.strftime("%Y-%m-%d"))
+                cursor = segment_end
+    day_count = len(play_days)
+    favorite_hour = max(range(24), key=lambda hour: hourly[hour]) if day_count else None
+    return {
+        "play_day_count": day_count,
+        "average_play_seconds": round(total_seconds / day_count) if day_count else 0,
+        "favorite_hour": favorite_hour,
+        "favorite_hour_seconds": round(hourly[favorite_hour]) if favorite_hour is not None else 0,
+    }
+
+
 def _new_friend_stats(rows, own_intervals, start_ts, end_ts):
     added = {}
     for created_at, kind, user_id, display_name in rows:
@@ -384,7 +414,7 @@ def _play_days(intervals):
         if end <= start:
             continue
         day = datetime.fromtimestamp(start).date()
-        last_day = datetime.fromtimestamp(end).date()
+        last_day = datetime.fromtimestamp(max(start, end - 0.000001)).date()
         while day <= last_day:
             days.add(day)
             day += timedelta(days=1)
@@ -536,6 +566,7 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
         "start_ts": start_ts, "end_ts": end_ts,
         "self_names": self_names, "daily_play": daily_play,
         "total_play_seconds": round(sum(item["seconds"] for item in daily_play)),
+        **_play_summary_stats(own, start_ts, end_ts),
         "world_play": world_play,
         "new_friends": _new_friend_stats(friend_history, own, start_ts, end_ts),
     }

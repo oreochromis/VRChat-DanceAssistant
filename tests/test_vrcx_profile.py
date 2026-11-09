@@ -48,6 +48,26 @@ class VRCXProfileTests(unittest.TestCase):
                 self.assertEqual(loaded["name"], "测试昵称")
                 self.assertTrue(loaded["avatar"])
 
+    def test_account_without_avatar_does_not_keep_previous_account_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "VRCX.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE configs (key TEXT PRIMARY KEY, value TEXT)")
+            connection.execute("INSERT INTO configs VALUES ('config:lastuserloggedin', 'usr_new')")
+            connection.commit()
+            connection.close()
+            (root / "profile.json").write_text(json.dumps({"id": "usr_old", "name": "旧账号"}), encoding="utf-8")
+            (root / "profile-avatar.png").write_bytes(b"old avatar")
+            payload = json.dumps({"id": "usr_new", "displayName": "新账号"}).encode()
+            with (patch.object(vrcx_profile.core, "data_dir", return_value=str(root)),
+                  patch.object(vrcx_profile, "_cookie_header", return_value="session"),
+                  patch.object(vrcx_profile, "_download", return_value=payload)):
+                result = vrcx_profile.sync_vrcx_profile(database)
+                self.assertEqual(result["id"], "usr_new")
+                self.assertFalse(vrcx_profile.avatar_path().exists())
+                self.assertEqual(result["avatar"], "")
+
 
 if __name__ == "__main__":
     unittest.main()

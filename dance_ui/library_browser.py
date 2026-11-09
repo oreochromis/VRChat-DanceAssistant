@@ -18,6 +18,7 @@ from .widgets import bytes_text, label
 _KINDS = (("pypy", "PyPyDance 曲库"), ("wd", "WannaDance 曲库"))
 _OPS = ("library_scan", "library_missing", "library_delete")
 _FLAG_ROLE = Qt.ItemDataRole.UserRole + 1  # 行类型标记：None=本地文件，"missing"/"dead"=缺失行
+_FAVORITE_ROLE = Qt.ItemDataRole.UserRole + 2
 
 
 class _SortItem(QTableWidgetItem):
@@ -66,6 +67,10 @@ class LibraryBrowser(QDialog):
         self.only_missing = QCheckBox("只看缺失")
         self.only_missing.toggled.connect(self._apply_filter)
         top.addWidget(self.only_missing)
+        self.only_favorites = QCheckBox("只看收藏")
+        self.only_favorites.toggled.connect(self._apply_filter)
+        self.only_favorites.setVisible(self._kind == "wd")
+        top.addWidget(self.only_favorites)
         self.refresh_button = button("刷新", self.refresh)
         top.addWidget(self.refresh_button)
         box.addLayout(top)
@@ -117,9 +122,14 @@ class LibraryBrowser(QDialog):
         self.controller.result.connect(self._on_result)
         self.controller.error.connect(self._on_error)
         self.controller.busy_changed.connect(self._on_busy)
+        self.controller.event.connect(self._on_favorites_changed)
         self.refresh()
 
     # ---------------- 数据流 ----------------
+
+    def _on_favorites_changed(self, kind, data):
+        if kind == "wd_favorites" and self._kind == "wd":
+            self.refresh()
 
     def refresh(self):
         self._missing = {}
@@ -176,11 +186,12 @@ class LibraryBrowser(QDialog):
         self._songs = []
         self.summary.setText("未设置曲库目录或目录不存在，请先在「存储」页配置并应用更改。")
 
-    def _row_items(self, sid, name, size_text, size_key, time_text, time_key, flag=None):
+    def _row_items(self, sid, name, size_text, size_key, time_text, time_key, flag=None, favorite=False):
         item_id = _SortItem(str(sid))
         item_id.setData(Qt.ItemDataRole.UserRole, sid)
         item_id.setData(_FLAG_ROLE, flag)
-        item_name = _SortItem(name or "—")
+        item_id.setData(_FAVORITE_ROLE, bool(favorite))
+        item_name = _SortItem(("💗 " if favorite else "") + (name or "—"))
         item_size = _SortItem(size_text)
         item_size.setData(Qt.ItemDataRole.UserRole, size_key)
         item_time = _SortItem(time_text)
@@ -199,6 +210,9 @@ class LibraryBrowser(QDialog):
         parts = self._parts = result.get("parts", self._parts)
         total = result.get("total_bytes", 0)
         text = f"共 {len(self._songs)} 首 · {bytes_text(total)}"
+        if self._kind == "wd":
+            favorites = sum(bool(song.get("favorite")) for song in self._songs)
+            text += f" · {favorites} 首收藏"
         if parts:
             text += f" · {parts} 个未完成下载（.part）"
         if self._dir:
@@ -212,7 +226,7 @@ class LibraryBrowser(QDialog):
                 int(song.get("id", 0)), song.get("name"),
                 bytes_text(song.get("size", 0)), int(song.get("size", 0)),
                 datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M") if mtime else "—",
-                mtime))
+                mtime, favorite=song.get("favorite", False)))
         for sid, info in self._missing.items():
             rows.append(self._row_items(
                 sid, info.get("name"),
@@ -230,14 +244,21 @@ class LibraryBrowser(QDialog):
         self.table.setSortingEnabled(True)
         self.table.sortItems(0, Qt.SortOrder.AscendingOrder)
         self._apply_filter()
+        self.missing_label.setText("正在自动对照完整清单，缺失歌曲会以灰色显示…")
+        self.missing_label.show()
+        self.controller.library_missing(self._kind)
 
     def _apply_filter(self):
         needle = self.search.text().strip().lower()
         only_missing = self.only_missing.isChecked()
+        only_favorites = self.only_favorites.isChecked() and self._kind == "wd"
         for row in range(self.table.rowCount()):
             flag = self.table.item(row, 0).data(_FLAG_ROLE)
+            favorite = self.table.item(row, 0).data(_FAVORITE_ROLE)
             hidden = False
             if only_missing and not flag:
+                hidden = True
+            if only_favorites and not favorite:
                 hidden = True
             if not hidden and needle:
                 hay = (self.table.item(row, 0).text() + " " + self.table.item(row, 1).text()).lower()
@@ -252,7 +273,7 @@ class LibraryBrowser(QDialog):
         expected = result.get("expected", 0)
         if not source:
             if self._kind == "wd":
-                text = "缺少清单文件 wannadance_catalog.json（可由批量下载器生成），无法对比缺失。"
+                text = "暂未获取到 WannaDance 官方清单，请检查网络后点击“刷新”重试。"
             else:
                 text = "官方歌单直取表尚未加载，无法对比缺失；启动一次缓存服务后重试。"
             self.missing_label.setText(text)
@@ -270,7 +291,7 @@ class LibraryBrowser(QDialog):
                 text += f" · 已确认下架 {len(dead)}"
             text += "），已在列表中灰色标出。"
             if self._kind == "pypy":
-                text += "仅覆盖官方歌单直取表范围。"
+                text += "对照完整官方歌单，包括没有 YouTube 直取 ID 的歌曲。"
         self.missing_label.setText(text)
         self.missing_label.show()
         self._merge_missing()
@@ -317,6 +338,8 @@ class LibraryBrowser(QDialog):
 
     def _source_changed(self):
         self._kind = self.source.currentData()
+        self.only_favorites.setVisible(self._kind == "wd")
+        self.only_favorites.setChecked(False)
         self.refresh()
 
     def _selected_rows(self):
@@ -420,7 +443,8 @@ class LibraryBrowser(QDialog):
     def closeEvent(self, event):
         for signal, slot in ((self.controller.result, self._on_result),
                              (self.controller.error, self._on_error),
-                             (self.controller.busy_changed, self._on_busy)):
+                             (self.controller.busy_changed, self._on_busy),
+                             (self.controller.event, self._on_favorites_changed)):
             try:
                 signal.disconnect(slot)
             except (RuntimeError, TypeError):

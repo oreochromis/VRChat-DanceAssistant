@@ -6,8 +6,8 @@ VRChat跳舞房助手（核心模块 + 命令行模式）
 同时监听 VRChat 日志中的 [PyPyDanceQueue] 点歌队列，提前下载即将播放的视频。
 曲库模式：设置 library_dir 后，视频按歌曲编号命名（如 3528.mp4）永久保存在曲库目录；
 播放时本地有就直接加载，没有就下载后新增进曲库。
-YouTube 源：劫持 api.pypy.dance 的 302 重定向（纯 HTTP，零证书），YouTube 源歌曲在播放时
-从 VRChat 日志捕获解析后的直链自动录流入库；Unity 的 https 歌单/封面请求由 443 TCP 隧道透传。
+YouTube 源：歌单直取开启时优先按 ytid 探测 CDN 同名文件并纳入预载；CDN 无文件时，
+播放中从 VRChat 日志捕获解析后的直链录流入库；Unity 的 https 歌单/封面请求由 443 TCP 隧道透传。
 需要管理员权限（修改 hosts、绑定 80/443 端口）。
 图形界面见 dance_cache_gui.py。
 """
@@ -17,6 +17,7 @@ import copy
 import http.client
 import ipaddress
 import json
+import math
 import os
 import random
 import re
@@ -145,8 +146,9 @@ def mapping_path():
 
 _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_songs.json",
                   "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
-                  "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json",
-                  "profile.json", "profile-avatar.png", "avatar-index.json")
+                  "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json", "wanna-favorites.json",
+                  "profile.json", "profile-avatar.png", "avatar-index.json",
+                  "cdn-favorites.json", "cdn-pool.json", "wannadance-catalog.json")
 _STORAGE_DIRS = ("avatars", "record-backups")
 
 
@@ -223,11 +225,15 @@ DEFAULT_CONFIG = {
     "max_parallel": 2,
     "preferred_cdn_ip": "",
     "auto_prefer_cdn": True,
+    "speedtest_threads": 3,
+    "speedtest_candidates": 8,
+    "speedtest_sample_mb": 8,
     "enable_youtube_cache": True,
     "youtube_permanent": False,
     "cdn_permanent": False,
     "wd_permanent": False,
     "cooldown_file": "",
+    "cooldown_trigger": "next",
     "bundle_direct": True,
     "vr_overlay": True,
     "close_to_tray": False,
@@ -450,16 +456,16 @@ def record_queue_snapshot(items):
                         "player": player})
     with _history_lock:
         fresh = [e for e in entries if (e["kind"], e["id"], e["player"]) not in _history_last_keys]
+        if fresh:
+            try:
+                os.makedirs(data_dir(), exist_ok=True)
+                with open(history_path(), "a", encoding="utf-8") as f:
+                    for e in fresh:
+                        f.write(json.dumps(e, ensure_ascii=False) + "\n")
+            except OSError as e:
+                log(f"点歌历史写入失败，将在下一条队列记录时重试: {e}")
+                return
         _history_last_keys = keys
-        if not fresh:
-            return
-        try:
-            os.makedirs(data_dir(), exist_ok=True)
-            with open(history_path(), "a", encoding="utf-8") as f:
-                for e in fresh:
-                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
-        except OSError as e:
-            log(f"点歌历史写入失败: {e}")
 
 
 def played_history_path():
@@ -525,16 +531,18 @@ def record_room_events(lines):
     with _room_event_lock:
         _load_room_event_keys()
         fresh = []
+        keys = []
         for entry in discovered:
             key = (entry["kind"], round(float(entry["ts"]), 3), entry.get("location", ""), entry.get("user_id", ""))
             if key not in _room_event_keys:
-                _room_event_keys.add(key)
                 fresh.append(entry)
+                keys.append(key)
         if fresh:
             os.makedirs(data_dir(), exist_ok=True)
             with open(room_events_path(), "a", encoding="utf-8") as handle:
                 for entry in fresh:
                     handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _room_event_keys.update(keys)
     return len(fresh)
 
 
@@ -623,7 +631,6 @@ def record_playing_snapshot(items):
     key = (kind, sid, player)
     if key == _last_playing_key:
         return
-    _last_playing_key = key
     entry = {"ts": time.time(), "kind": kind, "id": sid,
              "name": str(current.get("videoName") or "").strip(), "player": player}
     try:
@@ -631,7 +638,9 @@ def record_playing_snapshot(items):
         with open(played_history_path(), "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except OSError as e:
-        log(f"实际播放记录写入失败: {e}")
+        log(f"实际播放记录写入失败，将在下一条队列记录时重试: {e}")
+        return
+    _last_playing_key = key
 
 
 def self_played_count(start_ts, end_ts, self_names):
@@ -807,6 +816,17 @@ def _validated_config(config, *, allow_shared_storage=False):
         value = cfg.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{name} 必须是大于等于 {minimum} 的整数")
+    threads = cfg.get("speedtest_threads")
+    if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 8:
+        raise ValueError("speedtest_threads 必须是 1 到 8 的整数")
+    for name, minimum, maximum, title in (
+            ("speedtest_candidates", 2, 64, "快速测速候选数量"),
+            ("speedtest_sample_mb", 1, 32, "测速样本大小")):
+        value = cfg.get(name)
+        if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
+            raise ValueError(f"{title}必须是 {minimum} 到 {maximum} 的整数")
+    if cfg.get("cooldown_trigger") not in ("next", "reload"):
+        raise ValueError("cooldown_trigger 必须是 next 或 reload")
     for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent", "wd_permanent", "preload_sequential", "auto_prefer_cdn", "bundle_direct", "vr_overlay", "close_to_tray", "auto_start_service"):
         if not isinstance(cfg.get(name), bool):
             raise ValueError(f"{name} 必须是布尔值")
@@ -898,6 +918,8 @@ def update_config(patch):
             raise ValueError("请先停止服务并等待后台任务结束，再修改 YouTube 缓存开关")
         if "cooldown_file" in changed and cooldown_active():
             raise ValueError("请先取消 Cool Down，再更换放松视频")
+        if "cooldown_trigger" in changed and cooldown_active():
+            raise ValueError("请先取消 Cool Down，再修改触发时机")
         if cfg["cooldown_file"] and "cooldown_file" in changed:
             if not os.path.isfile(cfg["cooldown_file"]) or os.path.getsize(cfg["cooldown_file"]) == 0:
                 raise ValueError("放松视频不存在或为空文件")
@@ -997,8 +1019,11 @@ def _refresh_queue_for_mapping():
 def mark_mapping(song_id, filename):
     global _mapping_dirty
     with _mapping_lock:
-        if _mapping.get(song_id) == filename:
+        previous = _mapping.get(song_id)
+        if previous == filename:
             return
+        if previous and _reverse_mapping.get(previous) == song_id:
+            _reverse_mapping.pop(previous, None)
         _mapping[song_id] = filename
         if filename:
             _reverse_mapping[filename] = song_id
@@ -1015,11 +1040,27 @@ def flush_mapping():
             return
         data = dict(_mapping)
         _mapping_dirty = False
+    temporary = None
     try:
-        with open(mapping_path(), "w", encoding="utf-8") as f:
-            json.dump(data, f)
+        base = data_dir()
+        os.makedirs(base, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix="mapping-", suffix=".tmp", dir=base)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(data, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, mapping_path())
+        temporary = None
     except Exception as e:
-        log(f"mapping.json 保存失败: {e}")
+        with _mapping_lock:
+            _mapping_dirty = True
+        log(f"mapping.json 保存失败，将自动重试: {e}")
+    finally:
+        if temporary is not None:
+            try:
+                os.remove(temporary)
+            except OSError:
+                pass
 
 
 def _mapping_flush_loop():
@@ -1035,8 +1076,9 @@ def bundle_path():
 
 YT_ID_RE = re.compile(r"(?:v=|youtu\.be/)([\w-]{11})")
 
-_bundle_ytid = {}            # song_id -> YouTube ID（官方歌单里 4821/4850 首可用）
+_bundle_ytid = {}            # song_id -> YouTube ID（仅用于歌单直取）
 _bundle_names = {}           # song_id -> 歌名（官方歌单 n 字段，供曲库浏览显示）
+_bundle_ids = set()          # 官方歌单全部编号，包括没有 YouTube ID 的歌曲
 _bundle_lock = threading.Lock()
 _bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（持久化到 dead_songs.json）
 _bundle_retry_at = {}        # 探测网络错误的退避时间戳
@@ -1084,26 +1126,30 @@ def _extract_ytid(urls):
 
 
 def _load_bundle_data(data):
-    """从 bundle JSON 建 id -> ytid 表和 id -> 歌名表，返回条数。已验证 CDN 文件名 == ytid + .mp4。"""
+    """从 bundle JSON 建完整编号表、ytid 直取表和歌名表，返回歌单条数。"""
+    ids = set()
     table = {}
     names = {}
     for song in data.get("songs") or []:
         sid = song.get("i")
         urls = song.get("o") or []
         if isinstance(sid, int):
+            ids.add(sid)
             ytid = _extract_ytid(urls if isinstance(urls, list) else [urls])
             if ytid:
                 table[sid] = ytid
             name = str(song.get("n") or "").strip()
             if name:
                 names[sid] = name
-    if table:
+    if ids:
         with _bundle_lock:
+            _bundle_ids.clear()
+            _bundle_ids.update(ids)
             _bundle_ytid.clear()
             _bundle_ytid.update(table)
             _bundle_names.clear()
             _bundle_names.update(names)
-    return len(table)
+    return len(ids)
 
 
 def bundle_song_names():
@@ -1356,31 +1402,193 @@ def wd_target_path(song_id):
 
 # ---------------- 曲库浏览（GUI 曲库管理窗口） ----------------
 
+WD_FAVORITES_FILENAME = "wanna-favorites.json"
+WD_FAVORITE_RE = re.compile(r"\[VideoListManager\].*?\bWannaFavorite:(\d*(?:,\d+)*)")
+_wd_favorites_lock = threading.Lock()
+_wd_favorites = None
+
+
+def wd_favorites_path():
+    return os.path.join(data_dir(), WD_FAVORITES_FILENAME)
+
+
+def _load_wd_favorites():
+    global _wd_favorites
+    if _wd_favorites is not None:
+        return
+    _wd_favorites = set()
+    try:
+        with open(wd_favorites_path(), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if isinstance(data, list):
+            _wd_favorites = {int(song_id) for song_id in data if isinstance(song_id, int) and song_id > 0}
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def get_wd_favorites():
+    with _wd_favorites_lock:
+        _load_wd_favorites()
+        return set(_wd_favorites)
+
+
+def _save_wd_favorites(song_ids):
+    temporary = wd_favorites_path() + ".tmp"
+    with open(temporary, "w", encoding="utf-8") as handle:
+        json.dump(sorted(song_ids), handle)
+    os.replace(temporary, wd_favorites_path())
+
+
+def record_wd_favorites(lines):
+    global _wd_favorites
+    latest = None
+    for line in lines:
+        match = WD_FAVORITE_RE.search(line)
+        if match:
+            latest = match.group(1)
+    if latest is None:
+        return False
+    song_ids = {int(value) for value in latest.split(",") if value.isdigit() and int(value) > 0}
+    with _wd_favorites_lock:
+        _load_wd_favorites()
+        if song_ids == _wd_favorites:
+            return False
+        try:
+            os.makedirs(data_dir(), exist_ok=True)
+            _save_wd_favorites(song_ids)
+        except OSError as error:
+            log(f"WannaDance 收藏保存失败，将在读取新日志时重试: {error}")
+            return False
+        _wd_favorites = set(song_ids)
+    emit("wd_favorites", ids=sorted(song_ids))
+    return True
+
+
+def refresh_wd_favorites():
+    try:
+        candidates = [os.path.join(VRC_LOG_DIR, name) for name in os.listdir(VRC_LOG_DIR)
+                      if name.startswith("output_log") and name.endswith(".txt")]
+    except OSError:
+        return False
+    for path in sorted(candidates, key=os.path.getmtime, reverse=True):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - 2 * 1024 * 1024))
+                lines = handle.read().splitlines()
+        except OSError:
+            continue
+        if record_wd_favorites(lines):
+            return True
+    return False
+
+
 NUMERIC_MP4_RE = re.compile(r"^(\d+)\.mp4$")  # PyPyDance 曲库命名（编号即文件名）
 
 
-def _wd_catalog():
-    """读取 WannaDance 曲库目录旁 wannadance_catalog.json（批量下载器保存）。
-    返回 {id: item_dict}；文件不存在或解析失败返回 None。"""
-    with _config_lock:
-        directory = _config.get("wd_library_dir") or ""
-    if not directory:
-        return None
+WD_CATALOG_CACHE_FILENAME = "wannadance-catalog.json"
+WD_CATALOG_CACHE_SECONDS = 86400
+_wd_catalog_retry_at = 0.0
+
+
+def _read_wd_catalog(path):
     try:
-        with open(os.path.join(directory, "wannadance_catalog.json"), "r", encoding="utf-8") as f:
-            data = json.load(f)
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
     except (OSError, ValueError):
         return None
+    if not isinstance(data, dict):
+        return None
     catalog = {}
-    if isinstance(data, dict):
-        for key, item in data.items():
-            try:
-                sid = int(key)
-            except (TypeError, ValueError):
+    for key, item in data.items():
+        try:
+            sid = int(key)
+        except (TypeError, ValueError):
+            continue
+        if sid > 0 and isinstance(item, dict):
+            catalog[sid] = item
+    return catalog or None
+
+
+def _wd_catalog():
+    """优先读曲库目录的清单，其次读软件数据目录中的官方清单缓存。"""
+    with _config_lock:
+        directory = _config.get("wd_library_dir") or ""
+    if directory:
+        local = _read_wd_catalog(os.path.join(directory, "wannadance_catalog.json"))
+        if local is not None:
+            return local
+    return _read_wd_catalog(os.path.join(data_dir(), WD_CATALOG_CACHE_FILENAME))
+
+
+def _fetch_wd_catalog():
+    request = urllib.request.Request(
+        "http://api.udon.dance/Api/Songs/list",
+        headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
+    with urllib.request.urlopen(request, timeout=20) as response:
+        if getattr(response, "status", 200) != 200:
+            raise RuntimeError(f"WannaDance 清单 HTTP {response.status}")
+        raw = response.read(20 * 1048576 + 1)
+    if len(raw) > 20 * 1048576:
+        raise ValueError("WannaDance 清单过大")
+    data = json.loads(raw.decode("utf-8"))
+    catalog = {}
+    groups = data.get("groups") if isinstance(data, dict) else None
+    contents = groups.get("contents") if isinstance(groups, dict) else None
+    if not isinstance(contents, list):
+        raise ValueError("WannaDance 清单格式无效")
+    for group in contents:
+        if not isinstance(group, dict):
+            continue
+        for song in group.get("songInfos") or []:
+            if not isinstance(song, dict):
                 continue
-            if isinstance(item, dict):
-                catalog[sid] = item
+            sid = song.get("id")
+            if isinstance(sid, int) and not isinstance(sid, bool) and sid > 0:
+                catalog[sid] = {"group": group.get("groupName"), **song}
+    if not catalog:
+        raise ValueError("WannaDance 清单为空")
+    try:
+        base = data_dir()
+        os.makedirs(base, exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix="wd-catalog-", suffix=".tmp", dir=base)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                json.dump(catalog, handle, ensure_ascii=False)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, os.path.join(base, WD_CATALOG_CACHE_FILENAME))
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+    except OSError as error:
+        log(f"WannaDance 清单缓存保存失败: {error}")
+    log(f"WannaDance 官方清单已更新：{len(catalog)} 首")
     return catalog
+
+
+def _ensure_wd_catalog():
+    global _wd_catalog_retry_at
+    catalog = _wd_catalog()
+    with _config_lock:
+        directory = _config.get("wd_library_dir") or ""
+    if directory and os.path.isfile(os.path.join(directory, "wannadance_catalog.json")):
+        return catalog
+    cache_path = os.path.join(data_dir(), WD_CATALOG_CACHE_FILENAME)
+    try:
+        if catalog is not None and time.time() - os.path.getmtime(cache_path) < WD_CATALOG_CACHE_SECONDS:
+            return catalog
+    except OSError:
+        pass
+    if time.time() < _wd_catalog_retry_at:
+        return catalog
+    try:
+        return _fetch_wd_catalog()
+    except Exception as error:
+        _wd_catalog_retry_at = time.time() + 60
+        log(f"WannaDance 官方清单获取失败: {error}" + ("，继续使用旧缓存" if catalog else ""))
+        return catalog
 
 
 def scan_library(kind):
@@ -1396,6 +1604,9 @@ def scan_library(kind):
             pattern = NUMERIC_MP4_RE
     if not directory or not os.path.isdir(directory):
         return None
+    if kind == "wd":
+        refresh_wd_favorites()
+    favorite_ids = get_wd_favorites() if kind == "wd" else set()
     names = {}
     if kind == "wd":
         catalog = _wd_catalog()
@@ -1428,7 +1639,8 @@ def scan_library(kind):
                     continue
                 sid = int(m.group(1))
                 songs.append({"id": sid, "name": names.get(sid),
-                              "size": st.st_size, "mtime": st.st_mtime})
+                              "size": st.st_size, "mtime": st.st_mtime,
+                              "favorite": kind == "wd" and sid in favorite_ids})
                 total += st.st_size
     except OSError:
         return None
@@ -1451,7 +1663,7 @@ def library_missing(kind):
     """对照官方清单找曲库里缺的编号。返回 None（目录未设置）或
     {"source": 清单描述或 None, "expected", "missing": [id], "dead": [id],
      "names": {id: 歌名}, "dir"}。
-    pypy 对照歌单直取表（_bundle_ytid），dead 是历史 404 确认的下架歌曲；
+    pypy 对照完整官方歌单（_bundle_ids），dead 是历史 404 确认的下架歌曲；
     wd 对照 wannadance_catalog.json（下架曲目已被清单排除）。"""
     scan = scan_library(kind)
     if scan is None:
@@ -1460,12 +1672,12 @@ def library_missing(kind):
     names = {}
     dead = []
     if kind == "wd":
-        catalog = _wd_catalog()
+        catalog = _ensure_wd_catalog()
         if catalog is None:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
                     "names": {}, "dir": scan["dir"]}
         expected = {sid for sid, item in catalog.items() if not item.get("disable_public")}
-        source = "wannadance_catalog.json（批量下载器清单）"
+        source = "WannaDance 官方清单"
         for sid in expected - have:
             item = catalog.get(sid) or {}
             nm = str(item.get("name") or "").strip()
@@ -1475,16 +1687,16 @@ def library_missing(kind):
                 names[sid] = label
     else:
         with _bundle_lock:
-            table = dict(_bundle_ytid)
-        if not table:
+            ids = set(_bundle_ids)
+        if not ids:
             load_bundle_cache()
             with _bundle_lock:
-                table = dict(_bundle_ytid)
-        if not table:
+                ids = set(_bundle_ids)
+        if not ids:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
                     "names": {}, "dir": scan["dir"]}
-        expected = set(table)
-        source = "官方歌单直取表"
+        expected = ids
+        source = "官方歌单"
         _ensure_dead_loaded()
         with _bundle_lock:
             name_table = dict(_bundle_names)
@@ -1539,7 +1751,7 @@ def learn_mapping_from_redirect(song_num, loc):
     """从 /video 的 302 Location 学习映射：CDN 记文件名，YouTube 记 yt:地址"""
     u = urllib.parse.urlparse(loc)
     hn = (u.hostname or "").lower()
-    if hn in CDN_HOSTS:
+    if hn == "cdn.pypy.dance" or hn.endswith(".cdn.pypy.dance"):
         name = os.path.basename(u.path)
         if FILENAME_RE.match(name):
             mark_mapping(song_num, name)
@@ -2069,7 +2281,7 @@ def resolve_video_filename(song_num):
         if status in (301, 302, 303, 307, 308):
             u = urllib.parse.urlparse(loc)
             hn = (u.hostname or "").lower()
-            if hn in CDN_HOSTS:
+            if hn == "cdn.pypy.dance" or hn.endswith(".cdn.pypy.dance"):
                 name = os.path.basename(u.path)
                 if FILENAME_RE.match(name):
                     filename = name
@@ -2196,7 +2408,7 @@ def touch(path):
         pass
 
 
-def download_file(filename, song_id=None):
+def download_file(filename, song_id=None, stall_timeout=None):
     """完整下载；只有正常读至 EOF 且长度匹配才发布成功。"""
     target = target_path(filename, song_id)
     if os.path.isfile(target) and os.path.getsize(target) > 0:
@@ -2218,21 +2430,27 @@ def download_file(filename, song_id=None):
                 invalidate_mapping(meta["song_id"], filename)
             raise RuntimeError(f"HTTP {resp.status}")
         total = int(resp.getheader("Content-Length") or 0)
+        last_progress = time.monotonic()
         with open(part, "wb") as f:
             while not _cancelled(run_id):
+                if stall_timeout is not None and time.monotonic() - last_progress >= stall_timeout:
+                    error = f"连续 {stall_timeout} 秒没有新数据"
+                    log(f"歌单直取下载 {filename} {error}，本次先尝试后续歌曲")
+                    break
                 chunk = resp.read(256 * 1024)
                 if not chunk:
                     eof = True
                     break
                 f.write(chunk)
                 done += len(chunk)
+                last_progress = time.monotonic()
                 emit_progress(filename, done, total, meta["task_id"])
         if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
             _commit_download(part, target, done)
             ok = True
             log(f"缓存完成 {os.path.basename(target)} ({done / 1048576:.1f} MB)")
         elif not _cancelled(run_id):
-            error = f"下载不完整 ({done}/{total})"
+            error = error or f"下载不完整 ({done}/{total})"
             log(f"{filename}: {error}")
     except Exception as e:
         error = str(e)
@@ -2617,6 +2835,144 @@ def _rebuild_worker():
 # ---------------- CDN IP 测速 ----------------
 
 SPEEDTEST_BYTES = 8 * 1048576
+CDN_POOL_FILENAME = "cdn-pool.json"
+CDN_POOL_LIMIT = 128
+CDN_POOL_FAILURE_LIMIT = 3
+QUICK_CANDIDATE_LIMIT = 8
+QUICK_NEW_IPS = 4
+QUICK_PROBE_BYTES = 256 * 1024
+QUICK_FINALISTS = 4
+_cdn_pool_lock = threading.RLock()
+
+
+def cdn_pool_path():
+    return os.path.join(data_dir(), CDN_POOL_FILENAME)
+
+
+def _load_cdn_pool():
+    try:
+        with open(cdn_pool_path(), "r", encoding="utf-8") as handle:
+            raw = json.load(handle).get("items", {})
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError, AttributeError) as error:
+        log(f"CDN 候选池读取失败，本次按空候选池处理: {error}")
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    pool = {}
+    for ip, entry in raw.items():
+        if not _is_public_ip(ip) or not isinstance(entry, dict):
+            continue
+        speed = entry.get("mbps")
+        if isinstance(speed, bool) or not isinstance(speed, (int, float)) or not math.isfinite(speed) or speed <= 0:
+            speed = None
+        failures = entry.get("failures", 0)
+        if isinstance(failures, bool) or not isinstance(failures, int) or failures < 0:
+            failures = 0
+        timestamps = {}
+        for name in ("last_tested", "last_success"):
+            value = entry.get(name, 0)
+            timestamps[name] = float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) else 0.0
+        pool[ip] = {"mbps": speed, "failures": min(failures, CDN_POOL_FAILURE_LIMIT), **timestamps}
+    return pool
+
+
+def _save_cdn_pool(pool):
+    base = data_dir()
+    os.makedirs(base, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="cdn-pool-", suffix=".tmp", dir=base)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump({"version": 1, "items": pool}, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, cdn_pool_path())
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _record_speedtest_results(results, update_speed=True):
+    if not results:
+        return
+    with _cdn_pool_lock:
+        pool = _load_cdn_pool()
+        now = time.time()
+        for item in results:
+            ip = str(item.get("ip") or "")
+            if not _is_public_ip(ip):
+                continue
+            previous = pool.get(ip, {})
+            speed = item.get("mbps")
+            success = item.get("error") is None and isinstance(speed, (int, float)) and not isinstance(speed, bool) and math.isfinite(speed) and speed > 0
+            failures = 0 if success else previous.get("failures", 0) + 1
+            if failures >= CDN_POOL_FAILURE_LIMIT:
+                pool.pop(ip, None)
+                continue
+            entry = {
+                "mbps": previous.get("mbps"),
+                "last_tested": now,
+                "last_success": now if success else previous.get("last_success", 0),
+                "failures": failures,
+            }
+            if success and update_speed:
+                entry["mbps"] = float(speed)
+            pool[ip] = entry
+        if len(pool) > CDN_POOL_LIMIT:
+            ranked = sorted(pool.items(), key=lambda pair: (
+                pair[1].get("failures", 0) == 0,
+                pair[1].get("mbps") or 0,
+                pair[1].get("last_tested", 0),
+            ), reverse=True)
+            pool = dict(ranked[:CDN_POOL_LIMIT])
+        try:
+            _save_cdn_pool(pool)
+        except OSError as error:
+            log(f"CDN 候选池保存失败: {error}")
+
+
+def _favorite_cdn_ips():
+    try:
+        with open(os.path.join(data_dir(), "cdn-favorites.json"), "r", encoding="utf-8") as handle:
+            values = json.load(handle)
+        return [ip for ip in values if isinstance(ip, str) and _is_public_ip(ip)] if isinstance(values, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def _quick_cdn_candidates():
+    candidates = []
+
+    def add(ip):
+        if _is_public_ip(ip) and ip not in candidates:
+            candidates.append(ip)
+
+    pref = (get_config().get("preferred_cdn_ip") or "").strip()
+    add(pref)
+    for ip in gather_candidate_ips("cdn.pypy.dance"):
+        add(ip)
+    for ip in _favorite_cdn_ips():
+        add(ip)
+    history = sorted((item for item in _load_cdn_pool().items()
+                      if item[1].get("failures", 0) == 0 and item[1].get("last_success", 0) > 0),
+                     key=lambda pair: (pair[1].get("mbps") is not None,
+                                       pair[1].get("mbps") or 0,
+                                       pair[1].get("last_success", 0)), reverse=True)
+    limit = _speedtest_candidate_count()
+    known_limit = max(1, limit - QUICK_NEW_IPS)
+    for ip, _ in history:
+        if len(candidates) >= known_limit:
+            break
+        add(ip)
+    attempts = 0
+    while len(candidates) < limit and attempts < 3:
+        for ip in _sample_cf_ips((limit - len(candidates)) * 2):
+            if len(candidates) >= limit:
+                break
+            add(ip)
+        attempts += 1
+    return candidates[:limit]
 
 
 def _pick_test_file():
@@ -2676,70 +3032,133 @@ def _download_test(ip, filename, nbytes, timeout=20):
         return None, str(e)
 
 
-def speed_test_ips():
-    """快速扫描：合并系统 DNS 和多个 DoH 服务器解析到的候选节点，各下载 8MB 测速"""
-    log("快速扫描：正在解析候选节点（DoH 查询约需几秒到十几秒）...")
-    filename = _pick_test_file()
-    candidates = gather_candidate_ips("cdn.pypy.dance")
-    pref = (_config.get("preferred_cdn_ip") or "").strip()
-    if pref and _is_public_ip(pref):
-        candidates = [pref] + [ip for ip in candidates if ip != pref]
-    candidates = candidates[:16]
+def _speedtest_thread_count():
+    value = get_config().get("speedtest_threads", 3)
+    return min(8, max(1, value)) if isinstance(value, int) and not isinstance(value, bool) else 3
+
+
+def _speedtest_candidate_count():
+    value = get_config().get("speedtest_candidates", QUICK_CANDIDATE_LIMIT)
+    return min(64, max(2, value)) if isinstance(value, int) and not isinstance(value, bool) else QUICK_CANDIDATE_LIMIT
+
+
+def _speedtest_sample_bytes():
+    value = get_config().get("speedtest_sample_mb", 8)
+    value = min(32, max(1, value)) if isinstance(value, int) and not isinstance(value, bool) else 8
+    return value * 1048576
+
+
+def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True):
     if not candidates:
-        log("测速失败: 无法解析 CDN IP，请检查网络（如开着代理请关闭后重试）")
-        emit("speedtest_done")
-        return
-    log(f"快速扫描开始（系统DNS+DoH合并共 {len(candidates)} 个节点，每个下载 {SPEEDTEST_BYTES // 1048576}MB 取样）...")
+        return []
+    if nbytes is None:
+        nbytes = _speedtest_sample_bytes()
+    workers = min(_speedtest_thread_count(), len(candidates))
+    sample = f"{nbytes // 1048576}MB" if nbytes >= 1048576 else f"{nbytes // 1024}KB"
+    log(f"{'测速' if report else '初筛'}使用 {workers} 个并发线程，每个节点下载 {sample} 取样...")
+
+    def download(ip):
+        if timeout is None:
+            return _download_test(ip, filename, nbytes)
+        return _download_test(ip, filename, nbytes, timeout)
+
     results = []
-    for ip in candidates:
-        mbps, err = _download_test(ip, filename, SPEEDTEST_BYTES)
-        results.append({"ip": ip, "mbps": mbps, "error": err})
-        if mbps is not None:
-            log(f"测速 {ip}: {mbps:.2f} MB/s")
-        else:
-            log(f"测速 {ip}: 失败 ({err})")
-        emit("speedtest_result", ip=ip, mbps=mbps, error=err)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(download, ip): ip for ip in candidates}
+        for future in as_completed(futures):
+            ip = futures[future]
+            mbps, err = future.result()
+            results.append({"ip": ip, "mbps": mbps, "error": err})
+            if report:
+                if mbps is not None:
+                    log(f"测速 {ip}: {mbps:.2f} MB/s")
+                else:
+                    log(f"测速 {ip}: 失败 ({err})")
+                emit("speedtest_result", ip=ip, mbps=mbps, error=err)
+    _record_speedtest_results(results, update_speed=report)
+    return results
+
+
+def _quick_speedtest(candidates, filename):
+    probes = _measure_ips(candidates, filename, QUICK_PROBE_BYTES, 6, report=False)
+    usable = [item for item in probes if not item.get("error") and (item.get("mbps") or 0) > 0]
+    top = sorted(usable, key=lambda item: item["mbps"], reverse=True)[:QUICK_FINALISTS]
+    finalists = [item["ip"] for item in top]
+    pref = (get_config().get("preferred_cdn_ip") or "").strip()
+    current = next((item for item in usable if item["ip"] == pref), None)
+    if current is not None and pref not in finalists:
+        finalists.append(pref)
+    log(f"快速初筛完成：{len(usable)}/{len(candidates)} 个可用，对 {len(finalists)} 个候选进行完整测速...")
+    if not finalists:
+        return probes
+    return _measure_ips(finalists, filename)
+
+
+def _apply_fastest_result(results):
+    valid = [item for item in results if not item.get("error") and (item.get("mbps") or 0) > 0]
+    if not valid:
+        log("CDN 优选：没有可用的测速结果，保持当前设置")
+        return False
+    best = max(valid, key=lambda item: item["mbps"])
+    pref = (get_config().get("preferred_cdn_ip") or "").strip()
+    current = next((item for item in valid if item["ip"] == pref), None)
+    if best["ip"] == pref:
+        log(f"CDN 优选：当前 {pref} 就是最快（{best['mbps']:.2f} MB/s），保持不变")
+        return False
+    if current is not None and best["mbps"] <= current["mbps"]:
+        log(f"CDN 优选：当前 {pref}（{current['mbps']:.2f} MB/s）不逊于新节点 "
+            f"{best['ip']}（{best['mbps']:.2f} MB/s），保持不变")
+        return False
+    try:
+        update_config({"preferred_cdn_ip": best["ip"]})
+    except Exception as error:
+        log(f"CDN 优选：最快 {best['ip']}（{best['mbps']:.2f} MB/s）写入配置失败: {error}")
+        return False
+    log(f"CDN 优选：已自动应用 {best['ip']}（{best['mbps']:.2f} MB/s）"
+        + (f"，替换原 {pref}" if pref else ""))
+    return True
+
+
+def speed_test_ips(ips=None):
+    """收藏测速直接完整测速；快速扫描合并当前、DNS、收藏、历史与新随机节点。"""
+    filename = _pick_test_file()
+    pref = (get_config().get("preferred_cdn_ip") or "").strip()
+    if ips is not None:
+        candidates = list(dict.fromkeys(str(ip).strip() for ip in ips if _is_public_ip(str(ip).strip())))
+        if _is_public_ip(pref) and pref not in candidates:
+            candidates.append(pref)
+        log(f"收藏测速：共 {len(candidates)} 个节点（含当前节点），无需解析 DNS。")
+    else:
+        log("快速扫描：正在汇总当前、DNS、收藏、历史候选与新节点...")
+        candidates = _quick_cdn_candidates()
+    if not candidates:
+        log("测速失败: 没有可测试的 CDN IP，请检查网络或收藏列表")
+        emit("speedtest_done", results=[])
+        return
+    if ips is None:
+        log(f"快速扫描开始：共 {len(candidates)} 个候选，先小样本初筛再完整测速...")
+        results = _quick_speedtest(candidates, filename)
+    else:
+        results = _measure_ips(candidates, filename)
+    _apply_fastest_result(results)
     emit("speedtest_done", results=results)
 
 
 def auto_speedtest_apply():
-    """服务启动后自动做一次快速测速，把最快节点写入优选 IP；失败静默保留现状。
-    热生效（ordered_ips 每次现读配置），无需重启服务。"""
+    """服务启动后自动做一次快速测速，只在最快节点优于当前节点时切换。"""
     if _stop_event.wait(3):  # 让位给启动解析与首批下载
         return
-    log("自动优选 CDN：正在解析候选节点（DoH 查询约需几秒到十几秒）...")
+    log("自动优选 CDN：正在汇总当前、DNS、收藏、历史候选与新节点...")
     filename = _pick_test_file()
-    candidates = gather_candidate_ips("cdn.pypy.dance")
-    pref = (_config.get("preferred_cdn_ip") or "").strip()
-    if pref and _is_public_ip(pref):
-        candidates = [pref] + [ip for ip in candidates if ip != pref]
-    candidates = candidates[:16]
+    candidates = _quick_cdn_candidates()
     if not candidates:
         return
-    log(f"自动优选 CDN：对 {len(candidates)} 个候选节点测速...")
-    best_ip, best_mbps = None, 0.0
-    results = []
-    for ip in candidates:
-        if _stop_event.is_set():
-            return
-        mbps, err = _download_test(ip, filename, SPEEDTEST_BYTES)
-        results.append({"ip": ip, "mbps": mbps, "error": err})
-        emit("speedtest_result", ip=ip, mbps=mbps, error=err)
-        if mbps is not None and mbps > best_mbps:
-            best_ip, best_mbps = ip, mbps
+    log(f"自动优选 CDN：共 {len(candidates)} 个候选，先小样本初筛再完整测速...")
+    results = _quick_speedtest(candidates, filename)
+    if _stop_event.is_set():
+        return
+    _apply_fastest_result(results)
     emit("speedtest_done", results=results)
-    if best_ip is None:
-        log("自动优选 CDN：所有候选节点均未连通，保持当前设置")
-        return
-    if best_ip == pref:
-        log(f"自动优选 CDN：当前优选 {pref} 就是最快（{best_mbps:.2f} MB/s），保持不变")
-        return
-    try:
-        update_config({"preferred_cdn_ip": best_ip})
-    except Exception as e:
-        log(f"自动优选 CDN 测得最快 {best_ip}（{best_mbps:.2f} MB/s），但写入配置失败: {e}")
-        return
-    log(f"自动优选 CDN：已应用 {best_ip}（{best_mbps:.2f} MB/s）" + (f"，替换原 {pref}" if pref else ""))
 
 
 # Cloudflare 官方 IPv4 段（https://www.cloudflare.com/ips-v4）
@@ -2768,36 +3187,39 @@ def _sample_cf_ips(n):
 
 
 def full_scan_ips():
-    """全部扫描：从 Cloudflare 全段随机抽样快速探测，筛出最快的一批再做 8MB 下载测速"""
+    """全部扫描：从 Cloudflare 全段随机抽样快速探测，筛出最快的一批再做完整下载测速"""
     filename = _pick_test_file()
     samples = _sample_cf_ips(FULLSCAN_SAMPLES)
-    log(f"全部扫描：从 Cloudflare 全段随机抽 {len(samples)} 个 IP 初筛（每个试下 {FULLSCAN_PROBE_BYTES // 1024}KB）...")
+    pref = (get_config().get("preferred_cdn_ip") or "").strip()
+    if _is_public_ip(pref) and pref not in samples:
+        samples.append(pref)
+    log(f"全部扫描：本次初筛共 {len(samples)} 个 IP（含当前节点，每个试下 {FULLSCAN_PROBE_BYTES // 1024}KB）...")
     probes = []
+    probe_results = []
     done = 0
     with ThreadPoolExecutor(max_workers=50) as pool:
         futures = {pool.submit(_download_test, ip, filename, FULLSCAN_PROBE_BYTES, 4): ip for ip in samples}
         for fut in as_completed(futures):
-            mbps, _ = fut.result()
+            mbps, error = fut.result()
+            result = {"ip": futures[fut], "mbps": mbps, "error": error}
+            probe_results.append(result)
             done += 1
             if mbps is not None:
-                probes.append({"ip": futures[fut], "mbps": mbps})
+                probes.append(result)
             if done % 50 == 0 or done == len(samples):
                 log(f"全部扫描初筛进度: {done}/{len(samples)}（可用 {len(probes)}）")
+    _record_speedtest_results(probe_results, update_speed=False)
     if not probes:
         log("全部扫描失败: 抽样 IP 全部不可用，请检查网络（如开着代理请关闭后重试）")
         emit("speedtest_done")
         return
     top = sorted(probes, key=lambda r: -r["mbps"])[:FULLSCAN_TOP]
-    log(f"初筛完成，对最快 {len(top)} 个节点做 {SPEEDTEST_BYTES // 1048576}MB 完整测速...")
-    results = []
-    for r in top:
-        mbps, err = _download_test(r["ip"], filename, SPEEDTEST_BYTES)
-        results.append({"ip": r["ip"], "mbps": mbps, "error": err})
-        if mbps is not None:
-            log(f"测速 {r['ip']}: {mbps:.2f} MB/s")
-        else:
-            log(f"测速 {r['ip']}: 失败 ({err})")
-        emit("speedtest_result", ip=r["ip"], mbps=mbps, error=err)
+    current = next((item for item in probes if item["ip"] == pref and (item.get("mbps") or 0) > 0), None)
+    if current is not None and all(item["ip"] != pref for item in top):
+        top.append(current)
+    log(f"初筛完成，对 {len(top)} 个候选做 {_speedtest_sample_bytes() // 1048576}MB 完整测速...")
+    results = _measure_ips([item["ip"] for item in top], filename)
+    _apply_fastest_result(results)
     emit("speedtest_done", results=results)
 
 
@@ -3039,7 +3461,10 @@ class DanceHandler(BaseHTTPRequestHandler):
 
             # 错误正文与服务器未按完整请求返回的片段只透传，绝不登记为缓存。
             if range_header and resp.status in (200, 206):
-                if wd_id is not None:
+                if _config.get("preload_sequential", True):
+                    _queue_serial_download("wd" if wd_id is not None else "cdn",
+                                           None if wd_id is not None else name, wd_id)
+                elif wd_id is not None:
                     start_wd_download(wd_id)
                 else:
                     start_background_download(name)
@@ -3337,6 +3762,9 @@ def refresh_queue_state():
     emit("queue", items=get_queue_snapshot())
 
 
+YOUTUBE_DIRECT_STALL_SECONDS = 30
+
+
 def submit_preload(items):
     count = int(_config["preload_count"]) + 1
     tasks = []
@@ -3349,23 +3777,24 @@ def submit_preload(items):
         if it.get("wd"):
             # WannaDance：文件名即编号，直接走 api.udon.dance 302 下载
             if not wd_local_path(sn):
-                tasks.append(("wd", None, sn))
+                tasks.append(("wd", None, sn, None))
             continue
         if in_library(sn) or yt_local_path(sn):
             continue
         kind, payload = song_route(sn)
-        if kind is None:
+        youtube_direct = kind == "yt" and _config.get("bundle_direct", True)
+        if kind is None or youtube_direct:
             resolve_video_filename(sn)
             kind, payload = song_route(sn)
         if kind == "cdn" and not is_cached(payload):
-            tasks.append(("cdn", payload, sn))
+            tasks.append(("cdn", payload, sn, YOUTUBE_DIRECT_STALL_SECONDS if youtube_direct else None))
     if _config.get("preload_sequential", True):
         # 串行模式：整体替换待下载列表，正在下载的那首继续；优先级永远跟随最新队列
         with _preload_dl_lock:
             _preload_dl_items[:] = tasks
         _preload_dl_wake.set()
     else:
-        for kind, key, sn in tasks:
+        for kind, key, sn, _ in tasks:
             if kind == "wd":
                 start_wd_download(sn)
             else:
@@ -3382,9 +3811,34 @@ _preload_dl_items = []       # 串行预载待下载队列，按队列优先级�
 _preload_dl_wake = threading.Event()
 
 
+def _preload_target(kind, key, song_id):
+    return wd_target_path(song_id) if kind == "wd" else target_path(key, song_id)
+
+
+def _wait_for_active_download(target):
+    key = _canonical_path(target)
+    while not _stop_event.is_set():
+        with _downloads_lock:
+            if key not in _downloads_in_progress:
+                return
+        _stop_event.wait(.2)
+
+
+def _queue_serial_download(kind, key, song_id, stall_timeout=None):
+    target = _preload_target(kind, key, song_id)
+    with _downloads_lock:
+        if _canonical_path(target) in _downloads_in_progress:
+            return
+    task = (kind, key, song_id, stall_timeout)
+    with _preload_dl_lock:
+        _preload_dl_items[:] = [item for item in _preload_dl_items
+                                if not (item[0] == kind and item[1] == key and item[2] == song_id)]
+        _preload_dl_items.insert(0, task)
+    _preload_dl_wake.set()
+
+
 def _preload_download_loop():
-    """串行预载：严格按点歌队列顺序逐首下载，保证下一首最先下完。
-    正在播放的歌曲由代理通道边下边存，与此队列互不阻塞。"""
+    """串行预载包含播放中的完整缓存任务；当前任务未结束时不会并行下载下一首。"""
     while not _stop_event.is_set():
         with _preload_dl_lock:
             task = _preload_dl_items.pop(0) if _preload_dl_items else None
@@ -3394,14 +3848,15 @@ def _preload_download_loop():
             continue
         if _stop_event.is_set():
             return
-        kind, key, song_id = task
+        kind, key, song_id, stall_timeout = task
         try:
             if kind == "wd":
                 download_wd(song_id)
             else:
-                download_file(key, song_id)
+                download_file(key, song_id, stall_timeout=stall_timeout)
         except Exception as e:
             log(f"预载下载出错（{key or song_id}）: {e}")
+        _wait_for_active_download(_preload_target(kind, key, song_id))
 
 
 def _preload_worker_loop():
@@ -3441,25 +3896,31 @@ def _preload_retry_loop():
         count = int(_config["preload_count"]) + 1
         needs_retry = False
         for it in items[:count]:
-            if not isinstance(it, dict) or it.get("wd"):
+            if not isinstance(it, dict):
                 continue
             sn = it.get("songNum", 0)
             if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
                 continue
-            if in_library(sn) or yt_local_path(sn):
+            if it.get("wd"):
+                needs_retry = not wd_local_path(sn)
+            elif in_library(sn) or yt_local_path(sn):
                 continue
-            if song_route(sn)[0] is None:
-                needs_retry = True
+            else:
+                kind, payload = song_route(sn)
+                needs_retry = (kind is None or (kind == "cdn" and not is_cached(payload))
+                               or (kind == "yt" and _config.get("bundle_direct", True)))
+            if needs_retry:
                 break
         if needs_retry:
             submit_preload_async(items)
 
 
-# ---------------- Cool Down（切歌时把下一首替换为放松视频，一次性） ----------------
+# ---------------- Cool Down（下一首或当前歌曲刷新时替换为放松视频，一次性） ----------------
 
 _cooldown_armed = False      # 待命状态
 _cooldown_serving = None     # 正在用放松视频服务的文件名（该文件的后续 Range 请求都用放松视频）
-_cooldown_exclude = None     # 待命时正在播放的歌曲文件名（不对它触发）
+_cooldown_exclude = None     # 当前歌曲文件名；下一首模式排除它，刷新模式等待它重新载入
+_cooldown_reload_ready = False
 
 
 def resolve_cooldown_file(configured_path=""):
@@ -3492,40 +3953,50 @@ def _emit_cooldown():
     refresh_queue_state()
 
 
-def _current_song_filename():
-    with _queue_lock:
-        items = copy.deepcopy(_last_queue_items)
-    if not items or not isinstance(items[0], dict):
+def _queue_item_filename(item):
+    if not isinstance(item, dict):
         return None
-    sn = items[0].get("songNum", 0)
+    sn = item.get("songNum", 0)
     if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
         return None
-    if items[0].get("wd"):
+    if item.get("wd"):
         return wd_cache_name(sn)
     kind, payload = song_route(sn)
     return payload if kind == "cdn" else (f"yt_{sn}.mp4" if kind == "yt" else None)
 
 
+def _current_song_filename():
+    with _queue_lock:
+        items = copy.deepcopy(_last_queue_items)
+    return _queue_item_filename(items[0]) if items else None
+
+
 def cooldown_arm():
-    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     with _cooldown_lock:
         if not _running or _stop_event.is_set() or not cooldown_available():
             return False
         _cooldown_exclude = _current_song_filename()
+        if _config.get("cooldown_trigger", "next") == "reload" and not _cooldown_exclude:
+            log("Cool Down 刷新模式需要已识别当前歌曲，请等待队列出现后重试")
+            return False
         _cooldown_armed = True
         _cooldown_serving = None
-    log("Cool Down 已待命：下一首在本机替换为放松视频（可点击取消）")
+        _cooldown_reload_ready = False
+    log("Cool Down 已待命：" + ("下次重新载入当前歌曲时" if _config.get("cooldown_trigger") == "reload"
+                              else "下一首在本机") + "替换为放松视频（可点击取消）")
     _emit_cooldown()
     return True
 
 
 def cooldown_disarm(silent=False):
-    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     with _cooldown_lock:
         was_serving = _cooldown_serving is not None
         _cooldown_armed = False
         _cooldown_serving = None
         _cooldown_exclude = None
+        _cooldown_reload_ready = False
     if not silent:
         log("Cool Down 已取消" + ("；在房间里重新加载当前歌曲即可恢复正常播放" if was_serving else ""))
     _emit_cooldown()
@@ -3536,10 +4007,8 @@ def cooldown_active():
 
 
 def cooldown_check(filename, consume=True):
-    """请求级一次性替换；下一个不同文件名请求解除，不伪造播放结束事件。
-    consume=False（HEAD 探测）：serving 中照常返回替换文件，armed 时也可返回
-    替换文件的响应头以免 HEAD 打到上游，但不消耗待命机会、不做状态迁移。"""
-    global _cooldown_armed, _cooldown_serving, _cooldown_exclude
+    """下一首模式排除当前歌曲；刷新模式只在同一队列重新载入后允许当前歌曲触发。"""
+    global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     changed = False
     message = None
     path = None
@@ -3553,6 +4022,7 @@ def cooldown_check(filename, consume=True):
                     return None
                 _cooldown_serving = None
                 _cooldown_exclude = None
+                _cooldown_reload_ready = False
                 changed = True
                 message = "Cool Down 视频已不可用，已恢复正常请求"
             else:
@@ -3560,15 +4030,19 @@ def cooldown_check(filename, consume=True):
                     return None
                 _cooldown_serving = None
                 _cooldown_exclude = None
+                _cooldown_reload_ready = False
                 changed = True
                 message = "已切换到其他歌曲，Cool Down 本次替换结束"
+        reload_mode = _config.get("cooldown_trigger", "next") == "reload"
+        eligible = _cooldown_armed and (
+            (_cooldown_reload_ready and _cooldown_exclude is not None and filename == _cooldown_exclude)
+            if reload_mode else filename != _cooldown_exclude)
         if not consume:
-            if _cooldown_armed and filename != _cooldown_exclude:
-                return cooldown_file()
-            return None
-        if _cooldown_armed and filename != _cooldown_exclude:
+            return cooldown_file() if eligible else None
+        if eligible:
             path = cooldown_file()
             _cooldown_armed = False
+            _cooldown_reload_ready = False
             changed = True
             if path:
                 _cooldown_serving = filename
@@ -3582,6 +4056,30 @@ def cooldown_check(filename, consume=True):
     if changed:
         _emit_cooldown()
     return path
+
+
+def _cooldown_queue_reloaded(items):
+    global _cooldown_reload_ready, _cooldown_exclude
+    if not items:
+        return
+    with _queue_lock:
+        previous = copy.deepcopy(_last_queue_items)
+    filename = _queue_item_filename(items[0])
+    with _cooldown_lock:
+        if not _cooldown_armed or _config.get("cooldown_trigger", "next") != "reload":
+            return
+        if previous != items:
+            _cooldown_exclude = filename
+            _cooldown_reload_ready = False
+            return
+        if _cooldown_exclude is None:
+            _cooldown_exclude = filename
+            return
+        ready = not _cooldown_reload_ready and filename == _cooldown_exclude
+        if ready:
+            _cooldown_reload_ready = True
+    if ready:
+        log(f"检测到当前歌曲 {filename} 重新载入，Cool Down 将在本次请求中替换")
 
 
 class LogWatcher(threading.Thread):
@@ -3628,6 +4126,7 @@ class LogWatcher(threading.Thread):
                 return
             tail_lines = tail.splitlines()
             record_room_events(tail_lines)
+            record_wd_favorites(tail_lines)
             if get_runtime_state()["youtube_available"]:
                 scan_resolved_youtube(tail_lines)
             items = extract_queue_items(tail_lines)
@@ -3650,6 +4149,7 @@ class LogWatcher(threading.Thread):
         lines = self.buf.split("\n")
         self.buf = lines.pop()
         record_room_events(lines)
+        record_wd_favorites(lines)
         if get_runtime_state()["youtube_available"]:
             scan_resolved_youtube(lines)
         items = extract_queue_items(lines)
@@ -3658,6 +4158,7 @@ class LogWatcher(threading.Thread):
 
     def _on_queue(self, items):
         global _last_queue_items
+        _cooldown_queue_reloaded(items)
         record_queue_snapshot(items)
         record_playing_snapshot(items)
         with _queue_lock:

@@ -111,11 +111,36 @@ class VRCXStatsTests(unittest.TestCase):
     def test_play_days_use_distinct_calendar_dates(self):
         overnight = [(datetime(2026, 1, 1, 23, 50).timestamp(), datetime(2026, 1, 2, 0, 10).timestamp())]
         self.assertEqual(vrcx_stats._play_days(overnight), 2)
+        midnight = [(datetime(2026, 1, 1, 23, 50).timestamp(), datetime(2026, 1, 2).timestamp())]
+        self.assertEqual(vrcx_stats._play_days(midnight), 1)
         same_day = [
             (datetime(2026, 1, 1, 10).timestamp(), datetime(2026, 1, 1, 11).timestamp()),
             (datetime(2026, 1, 1, 12).timestamp(), datetime(2026, 1, 1, 13).timestamp()),
         ]
         self.assertEqual(vrcx_stats._play_days(same_day), 1)
+
+    def test_daily_average_excludes_zero_and_missing_days(self):
+        result = self.read()
+        self.assertEqual(result["play_day_count"], 1)
+        self.assertEqual(result["average_play_seconds"], 6600)
+        self.assertEqual(result["favorite_hour"], datetime.fromtimestamp(ts(10)).hour)
+        self.assertEqual(result["favorite_hour_seconds"], 3600)
+        intervals = {"room": [
+            (datetime(2026, 1, 1, 9, 30).timestamp(), datetime(2026, 1, 1, 11).timestamp()),
+            (datetime(2026, 1, 1, 12).timestamp(), datetime(2026, 1, 1, 12, 30).timestamp()),
+            (datetime(2026, 1, 2, 12).timestamp(), datetime(2026, 1, 2, 12, 30).timestamp()),
+            (datetime(2026, 1, 3, 12).timestamp(), datetime(2026, 1, 3, 12).timestamp()),
+        ]}
+        metrics = vrcx_stats._play_summary_stats(
+            intervals, datetime(2026, 1, 1, 10).timestamp(), datetime(2026, 1, 3).timestamp())
+        self.assertEqual(metrics, {
+            "play_day_count": 2, "average_play_seconds": 3600,
+            "favorite_hour": 10, "favorite_hour_seconds": 3600,
+        })
+        self.assertEqual(vrcx_stats._play_summary_stats({}, 0, 86400), {
+            "play_day_count": 0, "average_play_seconds": 0,
+            "favorite_hour": None, "favorite_hour_seconds": 0,
+        })
 
     def test_open_sessions_close_at_last_observed_record(self):
         result = self.read(end=15)
@@ -280,6 +305,12 @@ class VRCXStatsTests(unittest.TestCase):
             vrcx_stats.read_co_room_stats(invalid, ts(10), ts(12))
         with self.assertRaises(ValueError):
             vrcx_stats.read_co_room_stats(self.root / "missing.sqlite3", ts(10), ts(12))
+
+    def test_archive_fails_closed_when_cookie_cleanup_fails(self):
+        invalid = self.root / "invalid.sqlite3"
+        invalid.write_bytes(b"not a sqlite database")
+        with self.assertRaisesRegex(ValueError, "停止归档或导出"):
+            vrcx_stats.sanitize_vrcx_archive(invalid)
 
 
 if __name__ == "__main__":

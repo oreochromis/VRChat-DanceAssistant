@@ -7,14 +7,15 @@ if exist "VRChatDanceAssistant.exe" goto launch_local
 if exist "dist\VRChatDanceAssistant\VRChatDanceAssistant.exe" goto launch_bundle
 
 :launch_source
-if exist "C:\Users\92153\AppData\Local\Python\bin\python.exe" (
-  start "" "C:\Users\92153\AppData\Local\Python\bin\python.exe" "dance_cache_gui.py" %*
-  exit /b
-)
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" "dance_cache_gui.py" %*
 ) else (
-  python "dance_cache_gui.py" %*
+  where py >nul 2>nul
+  if errorlevel 1 (
+    python "dance_cache_gui.py" %*
+  ) else (
+    py "dance_cache_gui.py" %*
+  )
 )
 set "APP_EXIT_CODE=%ERRORLEVEL%"
 if not "%APP_EXIT_CODE%"=="0" (

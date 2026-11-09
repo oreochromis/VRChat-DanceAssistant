@@ -23,7 +23,7 @@ from .pages import Pages, button, row
 from .play_stats import PlayStatsPage
 from .theme import ThemeStore
 from .windows_taskbar import set_windows_application_identity
-from .widgets import Backdrop, NoticeBanner, SegmentedSwitch, TextHalo, app_icon, bytes_text, install_combo_wheel_filter, label, set_status, status_label, stylesheet
+from .widgets import Backdrop, NoticeBanner, SegmentedSwitch, TextHalo, app_icon, bytes_text, install_input_wheel_filter, label, set_status, status_label, stylesheet
 
 
 STATES = {
@@ -68,9 +68,10 @@ def _version_newer(latest, current):
 class MainWindow(QMainWindow, Pages):
     restore_requested = Signal()
 
-    def __init__(self, controller: CoreController, store: ThemeStore):
+    def __init__(self, controller: CoreController, store: ThemeStore, *, auto_start=True):
         super().__init__()
-        install_combo_wheel_filter(QApplication.instance())
+        self._auto_start_allowed = auto_start
+        install_input_wheel_filter(QApplication.instance())
         self.controller, self.store = controller, store
         self.controller.configure_steamvr(store.root_dir)
         from .cdn_favorites import CDNFavorites
@@ -107,7 +108,7 @@ class MainWindow(QMainWindow, Pages):
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
         self._record_editor = None
-        self.setWindowTitle("VRChat 跳舞房助手" + (" · 界面演示" if controller.demo else ""))
+        self.setWindowTitle("VRChat DanceAssistant" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
         self.setMinimumSize(850, 680)
@@ -142,11 +143,12 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.play_stats_page)
         self.stack.addWidget(self.build_settings_page())
         self.minimal_page = self.build_minimal_page()
-        self._advanced_widgets = [self.general_card, self.network_card, self.maintenance_card,
-                                  self.hosts_clean_row, self.hosts_clean_hint, self.auto_start_service,
+        self._advanced_widgets = [self.general_card, self.maintenance_card,
+                                  self.hosts_clean_row, self.hosts_clean_hint,
                                   self.storage_location_box, self.vrcx_sync_card,
-                                  self.steamvr_detail, self.overlay_note,
-                                  self.vrcx_group_heading, self.network_group_heading]
+                                  self.steamvr_detail, self.overlay_note, self.vrcx_group_heading,
+                                  self.speedtest_threads_row, self.speedtest_candidates_row,
+                                  self.speedtest_sample_row]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -177,10 +179,10 @@ class MainWindow(QMainWindow, Pages):
         QTimer.singleShot(0, self.controller.scan_room_events)
         QTimer.singleShot(0, self.controller.compact_history)
         QTimer.singleShot(1000, self.controller.check_index_maintenance)
-        # 极简模式始终自动启动；其他模式遵循设置。controller.start 自身会拦截
-        # 非 Windows/非管理员/已在启动中等情况并按原路径提示。
-        if (store.preferences.get("ui_mode") == "minimal"
-                or (not controller.demo and controller.config().get("auto_start_service", True))):
+        # 极简模式默认自动启动，其他模式遵循设置；--no-autostart 优先。
+        # controller.start 自身会拦截非 Windows/非管理员/已在启动中等情况。
+        if auto_start and (store.preferences.get("ui_mode") == "minimal"
+                           or (not controller.demo and controller.config().get("auto_start_service", True))):
             QTimer.singleShot(0, controller.start)
         # SteamVR 面板页：仅真机 Windows 启用；跟随配置热启停
         if os.name == "nt" and not controller.demo:
@@ -550,12 +552,15 @@ class MainWindow(QMainWindow, Pages):
         state = self._cooldown
         phase = state.get("phase", "idle")
         available = state.get("available", False)
-        filename = self.controller.config().get("cooldown_file", "")
+        config = self.controller.config()
+        filename = config.get("cooldown_file", "")
+        reload_mode = config.get("cooldown_trigger", "next") == "reload"
         self.cooldown_file_label.setText(filename or ("内置默认放松视频" if available else "内置默认放松视频不可用"))
         self.cooldown_file_label.setToolTip(filename)
         if phase == "armed":
             set_status(self.cooldown_badge, "等待替换", "warning")
-            self.cooldown_hint.setText("已经就绪，将在下一次视频请求时使用放松视频。")
+            self.cooldown_hint.setText("已经就绪，将在下次重新载入当前歌曲时使用放松视频。" if reload_mode
+                                       else "已经就绪，将在下一首歌曲播放时使用放松视频。")
             self.cooldown_button.setText("取消等待")
         elif phase == "serving":
             set_status(self.cooldown_badge, "正在替换", "info")
@@ -564,7 +569,8 @@ class MainWindow(QMainWindow, Pages):
         else:
             set_status(self.cooldown_badge, "未启用")
             if available:
-                hint = "休息一下，将下一次视频请求替换为本地放松视频。"
+                hint = ("启用后，在下次刷新当前歌曲时播放本地放松视频。" if reload_mode
+                        else "休息一下，将下一首歌曲替换为本地放松视频。")
             elif filename:
                 hint = "自选放松视频不存在或不可用，请在设置中重新选择，或改用内置视频并应用更改。"
             else:
@@ -619,8 +625,16 @@ class MainWindow(QMainWindow, Pages):
                 self.bundle_direct.setChecked(config.get("bundle_direct", True))
                 self.youtube_enabled.setChecked(config["enable_youtube_cache"])
                 self.cooldown_path.setText(config["cooldown_file"])
+                self.cooldown_trigger.setCurrentIndex(
+                    self.cooldown_trigger.findData(config.get("cooldown_trigger", "next")))
                 self.preferred_ip.setText(config["preferred_cdn_ip"])
                 self.auto_prefer_cdn.setChecked(config.get("auto_prefer_cdn", True))
+                self.speedtest_threads.setValue(config.get("speedtest_threads", 3))
+                self.speedtest_candidates.setValue(config.get("speedtest_candidates", 8))
+                self.speedtest_sample_mb.setValue(config.get("speedtest_sample_mb", 8))
+                self.scan_status.setText(
+                    f"快速测速会从当前、DNS、收藏、历史与新节点中选取最多 {self.speedtest_candidates.value()} 个候选，"
+                    f"先小样本初筛，再对前 4 名及当前 IP 下载 {self.speedtest_sample_mb.value()}MB 复测。")
                 self.vr_overlay.setChecked(config.get("vr_overlay", True))
                 self.close_to_tray.setChecked(config.get("close_to_tray", False))
                 self.minimal_close_to_tray.setChecked(config.get("close_to_tray", False))
@@ -711,9 +725,28 @@ class MainWindow(QMainWindow, Pages):
                      "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
                      "vr_overlay": self.vr_overlay.isChecked(), "close_to_tray": self.close_to_tray.isChecked(),
                      "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip(),
+                     "cooldown_trigger": self.cooldown_trigger.currentData(),
                      "auto_prefer_cdn": self.auto_prefer_cdn.isChecked(),
+                     "speedtest_threads": self.speedtest_threads.value(),
+                     "speedtest_candidates": self.speedtest_candidates.value(),
+                     "speedtest_sample_mb": self.speedtest_sample_mb.value(),
                      "auto_start_service": self.auto_start_service.isChecked()}
         self.controller.apply_config(patch, section)
+
+    def reset_all_settings(self):
+        if self._runtime.get("running") or self._runtime.get("hosts_restore_pending"):
+            self.notify("请先停止服务，再恢复全部默认设置。", error=True)
+            return
+        answer = QMessageBox.question(
+            self, "全部恢复默认",
+            "将恢复全部软件设置，包括缓存、曲库目录、网络、预载、CoolDown 和启动选项。\n"
+            "不会删除歌曲、收藏、历史、外观，也不会修改 SteamVR 的独立启动项。\n确定继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.reset_settings_button.setEnabled(False)
+        self.controller.reset_settings()
 
     def render_steamvr_controls(self):
         editable = self._steamvr_available and self._steamvr_saved is not None and not self._steamvr_busy
@@ -846,25 +879,37 @@ class MainWindow(QMainWindow, Pages):
         self.verify_button.setEnabled(True)
         self.cancel_maintenance_button.setEnabled(False)
 
-    def start_scan(self, full):
+    def start_favorite_scan(self):
+        favorites = list(self.cdn_favorites.items)
+        if not favorites:
+            self.notify("暂无收藏地址，请先收藏一个测速成功的 CDN IP。")
+            return
+        self.start_scan(False, favorites)
+
+    def start_scan(self, full, ips=None):
+        if self.controller.busy("scan"):
+            return
         if full and QMessageBox.question(self, "扩大范围测速（抽样）", "将从更大范围的 CDN IP 中抽样连接并下载测试数据，不会穷举全部 IP，可能需要数分钟。现在开始？",
                                          QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                          QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
             return
         self.quick_scan_button.setEnabled(False)
         self.full_scan_button.setEnabled(False)
+        self.favorite_scan_button.setEnabled(False)
         self.use_ip_button.hide()
         self._scan_results = []
         self.scan_table.setRowCount(0)
         self.scan_table.hide()
-        self.scan_status.setText("正在扩大范围抽样测速，请稍候…" if full else "正在测试候选 CDN 地址…")
-        self.controller.scan(full=full)
+        self.scan_status.setText("正在扩大范围抽样测速，请稍候…" if full else
+                                 f"正在测速 {len(ips)} 个收藏地址…" if ips is not None else "正在测试候选 CDN 地址…")
+        self.controller.scan(full=full, ips=ips)
 
     def finish_scan(self, results):
         if results is not None:
             self._scan_results = list(results)
         self.quick_scan_button.setEnabled(True)
         self.full_scan_button.setEnabled(True)
+        self.favorite_scan_button.setEnabled(bool(self.cdn_favorites.items))
         valid = [item for item in self._scan_results if not item.get("error") and item.get("mbps", 0) > 0]
         self._scan_results.sort(key=lambda item: item.get("mbps", 0) or 0, reverse=True)
         self.scan_table.setRowCount(len(self._scan_results))
@@ -872,13 +917,14 @@ class MainWindow(QMainWindow, Pages):
             self.scan_table.setItem(index, 0, self.cell(item.get("ip", "—")))
             self.scan_table.setItem(index, 1, self.cell(f"{item.get('mbps', 0):.2f} MB/s" if not item.get("error") else "—"))
             self.scan_table.setItem(index, 2, self.cell("可用" if item in valid else "未连通", item.get("error", "")))
-        self.scan_status.setText(f"测速完成 · {len(valid)} 个可用地址。选择地址后，点击“使用选中的 IP”，再应用更改。" if valid else "没有测得可用地址。请检查网络，或保留自动选择。")
+        self.scan_status.setText(f"测速完成 · {len(valid)} 个可用地址。最快节点已自动应用；当前节点不逊于新节点时保持不变。双击其他 IP 可手动选择。" if valid else "没有测得可用地址。请检查网络，或保留当前设置。")
         self.use_ip_button.setVisible(bool(valid))
         self.resize_tables()
         if valid:
             self.scan_table.selectRow(0)
 
     def render_favorites(self):
+        self.favorite_scan_button.setEnabled(bool(self.cdn_favorites.items) and not self.controller.busy("scan"))
         self.favorites_table.setRowCount(len(self.cdn_favorites.items))
         for index, ip in enumerate(self.cdn_favorites.items):
             self.favorites_table.setItem(index, 0, self.cell(ip))
@@ -1195,16 +1241,14 @@ class MainWindow(QMainWindow, Pages):
             self._runtime.update(data)
             self.render_runtime()
         elif kind == "config":
-            # 后台自动修改（如自动优选 CDN 写入优选 IP）后同步界面；
-            # 用户有未应用的编辑时只更新缓存，不覆盖输入框
+            # 自动优选只同步优选 IP 字段，其他未应用的草稿保持不变。
             self.controller.reload_config()
-            if not self._dirty["settings"]:
-                config = self.controller.config()
-                self._syncing = True
-                try:
-                    self.preferred_ip.setText(config["preferred_cdn_ip"])
-                finally:
-                    self._syncing = False
+            config = self.controller.config()
+            self._syncing = True
+            try:
+                self.preferred_ip.setText(config["preferred_cdn_ip"])
+            finally:
+                self._syncing = False
         elif kind == "queue":
             self._queue = data.get("items", [])
             self.render_queue()
@@ -1247,7 +1291,7 @@ class MainWindow(QMainWindow, Pages):
                 self.controller.check_index_maintenance()
         elif kind == "speedtest_result":
             self._scan_results.append(data)
-            self.scan_status.setText(f"已测试 {len(self._scan_results)} 个地址，测速继续进行；扩大范围测速仅抽样，不穷举全部 IP。")
+            self.scan_status.setText(f"已返回 {len(self._scan_results)} 条结果，测速继续进行…")
         elif kind == "speedtest_done":
             self.finish_scan(data.get("results"))
 
@@ -1265,6 +1309,12 @@ class MainWindow(QMainWindow, Pages):
             self._handle_index_check(result)
         elif operation == "steamvr_startup":
             self.show_steamvr_status(result)
+        elif operation == "reset_settings":
+            self.reset_settings_button.setEnabled(True)
+            self.load_fields()
+            self.controller.check_index_maintenance()
+            self.controller.refresh_stats()
+            self.notify("全部软件设置已恢复默认，歌曲、收藏、历史和外观均保留。")
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             self.load_fields(section)
@@ -1333,6 +1383,7 @@ class MainWindow(QMainWindow, Pages):
     @Slot(str, str)
     def on_error(self, operation, message):
         if operation in ("vrcx_stats", "vrcx_stats_auto"):
+            self.update_profile()
             self.vrcx_sync_button.setEnabled(True)
             self.vrcx_sync_status.setText("同步失败：" + friendly_message(message))
             if operation == "vrcx_stats_auto":
@@ -1361,7 +1412,10 @@ class MainWindow(QMainWindow, Pages):
         elif operation == "scan":
             self.quick_scan_button.setEnabled(True)
             self.full_scan_button.setEnabled(True)
+            self.favorite_scan_button.setEnabled(bool(self.cdn_favorites.items))
             self.scan_status.setText(message)
+        elif operation == "reset_settings":
+            self.reset_settings_button.setEnabled(True)
         elif operation == "shutdown":
             self._closing = False
             self.controller._closing = False
@@ -1384,6 +1438,12 @@ class MainWindow(QMainWindow, Pages):
             self.apply_buttons[section].setEnabled(not busy and self._dirty[section])
             if busy:
                 self.apply_hints[section].setText("正在保存…")
+        elif operation == "scan":
+            self.quick_scan_button.setEnabled(not busy)
+            self.full_scan_button.setEnabled(not busy)
+            self.favorite_scan_button.setEnabled(not busy and bool(self.cdn_favorites.items))
+        elif operation == "reset_settings":
+            self.reset_settings_button.setEnabled(not busy)
         elif operation == "clear_cache":
             self.clear_cache_button.setEnabled(not busy)
             self.clear_cache_button.setText("正在清理…" if busy else "清理临时缓存")
@@ -1534,7 +1594,7 @@ def main(argv=None):
         if args.demo:
             store.select("light")
         controller = CoreController(demo=args.demo)
-        window = MainWindow(controller, store)
+        window = MainWindow(controller, store, auto_start=not args.no_autostart)
         window.show()
         if instance is not None and getattr(instance, "wake_event", None):
             import threading
@@ -1568,7 +1628,6 @@ def main(argv=None):
 
             QTimer.singleShot(250, smoke_check)
         if not args.demo and not args.no_autostart and os.name == "nt":
-            QTimer.singleShot(200, controller.start)
             QTimer.singleShot(3000, controller.check_updates)
         elif not args.demo and os.name != "nt":
             window.notify("缓存服务仅支持 Windows；当前环境可查看界面。使用 --demo 可以安全预览示例数据。", persistent=True)

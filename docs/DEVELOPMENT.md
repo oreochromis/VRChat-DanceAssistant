@@ -82,7 +82,7 @@ VR 面板会话运行在独立子进程中（`dance_ui/vr_panel_worker.py`，由
 
 ### 程序图标（3.0.0）
 
-`assets/app-icon.png` 是用户确认的透明背景黑白 PY 对话框图标，原 PNG 保持不变；`assets/app-icon.ico` 从该图导出 16、24、32、48、64、128、256 像素七种尺寸，用于 Windows exe 原生图标。Qt 全局应用图标和窗口图标使用同一 PNG，打包时同时保留 PNG 与 ICO 资源。
+`assets/app-icon.png` 是用户确认的透明背景 DA 对话框图标；4.0.0 在原配色基础上加入玻璃高光，保留 DA 字形和气泡轮廓。`assets/app-icon.ico` 从该图导出 16、24、32、48、64、128、256 像素七种尺寸，用于 Windows exe 原生图标。Qt 全局应用图标和窗口图标使用同一 PNG，打包时同时保留 PNG 与 ICO 资源。
 
 Windows 构建脚本与 spec 均将 ICO 嵌入 exe。冻结检查不仅核对包内文件，还读取 exe 的 PE 图标资源，比较其图像帧与批准的 ICO，防止只替换窗口图标却遗漏资源管理器图标。资源大小、SHA-256 和检查结果随构建报告发布。
 

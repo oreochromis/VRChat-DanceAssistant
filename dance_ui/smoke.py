@@ -60,10 +60,10 @@ def inspect_demo(window) -> dict:
             actual_icons.append(QApplication.windowIcon())
         for icon in actual_icons:
             if icon.isNull() or approved.isNull():
-                raise ValueError("Qt could not load the approved PY application icon.")
+                raise ValueError("Qt could not load the approved DA application icon.")
             for size in (16, 32, 64, 256):
                 if icon.pixmap(size, size).toImage() != approved.pixmap(size, size).toImage():
-                    raise ValueError("The application/window icon differs from the approved PY artwork.")
+                    raise ValueError("The application/window icon differs from the approved DA artwork.")
         report["checks"].append("application_window_icon")
         if sys.platform == "win32" and getattr(sys, "frozen", False):
             report["windows_executable_icon"] = describe_embedded_icon(

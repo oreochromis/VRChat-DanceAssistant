@@ -211,7 +211,7 @@ def _verify_pixels(actual, approved, tolerance=2):
         raise ValueError("The native window icon has unexpected pixel data.")
     maximum = max(abs(left - right) for left, right in zip(actual, approved))
     if maximum > tolerance:
-        raise ValueError(f"The native window icon differs from the approved PY artwork (delta {maximum}).")
+        raise ValueError(f"The native window icon differs from the approved DA artwork (delta {maximum}).")
     return maximum
 
 

@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPai
 from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 from .pages import button
+from .vrcx_profile import friend_avatar_path
 from .vrcx_stats import format_duration
 from .widgets import label
 
@@ -42,6 +43,13 @@ class ReportCanvas(QWidget):
                             key=lambda song: (-int(song.get("count", 0)), int(song.get("rank", 0))))
         vrcx = self.data.get("vrcx") or {}
         self.vrcx_friends = list(vrcx.get("friends") or []) if isinstance(vrcx, dict) else []
+        self.friend_avatars = {}
+        for friend in self.vrcx_friends[:3]:
+            user_id = str(friend.get("user_id") or "")
+            path = friend_avatar_path(user_id)
+            image = QImage(str(path)) if user_id and path.is_file() else QImage()
+            if not image.isNull():
+                self.friend_avatars[user_id] = image
         self.daily_play = sorted((item for item in (vrcx.get("daily_play") or [])
                                   if isinstance(item, dict) and item.get("day")),
                                  key=lambda item: item["day"]) if isinstance(vrcx, dict) else []
@@ -49,6 +57,10 @@ class ReportCanvas(QWidget):
         self.dance_partners = len(self.vrcx_friends)
         self.new_dance_partners = len(vrcx.get("new_friends") or []) if isinstance(vrcx, dict) else 0
         self.total_play_seconds = int(vrcx.get("total_play_seconds", 0)) if isinstance(vrcx, dict) else 0
+        self.play_day_count = int(vrcx.get("play_day_count", 0)) if isinstance(vrcx, dict) else 0
+        self.average_play_seconds = int(vrcx.get("average_play_seconds", 0)) if isinstance(vrcx, dict) else 0
+        self.favorite_hour = vrcx.get("favorite_hour") if isinstance(vrcx, dict) else None
+        self.favorite_hour_seconds = int(vrcx.get("favorite_hour_seconds", 0)) if isinstance(vrcx, dict) else 0
         self.data_status = vrcx.get("data_status", "") if isinstance(vrcx, dict) else ""
         world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
         self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
@@ -139,15 +151,19 @@ class ReportCanvas(QWidget):
         self.setMinimumHeight(self._report_height(self.width()))
         super().resizeEvent(event)
 
+    def _friend_section_height(self):
+        count = min(3, len(self.vrcx_friends))
+        return 72 + count * 72 + max(0, count - 1) * 8 if count else 0
+
     def _report_height(self, width):
-        height = 704
+        height = 862
         if len(self.songs) > 3:
             height += 100 + min(len(self.songs), 10) * 44 + 24
         height += 310
         height += 254
         height += 24
         if self.vrcx_friends:
-            height += 130
+            height += self._friend_section_height() + 18
         return height + 52 + 28
 
     def paintEvent(self, event):
@@ -172,8 +188,8 @@ class ReportCanvas(QWidget):
         hero = QRectF(margin, 28, content, 270)
         self._draw_hero(painter, hero)
         metrics_y = hero.bottom() + 18
-        self._draw_metrics(painter, QRectF(margin, metrics_y, content, 112))
-        favorite_title_y = metrics_y + 146
+        self._draw_metrics(painter, QRectF(margin, metrics_y, content, 270))
+        favorite_title_y = metrics_y + 304
         _text(painter, QRectF(margin, favorite_title_y, content, 34), "本期最爱",
               size=23, color=self.text, weight=QFont.Weight.DemiBold)
         self._draw_favorites(painter, QRectF(margin, favorite_title_y + 34, content, 184))
@@ -192,8 +208,9 @@ class ReportCanvas(QWidget):
         footer_y = charts_y + 254
         if self.vrcx_friends:
             friend_y = charts_y + 254
-            self._draw_vrcx_friend(painter, QRectF(margin, friend_y, content, 112))
-            footer_y = friend_y + 126
+            friend_height = self._friend_section_height()
+            self._draw_vrcx_friend(painter, QRectF(margin, friend_y, content, friend_height))
+            footer_y = friend_y + friend_height + 14
         _text(painter, QRectF(margin, footer_y, content, 30),
               "VRChat 跳舞房助手  ·  本地点歌与 VRCX 记录", size=12, color=self.muted,
               align=Qt.AlignmentFlag.AlignCenter)
@@ -294,31 +311,59 @@ class ReportCanvas(QWidget):
                        "月" if peak_month else "", format_duration(peak_month["seconds"]) if peak_month else "")
         partner = (("新增的舞蹈伙伴", self.new_dance_partners) if self.partner_mode == "new"
                    else ("共同游玩的舞蹈伙伴", self.dance_partners))
+        favorite_hour = (self.favorite_hour if isinstance(self.favorite_hour, int)
+                         and not isinstance(self.favorite_hour, bool) and 0 <= self.favorite_hour < 24 else None)
+        favorite_period = (f"{favorite_hour:02d}:00–{(favorite_hour + 1) % 24:02d}:00"
+                           if favorite_hour is not None else "—")
         values = [
             ("活跃天数", self.active_days, "天", ""),
             (partner[0], partner[1], "位", ""),
-            ("点播歌曲", self.self_played, "首", ""),
+            ("点播歌曲", len(self.songs), "首", ""),
             summary,
+            ("最常舞蹈时段", favorite_period, "", ""),
+            ("单日平均游玩时长", format_duration(self.average_play_seconds) if self.play_day_count else "—", "",
+             f"按 {self.play_day_count} 个游玩日计算" if self.play_day_count else "暂无游玩记录"),
         ]
         gap = 12
-        card_width = (rect.width() - gap * 3) / 4
+        card_width = (rect.width() - gap) / 2
+        card_height = (rect.height() - gap * 2) / 3
+        self._metric_card_rects = []
         for index, (title, value, unit, caption) in enumerate(values):
-            card = QRectF(rect.left() + index * (card_width + gap), rect.top(), card_width, rect.height())
+            column, row = index % 2, index // 2
+            card = QRectF(rect.left() + column * (card_width + gap),
+                          rect.top() + row * (card_height + gap), card_width, card_height)
+            self._metric_card_rects.append(QRectF(card))
             self._card(painter, card)
-            _text(painter, QRectF(card.left() + 18, card.top() + 13, card.width() - 36, 22),
-                  title, size=12, color=self.muted)
-            painter.setFont(_font(27, QFont.Weight.DemiBold))
-            value_metrics = painter.fontMetrics()
-            baseline = card.top() + 68
-            painter.setPen(self.text)
-            painter.drawText(QPointF(card.left() + 18, baseline), str(value))
+            title_width = min(142, card.width() * .38)
+            title_rect = QRectF(card.left() + 18, card.top() + 8, title_width, card.height() - 16)
+            painter.setFont(_font(12))
+            _text(painter, title_rect, _elided(painter, title, title_width), size=12, color=self.muted)
+            value_left = title_rect.right() + 12
+            value_width = card.right() - 18 - value_left
+            value_size = 24
+            while True:
+                painter.setFont(_font(value_size, QFont.Weight.DemiBold))
+                value_metrics = painter.fontMetrics()
+                painter.setFont(_font(11))
+                unit_width = painter.fontMetrics().horizontalAdvance(unit) if unit else 0
+                needed = value_metrics.horizontalAdvance(str(value)) + unit_width + (6 if unit else 0)
+                if needed <= value_width or value_size <= 14:
+                    break
+                value_size -= 1
+            unit_gap = 6 if unit else 0
+            value_rect = QRectF(value_left, card.top() + (12 if caption else 8),
+                                value_width - unit_width - unit_gap, 36 if caption else card.height() - 16)
+            painter.setFont(_font(value_size, QFont.Weight.DemiBold))
+            display_value = _elided(painter, value, value_rect.width())
+            _text(painter, value_rect, display_value, size=value_size, color=self.text,
+                  weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             if unit:
-                value_width = value_metrics.horizontalAdvance(str(value))
-                painter.setFont(_font(12))
-                painter.setPen(self.muted)
-                painter.drawText(QPointF(card.left() + 25 + value_width, baseline), unit)
-            _text(painter, QRectF(card.left() + 18, card.bottom() - 28, card.width() - 36, 18),
-                  caption, size=11, color=self.muted)
+                _text(painter, QRectF(value_rect.right() + unit_gap, value_rect.top(), unit_width, value_rect.height()),
+                      unit, size=11, color=self.muted, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            if caption:
+                _text(painter, QRectF(value_left, card.bottom() - 29, value_width, 18),
+                      caption, size=11, color=self.muted,
+                      align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def _draw_favorites(self, painter, rect):
         favorites = self.songs[:3]
@@ -546,28 +591,59 @@ class ReportCanvas(QWidget):
 
     def _draw_vrcx_friend(self, painter, rect):
         self._card(painter, rect)
-        friend = self.vrcx_friends[0]
+        friends = self.vrcx_friends[:3]
         _text(painter, QRectF(rect.left() + 24, rect.top() + 12, rect.width() - 48, 28),
-              "最常与你共同游玩的好友", size=16, color=self.text, weight=QFont.Weight.DemiBold)
-        name_area = QRectF(rect.left() + 24, rect.top() + 42, rect.width() * .38, 58)
-        painter.setFont(_font(24, QFont.Weight.DemiBold))
-        name = _elided(painter, friend.get("name") or "未知好友", name_area.width())
-        _text(painter, QRectF(name_area.left(), name_area.top(), name_area.width(), 34),
-              name, size=24, color=self.text, weight=QFont.Weight.DemiBold,
-              align=Qt.AlignmentFlag.AlignCenter)
-        _text(painter, QRectF(name_area.left(), name_area.bottom() - 19, name_area.width(), 18),
-              "VRCX 本地记录", size=10, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
-        stats = QRectF(rect.left() + rect.width() * .45, rect.top() + 44,
-                       rect.width() * .55 - 24, 58)
-        for index, (value, caption) in enumerate((
-                (f"{friend.get('days', friend.get('sessions', 0))} 天", "累计共同游玩天数"),
-                (format_duration(friend.get("seconds", 0)), "累计共同游玩时长"))):
-            row = QRectF(stats.left(), stats.top() + index * 30, stats.width(), 27)
-            _text(painter, QRectF(row.left(), row.top(), row.width() * .56, row.height()),
-                  value, size=18, color=self.text, weight=QFont.Weight.DemiBold)
-            _text(painter, QRectF(row.left() + row.width() * .56, row.top(),
-                                  row.width() * .44, row.height()),
-                  caption, size=11, color=self.muted, align=Qt.AlignmentFlag.AlignRight)
+              "最常与你共同游玩的好友 · TOP 3", size=16, color=self.text, weight=QFont.Weight.DemiBold)
+        self._friend_row_rects = []
+        for index, friend in enumerate(friends):
+            row = QRectF(rect.left() + 20, rect.top() + 56 + index * 80, rect.width() - 40, 72)
+            self._friend_row_rects.append(QRectF(row))
+            if index:
+                painter.setPen(QPen(self.border, 1))
+                painter.drawLine(QPointF(row.left() + 4, row.top() - 4),
+                                 QPointF(row.right() - 4, row.top() - 4))
+            _text(painter, QRectF(row.left(), row.top(), 32, row.height()), f"{index + 1:02d}",
+                  size=18, color=self.accent if index == 0 else self.muted,
+                  weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignCenter)
+            avatar = QRectF(row.left() + 42, row.center().y() - 28, 56, 56)
+            image = self.friend_avatars.get(str(friend.get("user_id") or ""))
+            painter.save()
+            path = QPainterPath()
+            path.addEllipse(avatar)
+            painter.setClipPath(path)
+            if image is not None:
+                size = max(1, round(avatar.width() * 2))
+                scaled = image.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                                      Qt.TransformationMode.SmoothTransformation)
+                side = min(scaled.width(), scaled.height())
+                source = QRectF((scaled.width() - side) / 2, (scaled.height() - side) / 2, side, side)
+                painter.drawImage(avatar, scaled, source)
+            else:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(self.soft)
+                painter.drawEllipse(avatar)
+                _text(painter, avatar, str(index + 1), size=20, color=self.accent,
+                      weight=QFont.Weight.DemiBold, align=Qt.AlignmentFlag.AlignCenter)
+            painter.restore()
+            painter.setPen(QPen(self.border, 1))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawEllipse(avatar)
+            stats_width = min(340, row.width() * .47)
+            stats = QRectF(row.right() - stats_width, row.top(), stats_width, row.height())
+            name_area = QRectF(avatar.right() + 14, row.top(), stats.left() - avatar.right() - 30, row.height())
+            painter.setFont(_font(18, QFont.Weight.DemiBold))
+            name = _elided(painter, friend.get("name") or "未知好友", name_area.width())
+            _text(painter, name_area, name, size=18, color=self.text, weight=QFont.Weight.DemiBold)
+            for column, (value, caption) in enumerate((
+                    (f"{friend.get('days', friend.get('sessions', 0))} 天", "共同游玩天数"),
+                    (format_duration(friend.get("seconds", 0)), "共同游玩时长"))):
+                left = stats.left() + (stats.width() * .36 if column else 0)
+                width = stats.width() * (.64 if column else .36)
+                _text(painter, QRectF(left, stats.top() + 8, width, 30), value,
+                      size=17, color=self.text, weight=QFont.Weight.DemiBold,
+                      align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                _text(painter, QRectF(left, stats.top() + 42, width, 18), caption,
+                      size=10, color=self.muted, align=Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
 class PlayReportDialog(QDialog):
     def __init__(self, owner, data, start, end, source, theme):
@@ -639,7 +715,10 @@ class PlayReportDialog(QDialog):
         self.title_edit.textChanged.connect(self.canvas.set_title)
         self.scroll.setWidget(self.canvas)
         self.scroll.verticalScrollBar().setValue(scroll_value)
-        previous.deleteLater()
+        try:
+            previous.deleteLater()
+        except RuntimeError:
+            pass
         self._update_timestamp(data)
 
     def _update_timestamp(self, data):

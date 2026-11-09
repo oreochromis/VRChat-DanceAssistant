@@ -1,4 +1,4 @@
-"""The approved PY artwork must reach both source and frozen Qt windows."""
+"""The approved DA artwork must reach both source and frozen Qt windows."""
 
 import hashlib
 import os
@@ -30,7 +30,7 @@ class ApplicationIconTests(unittest.TestCase):
     def test_packaged_artwork_is_the_exact_approved_transparent_png(self):
         self.assertEqual(
             hashlib.sha256(self.artwork.read_bytes()).hexdigest(),
-            "bc3c9218c861c121da0a8053442ac5882a9e40fb8d4c3b35c570405fcc345193",
+            "dfeb90cb509d7e65d7afa0c2e86e6eed6a0ffec83391268f6f5e2e928b5e3e89",
         )
         approved = QImage(str(self.artwork))
         self.assertEqual(approved.size(), QSize(512, 512))
