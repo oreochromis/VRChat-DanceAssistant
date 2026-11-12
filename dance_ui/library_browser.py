@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 from .pages import button
 from .widgets import bytes_text, label
 
-_KINDS = (("pypy", "PyPyDance 曲库"), ("wd", "WannaDance 曲库"))
+_KINDS = (("pypy", "PyPyDance 曲库"), ("wd", "WannaDance 曲库"), ("dudu", "DuDu FitDance 曲库"))
 _OPS = ("library_scan", "library_missing", "library_delete")
 _FLAG_ROLE = Qt.ItemDataRole.UserRole + 1  # 行类型标记：None=本地文件，"missing"/"dead"=缺失行
 _FAVORITE_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -272,7 +272,9 @@ class LibraryBrowser(QDialog):
         names = result.get("names") or {}
         expected = result.get("expected", 0)
         if not source:
-            if self._kind == "wd":
+            if self._kind == "dudu":
+                text = "暂未获取到 DuDu 官方清单，请检查网络后点击“刷新”重试。"
+            elif self._kind == "wd":
                 text = "暂未获取到 WannaDance 官方清单，请检查网络后点击“刷新”重试。"
             else:
                 text = "官方歌单直取表尚未加载，无法对比缺失；启动一次缓存服务后重试。"
@@ -390,7 +392,7 @@ class LibraryBrowser(QDialog):
         sid, flag = self._row_info(row)
         if sid is None or flag or not self._dir:
             return None
-        name = f"wd_{sid}.mp4" if self._kind == "wd" else f"{sid}.mp4"
+        name = f"wd_{sid}.mp4" if self._kind == "wd" else f"dudu_{sid}.mp4" if self._kind == "dudu" else f"{sid}.mp4"
         return os.path.join(self._dir, name)
 
     def _play_current(self):

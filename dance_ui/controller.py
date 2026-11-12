@@ -266,6 +266,8 @@ class CoreController(QObject):
             return
 
         def reset():
+            if core.get_config().get("dudu_enabled"):
+                core.configure_dudu(False)
             result = core.update_config(copy.deepcopy(core.DEFAULT_CONFIG))
             self._config_cache = core.get_config()
             self.event.emit("cooldown", core.get_cooldown_state())
@@ -374,6 +376,12 @@ class CoreController(QObject):
                 "cancelled": cancelled, "demo": True,
             })
 
+    def configure_dudu(self, enabled):
+        if self.demo:
+            self.error.emit("dudu_setup", "演示模式不会生成本机证书，请在正式模式中启用。")
+            return
+        self._run("dudu_setup", lambda: core.configure_dudu(enabled))
+
     def scan(self, *, full=False, ips=None):
         if self.demo:
             results = [
@@ -478,7 +486,7 @@ class CoreController(QObject):
                                                / max(1, sum(int(item["seconds"]) > 0 for item in daily_play))) if daily_play else 0,
                 "favorite_hour": 20 if daily_play else None,
                 "favorite_hour_seconds": round(sum(item["seconds"] for item in daily_play) / 4) if daily_play else 0,
-                "world_play": {"pypy": pypy_seconds, "wd": wd_seconds},
+                "world_play": {"pypy": pypy_seconds, "wd": wd_seconds, "dudu": 0},
                 "new_friends": [{"user_id": "demo-2", "name": "Momo", "ts": end_ts - 172800}],
             })
             return

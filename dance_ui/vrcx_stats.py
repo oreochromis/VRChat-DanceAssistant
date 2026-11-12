@@ -18,10 +18,12 @@ SOURCE_FILENAME = "vrcx-source.sqlite3"
 DANCE_WORLD_IDS = frozenset({
     "wrld_f20326da-f1ac-45fc-a062-609723b097b1",
     "wrld_8ac0b9db-17ae-44af-9d20-7d8ab94a9129",
+    "wrld_d522f1a9-0115-459f-a900-c02649ec3930",
 })
 WORLD_KEYS = {
     "wrld_f20326da-f1ac-45fc-a062-609723b097b1": "pypy",
     "wrld_8ac0b9db-17ae-44af-9d20-7d8ab94a9129": "wd",
+    "wrld_d522f1a9-0115-459f-a900-c02649ec3930": "dudu",
 }
 
 
@@ -547,7 +549,7 @@ def read_co_room_stats(path, start_ts, end_ts, force_archive=False):
     daily_play = _daily_play_stats(own, start_ts, end_ts)
     self_names = sorted({str(row[1]).strip() for row in join_rows
                          if row[0] == self_id and str(row[1] or "").strip()})
-    world_play = {"pypy": 0, "wd": 0}
+    world_play = {"pypy": 0, "wd": 0, "dudu": 0}
     world_by_location = {str(location): WORLD_KEYS.get(str(world_id))
                          for _, location, world_id in location_rows}
     for location, intervals in own.items():

@@ -192,7 +192,7 @@ class VRCXStatsTests(unittest.TestCase):
         (self.root / "data" / "profile.json").write_text(json.dumps({"id": "usr_test", "name": "本人"}), encoding="utf-8")
         result = self.read(start=10, end=11)
         self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 3600}])
-        self.assertEqual(result["world_play"], {"pypy": 3600, "wd": 0})
+        self.assertEqual(result["world_play"], {"pypy": 3600, "wd": 0, "dudu": 0})
         self.assertEqual(result["friends"], [])
         self.assertEqual(result["data_status"], "partial")
         self.assertEqual(result["source_mode"], "native")
@@ -206,7 +206,7 @@ class VRCXStatsTests(unittest.TestCase):
         }) + "\n", encoding="utf-8")
         result = self.read()
         self.assertEqual(result["total_play_seconds"], 6600)
-        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0})
+        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0, "dudu": 0})
 
     def test_complete_and_no_record_statuses(self):
         result = self.read()
@@ -219,7 +219,7 @@ class VRCXStatsTests(unittest.TestCase):
         result = self.read()
         self.assertEqual(result["total_play_seconds"], 6600)
         self.assertEqual(result["daily_play"], [{"day": "2026-01-01", "seconds": 6600}])
-        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0})
+        self.assertEqual(result["world_play"], {"pypy": 6600, "wd": 0, "dudu": 0})
         self.assertEqual(result["self_names"], ["本人旧昵称"])
         with patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "cached")):
             vrcx_stats.save_vrcx_stats(result)

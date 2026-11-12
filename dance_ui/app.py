@@ -33,7 +33,7 @@ STATES = {
     "unresolved": ("待解析", "muted"), "not_cached": ("未缓存", "muted"),
     "cooldown": ("放松视频", "warning"),
 }
-SOURCE_NAMES = {"cdn": "CDN", "youtube": "YouTube", "wannadance": "WannaDance", "external": "外部源"}
+SOURCE_NAMES = {"cdn": "CDN", "youtube": "YouTube", "wannadance": "WannaDance", "dudu": "DuDu FitDance", "external": "外部源"}
 
 
 def friendly_message(message):
@@ -600,6 +600,8 @@ class MainWindow(QMainWindow, Pages):
             self.wd_library_summary.setText("尚未设置曲库目录（永久保存暂缓生效）")
         else:
             self.wd_library_summary.setText("尚未设置曲库目录")
+        self._dudu_stats = data
+        self.render_dudu()
     def resize_tables(self):
         for widget, limit in ((self.queue_table, 4), (self.download_table, 3), (self.scan_table, 4), (self.favorites_table, 6)):
             rows = min(limit, widget.rowCount())
@@ -615,8 +617,10 @@ class MainWindow(QMainWindow, Pages):
                 self.cache_limit.setValue(config["max_cache_mb"])
                 self.library_path.setText(config["library_dir"])
                 self.wd_library_path.setText(config.get("wd_library_dir", ""))
+                self.dudu_library_path.setText(config.get("dudu_library_dir", ""))
                 self.cdn_permanent.setChecked(config["cdn_permanent"])
                 self.wd_permanent.setChecked(config.get("wd_permanent", False))
+                self.dudu_permanent.setChecked(config.get("dudu_permanent", False))
                 self.youtube_permanent.setChecked(config["youtube_permanent"])
             if section in (None, "settings"):
                 self.preload_count.setMaximum(max(10, config["preload_count"]))
@@ -634,7 +638,8 @@ class MainWindow(QMainWindow, Pages):
                 self.speedtest_sample_mb.setValue(config.get("speedtest_sample_mb", 8))
                 self.scan_status.setText(
                     f"快速测速会从当前、DNS、收藏、历史与新节点中选取最多 {self.speedtest_candidates.value()} 个候选，"
-                    f"先小样本初筛，再对前 4 名及当前 IP 下载 {self.speedtest_sample_mb.value()}MB 复测。")
+                    f"初筛只检查可用性与响应延迟；不超过 8 个可用节点全部下载 {self.speedtest_sample_mb.value()}MB 复测，"
+                    "更多候选按延迟筛选，当前 IP 始终参与对比。")
                 self.vr_overlay.setChecked(config.get("vr_overlay", True))
                 self.close_to_tray.setChecked(config.get("close_to_tray", False))
                 self.minimal_close_to_tray.setChecked(config.get("close_to_tray", False))
@@ -647,6 +652,7 @@ class MainWindow(QMainWindow, Pages):
         finally:
             self._syncing = False
         self.render_cooldown()
+        self.render_dudu()
         self._sync_vr_overlay()
 
     def _sync_vr_overlay(self):
@@ -718,7 +724,9 @@ class MainWindow(QMainWindow, Pages):
         if section == "storage":
             patch = {"max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
                      "wd_library_dir": self.wd_library_path.text().strip(),
+                     "dudu_library_dir": self.dudu_library_path.text().strip(),
                      "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
+                     "dudu_permanent": self.dudu_permanent.isChecked(),
                      "youtube_permanent": self.youtube_permanent.isChecked()}
         else:
             patch = {"preload_count": self.preload_count.value(), "preload_sequential": self.preload_sequential.isChecked(),
@@ -809,6 +817,43 @@ class MainWindow(QMainWindow, Pages):
         path = QFileDialog.getExistingDirectory(self, "选择 WannaDance 曲库目录", self.wd_library_path.text())
         if path:
             self.wd_library_path.setText(path)
+
+    def browse_dudu_library(self):
+        path = QFileDialog.getExistingDirectory(self, "选择 DuDu FitDance 曲库目录", self.dudu_library_path.text())
+        if path:
+            self.dudu_library_path.setText(path)
+
+    def render_dudu(self):
+        if not hasattr(self, "dudu_setup_button"):
+            return
+        config = self.controller.config()
+        enabled = config.get("dudu_enabled", False)
+        self.dudu_setup_button.setText("禁用并清理 DuDu 证书…" if enabled else "启用 DuDu FitDance 缓存…")
+        self.dudu_setup_status.setText(
+            "DuDu FitDance 缓存已启用。禁用会停止接管并清理本机证书。" if enabled else
+            "首次启用会生成并信任本机开发证书；之后自动复用。")
+        stats = getattr(self, "_dudu_stats", {})
+        count, size = stats.get("dudu_count", 0), stats.get("dudu_mb", 0)
+        if config.get("dudu_library_dir"):
+            self.dudu_library_summary.setText(f"{count} 个视频 · {bytes_text(size * 1024**2)}")
+        elif config.get("dudu_permanent"):
+            self.dudu_library_summary.setText("尚未设置曲库目录（永久保存暂缓生效）")
+        else:
+            self.dudu_library_summary.setText("尚未设置曲库目录")
+
+    def setup_dudu(self):
+        enabled = self.controller.config().get("dudu_enabled", False)
+        if enabled:
+            message = "将停止 DuDu FitDance 缓存接管，并删除本机开发证书。其他跳舞房和缓存文件不受影响。确定继续吗？"
+        else:
+            message = ("首次启用 DuDu FitDance 需要生成并信任本机开发证书，以便 VRChat 连接本机 HTTPS 缓存。\n\n"
+                       "证书仅保存在当前 Windows 用户下，可随时在此禁用并清理。确定启用吗？")
+        answer = QMessageBox.question(self, "DuDu FitDance 缓存", message,
+                                      QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                      QMessageBox.StandardButton.No)
+        if answer == QMessageBox.StandardButton.Yes:
+            self.dudu_setup_button.setEnabled(False)
+            self.controller.configure_dudu(not enabled)
 
     def browse_cooldown(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择放松视频", self.cooldown_path.text(), "MP4 视频 (*.mp4)")
@@ -1309,6 +1354,11 @@ class MainWindow(QMainWindow, Pages):
             self._handle_index_check(result)
         elif operation == "steamvr_startup":
             self.show_steamvr_status(result)
+        elif operation == "dudu_setup":
+            self.load_fields()
+            self.controller.refresh_stats()
+            self.notify("DuDu FitDance 缓存已启用。" if self.controller.config().get("dudu_enabled")
+                        else "DuDu FitDance 已禁用，本机证书已清理。")
         elif operation == "reset_settings":
             self.reset_settings_button.setEnabled(True)
             self.load_fields()
@@ -1399,6 +1449,10 @@ class MainWindow(QMainWindow, Pages):
             self.hosts_clean_status.setText("清理失败：" + message)
             self.append_log("[界面] hosts 残留清理失败：" + message)
             return
+        if operation == "steamvr_startup" and "InitError_Init_NoServerForBackgroundApp" in message:
+            self.steamvr_hint.setText("等待 SteamVR 和头显连接；连接后点击“刷新状态”即可读取启动设置。此状态不影响视频缓存。")
+            self.render_steamvr_controls()
+            return
         self.notify(message, error=True)
         if operation == "steamvr_startup":
             self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + friendly_message(message))
@@ -1438,6 +1492,8 @@ class MainWindow(QMainWindow, Pages):
             self.apply_buttons[section].setEnabled(not busy and self._dirty[section])
             if busy:
                 self.apply_hints[section].setText("正在保存…")
+        elif operation == "dudu_setup":
+            self.dudu_setup_button.setEnabled(not busy)
         elif operation == "scan":
             self.quick_scan_button.setEnabled(not busy)
             self.full_scan_button.setEnabled(not busy)

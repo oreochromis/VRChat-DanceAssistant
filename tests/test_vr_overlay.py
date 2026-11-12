@@ -320,7 +320,7 @@ class SupervisorTests(unittest.TestCase):
         service = vr_overlay.VROverlayService(
             bridge=bridge, state_provider=kw.get("state_provider", lambda: sample_state()),
             logger=logs.append, restart_state_path=kw.get("budget", self.budget_path),
-            worker_factory=factory)
+            worker_factory=factory, ready_probe=kw.get("ready_probe", lambda: (True, None)))
         return service, bridge, logs
 
     @staticmethod
@@ -337,8 +337,19 @@ class SupervisorTests(unittest.TestCase):
 
         return factory, made
 
+    def test_not_ready_probe_never_spawns_overlay_worker(self):
+        probe = MagicMock(return_value=(False, "InitError_Init_HmdNotFound"))
+        factory = MagicMock()
+        service, bridge, logs = self.make_service(factory, ready_probe=probe)
+        service.start()
+        self.assertTrue(wait_until(lambda: probe.call_count >= 2))
+        service.stop()
+        factory.assert_not_called()
+        self.assertTrue(any("等待 SteamVR" in message for message in logs))
+        self.assertFalse(service.running())
+
     def test_init_error_retries_with_fresh_worker_and_throttled_log(self):
-        # SteamVR 未就绪：子进程 init-error 退出 → 父进程拉新子进程重试（进程内毒化随退出消失）
+        # 就绪探针通过后仍发生 init-error：用全新子进程恢复进程内毒化状态
         dying = [FakeWorker(messages=[{"type": "init-error", "error": "InitError_Init_HmdNotFound"}],
                             exit_code=2, exit_after=0.1) for _ in range(2)]
         service, bridge, logs = self.make_service(dying)

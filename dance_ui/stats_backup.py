@@ -43,7 +43,7 @@ def _entry(line):
         song_id = value["id"]
         if isinstance(song_id, bool) or not isinstance(song_id, int):
             return None
-        kind = value.get("kind") if value.get("kind") in ("pypy", "wd") else "pypy"
+        kind = value.get("kind") if value.get("kind") in ("pypy", "wd", "dudu") else "pypy"
         player = str(value.get("player") or "").strip()
         return timestamp, kind, song_id, player, value
     except (ValueError, TypeError, KeyError):

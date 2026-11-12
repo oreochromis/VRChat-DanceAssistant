@@ -63,8 +63,6 @@ def main() -> int:
         "LICENSE",
         "docs/DEVELOPMENT.md",
         "docs/WINDOWS_PREVIEW.md",
-        "启动.bat",
-        "演示.bat",
         "_internal/" + COOLDOWN_RELATIVE_PATH,
         "_internal/" + APP_ICON_PNG_RELATIVE_PATH,
         "_internal/" + APP_ICON_ICO_RELATIVE_PATH,
@@ -77,6 +75,9 @@ def main() -> int:
         raise SystemExit("The Windows bundle is incomplete: missing _internal/python3XX.dll")
     if not (bundle / "THIRD_PARTY_LICENSES").is_dir():
         raise SystemExit("The Windows bundle is missing third-party license materials.")
+    for launcher in ("启动.bat", "演示.bat"):
+        if (bundle / launcher).is_file():
+            raise SystemExit(f"Stable release bundles must not include the launcher: {launcher}")
     if any("presets" in tuple(part.casefold() for part in path.relative_to(bundle).parts)
            for path in bundle.rglob("*")):
         raise SystemExit("Stable release bundles must not include bundled preset resources.")

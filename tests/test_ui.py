@@ -871,7 +871,8 @@ class UIIntegrationTests(unittest.TestCase):
         total_play = sum(item["seconds"] for item in report.canvas.daily_play)
         self.assertEqual(report.canvas.total_play_seconds, total_play)
         self.assertEqual(sum(report.canvas.world_play.values()), total_play)
-        self.assertTrue(all(report.canvas.world_play.values()))
+        self.assertTrue(report.canvas.world_play["pypy"] and report.canvas.world_play["wd"])
+        self.assertEqual(report.canvas.world_play["dudu"], 0)
         self.assertEqual(report.canvas.trend_mode, "day")
         self.assertEqual(len(report.canvas.trend), len(report.canvas.daily_play))
         self.assertGreaterEqual(len(report.canvas.trend), 12)
@@ -1014,6 +1015,16 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(window.steamvr_startup.isChecked())
         for mocked in self.core_mocks.values():
             mocked.assert_not_called()
+
+    def test_steamvr_no_server_is_a_waiting_hint_not_an_error_banner(self):
+        window, _, _ = self.make_window()
+        window.banner.clear()
+        window.banner.hide()
+        window.on_error("steamvr_startup", "无法访问 SteamVR 启动设置：InitError_Init_NoServerForBackgroundApp")
+        self.assertTrue(window.banner.isHidden())
+        self.assertIn("等待 SteamVR", window.steamvr_hint.text())
+        self.assertIn("不影响视频缓存", window.steamvr_hint.text())
+        self.assertNotIn("InitError", window.steamvr_hint.text())
 
     def test_steamvr_failed_initial_read_stays_unknown_and_refresh_can_recover(self):
         def fail(controller):
@@ -1303,6 +1314,42 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("刷新", window.cooldown_hint.text())
         window.set_ui_mode("simple")
         self.assertFalse(window.cooldown_trigger_row.isHidden())
+
+    def test_dudu_setup_and_certificate_cleanup_use_controller(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window(demo=False)
+        def configure(enabled):
+            self.config.update(dudu_enabled=enabled)
+            controller.event.emit("config", {"changed": ["dudu_enabled"]})
+        with patch.object(core, "configure_dudu", side_effect=configure) as configure, \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.setup_dudu()
+            configure.assert_called_once_with(True)
+            self.wait_until(lambda: controller.config()["dudu_enabled"])
+            configure.reset_mock()
+            window.setup_dudu()
+            configure.assert_called_once_with(False)
+            self.wait_until(lambda: not controller.config()["dudu_enabled"])
+        self.assertIn("已清理", window.banner.text())
+
+    def test_reset_all_settings_cleans_up_enabled_dudu_certificate(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window(demo=False)
+        self.config["dudu_enabled"] = True
+
+        def configure(enabled):
+            self.config["dudu_enabled"] = enabled
+
+        def update(patch):
+            self.config.update(patch)
+            return {"changed": list(patch), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        with patch.object(core, "configure_dudu", side_effect=configure) as configure, \
+                patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            window.reset_all_settings()
+            self.wait_until(lambda: not controller.config()["dudu_enabled"])
+        configure.assert_called_once_with(False)
 
     def test_reset_all_settings_restores_defaults_without_deleting_user_data(self):
         from PySide6.QtWidgets import QMessageBox

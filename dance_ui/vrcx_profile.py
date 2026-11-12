@@ -80,7 +80,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/4.0.0",
+        "User-Agent": "VRChatDanceAssistant/4.1.1",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })
@@ -174,7 +174,7 @@ def sync_friend_avatars(path, friends, force=False):
             payload = json.loads(_download(url, cookies, MAX_PROFILE_BYTES))
             avatar_url = _avatar_url(payload)
         except Exception:
-            avatar_url = ""
+            avatar_url = None
         target = friend_avatar_path(user_id)
         if avatar_url and (force or avatar_url != entry.get("url") or not target.is_file()):
             try:
@@ -186,6 +186,12 @@ def sync_friend_avatars(path, friends, force=False):
                 entry["url"] = avatar_url
             except Exception:
                 pass
+        elif avatar_url == "":
+            try:
+                target.unlink()
+            except FileNotFoundError:
+                pass
+            entry.pop("url", None)
         entry["checked_at"] = now
         entry["version"] = AVATAR_INDEX_VERSION
         return user_id, entry

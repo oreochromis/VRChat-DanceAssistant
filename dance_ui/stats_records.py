@@ -210,7 +210,7 @@ def _history_values(entry, line):
         song_id = entry["id"]
         if isinstance(song_id, bool) or not isinstance(song_id, int):
             return None
-        return {"ts": timestamp, "kind": entry.get("kind") if entry.get("kind") in ("pypy", "wd") else "pypy",
+        return {"ts": timestamp, "kind": entry.get("kind") if entry.get("kind") in ("pypy", "wd", "dudu") else "pypy",
                 "id": song_id, "name": str(entry.get("name") or ""),
                 "player": str(entry.get("player") or ""), "_line": line}
     except (ValueError, TypeError, KeyError):
@@ -251,7 +251,7 @@ def _clean_history(values):
     if not math.isfinite(timestamp) or timestamp < 0 or song_id <= 0:
         raise ValueError("播放时间或歌曲编号无效。")
     source = values.get("kind")
-    if source not in ("pypy", "wd"):
+    if source not in ("pypy", "wd", "dudu"):
         raise ValueError("歌曲来源必须是 pypy 或 wd。")
     return {"ts": timestamp, "kind": source, "id": song_id,
             "name": str(values.get("name") or "").strip(),

@@ -25,8 +25,8 @@ from .vrcx_stats import (
 )
 from .widgets import Card, label, page, section_title, table
 
-_KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"))
-_KIND_LABELS = {"pypy": "PyPyDance", "wd": "WannaDance"}
+_KINDS = (("", "全部来源"), ("pypy", "PyPyDance"), ("wd", "WannaDance"), ("dudu", "DuDu FitDance"))
+_KIND_LABELS = {"pypy": "PyPyDance", "wd": "WannaDance", "dudu": "DuDu FitDance"}
 PLAY_STATS_CACHE_FILENAME = "play-stats-cache.json"
 
 

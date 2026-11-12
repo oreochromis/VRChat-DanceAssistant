@@ -33,6 +33,7 @@ import traceback
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -56,6 +57,8 @@ CDN_HOSTS = ["cdn.pypy.dance", "806bb815.cdn.pypy.dance"]
 API_HOST = "api.pypy.dance"
 UDON_API_HOST = "api.udon.dance"    # WannaDance：302 跳转服务（不劫持，仅解析真实 IP 供预载用）
 UDON_PLAY_HOST = "play.udon.dance"  # WannaDance：视频文件 CDN（劫持）
+DUDU_API_HOST = "api.dudufit.dance"
+DUDU_PLAY_HOST = "global-cdn.dudufit.dance"
 HIJACK_HOSTS = CDN_HOSTS + [API_HOST]  # api 仅在 YouTube 缓存模式启用时劫持
 VRC_LOG_DIR = os.path.join(os.environ.get("USERPROFILE", ""), "AppData", "LocalLow", "VRChat", "VRChat")
 
@@ -148,8 +151,8 @@ _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_so
                   "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
                   "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json", "wanna-favorites.json",
                   "profile.json", "profile-avatar.png", "avatar-index.json",
-                  "cdn-favorites.json", "cdn-pool.json", "wannadance-catalog.json")
-_STORAGE_DIRS = ("avatars", "record-backups")
+                  "cdn-favorites.json", "cdn-pool.json", "wannadance-catalog.json", "dudu-catalog.json")
+_STORAGE_DIRS = ("avatars", "record-backups", "dudu-https")
 
 
 def set_storage_mode(mode):
@@ -203,7 +206,7 @@ def set_storage_mode(mode):
 
 
 QUEUE_RE = re.compile(r"^\[PyPyDanceQueue] (\[.*])")
-WD_QUEUE_RE = re.compile(r"queue info serialized: (\[.*])")  # WannaDance 队列（不含正在播放的歌曲）
+WD_QUEUE_RE = re.compile(r"queue info serialized: (\[.*])", re.IGNORECASE)  # WannaDance / DuDu 队列
 # WannaDance 当前歌曲行（queue info 不含当前歌曲，开播即移出，需从这里解析后插回队首）
 WD_STATE_RE = re.compile(r"UpdateState: version = [^,]+, songId = (\d+), player = ([^,]*), isRandom = \w+, infoString = (.*?), volume = ")
 FILENAME_RE = re.compile(r"^[\w.\-]+\.mp4$")
@@ -213,7 +216,7 @@ WD_CACHE_RE = re.compile(r"^wd_(\d+)\.mp4$")  # WannaDance 本地缓存命名
 
 
 def hijack_host_list(include_api):
-    return CDN_HOSTS + [UDON_PLAY_HOST] + ([API_HOST] if include_api else [])
+    return CDN_HOSTS + [UDON_PLAY_HOST] + ([API_HOST] if include_api else []) + ([DUDU_PLAY_HOST] if _config.get("dudu_enabled") else [])
 
 DEFAULT_CONFIG = {
     "cache_dir": "cache",
@@ -232,6 +235,9 @@ DEFAULT_CONFIG = {
     "youtube_permanent": False,
     "cdn_permanent": False,
     "wd_permanent": False,
+    "dudu_enabled": False,
+    "dudu_library_dir": "",
+    "dudu_permanent": False,
     "cooldown_file": "",
     "cooldown_trigger": "next",
     "bundle_direct": True,
@@ -269,7 +275,9 @@ _reverse_mapping = {}        # filename -> song_id
 _mapping_lock = threading.Lock()
 _mapping_dirty = False
 _stop_event = threading.Event()
+_speedtest_stop = threading.Event()
 _server = None
+_dudu_server = None
 _watcher = None
 _running = False
 _library_stop = threading.Event()
@@ -445,7 +453,7 @@ def record_queue_snapshot(items):
         sid = it.get("songNum", 0)
         if not (isinstance(sid, int) and not isinstance(sid, bool) and sid > 0):
             continue
-        kind = "wd" if it.get("wd") else "pypy"
+        kind = "dudu" if it.get("dudu") else "wd" if it.get("wd") else "pypy"
         player = str(it.get("playerName") or "").strip()
         key = (kind, sid, player)
         if key in keys:
@@ -626,7 +634,7 @@ def record_playing_snapshot(items):
     if isinstance(sid, bool) or not isinstance(sid, int) or sid <= 0:
         _last_playing_key = None
         return
-    kind = "wd" if current.get("wd") else "pypy"
+    kind = "dudu" if current.get("dudu") else "wd" if current.get("wd") else "pypy"
     player = str(current.get("playerName") or "").strip()
     key = (kind, sid, player)
     if key == _last_playing_key:
@@ -700,7 +708,7 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None, player=None):
         sid = entry.get("id")
         if isinstance(sid, bool) or not isinstance(sid, int):
             continue
-        ekind = entry.get("kind") if entry.get("kind") in ("pypy", "wd") else "pypy"
+        ekind = entry.get("kind") if entry.get("kind") in ("pypy", "wd", "dudu") else "pypy"
         if kind and ekind != kind:
             continue
         entry_player = str(entry.get("player") or "").strip()
@@ -762,7 +770,7 @@ def load_config():
             warnings.append(f"config.json 参数无效，已恢复默认参数并保留可读取的保存目录: {e}")
             preserved = {}
             if isinstance(loaded, dict):
-                for name in ("cache_dir", "library_dir", "wd_library_dir"):
+                for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir"):
                     if isinstance(loaded.get(name), str) and loaded[name].strip():
                         preserved[name] = loaded[name]
             cfg = _validated_config({**DEFAULT_CONFIG, **preserved}, allow_shared_storage=True)
@@ -782,12 +790,20 @@ def load_config():
             os.makedirs(wd_lib, exist_ok=True)
         except Exception as e:
             warnings.append(f"WannaDance 曲库目录不可用，其永久保存暂缓生效: {e}")
+    dudu_lib = cfg.get("dudu_library_dir") or ""
+    if dudu_lib:
+        try:
+            os.makedirs(dudu_lib, exist_ok=True)
+        except Exception as e:
+            warnings.append(f"DuDu 曲库目录不可用，其永久保存暂缓生效: {e}")
     with _config_lock:
         _config = cfg
     if _same_directory(cfg["cache_dir"], cfg.get("library_dir")):
         warnings.append("缓存目录与永久曲库相同，已禁用服务启动与缓存清理，请在设置中分开保存目录")
     if _same_directory(cfg["cache_dir"], cfg.get("wd_library_dir")):
         warnings.append("缓存目录与 WannaDance 曲库相同，已禁用服务启动，请在设置中分开保存目录")
+    if _same_directory(cfg["cache_dir"], cfg.get("dudu_library_dir")):
+        warnings.append("缓存目录与 DuDu 曲库相同，已禁用服务启动，请在设置中分开保存目录")
     for warning in warnings:
         log(warning)
         emit("warning", message=warning)
@@ -827,24 +843,30 @@ def _validated_config(config, *, allow_shared_storage=False):
             raise ValueError(f"{title}必须是 {minimum} 到 {maximum} 的整数")
     if cfg.get("cooldown_trigger") not in ("next", "reload"):
         raise ValueError("cooldown_trigger 必须是 next 或 reload")
-    for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent", "wd_permanent", "preload_sequential", "auto_prefer_cdn", "bundle_direct", "vr_overlay", "close_to_tray", "auto_start_service"):
+    for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent", "wd_permanent", "dudu_enabled", "dudu_permanent", "preload_sequential", "auto_prefer_cdn", "bundle_direct", "vr_overlay", "close_to_tray", "auto_start_service"):
         if not isinstance(cfg.get(name), bool):
             raise ValueError(f"{name} 必须是布尔值")
-    for name in ("cache_dir", "library_dir", "wd_library_dir", "preferred_cdn_ip", "cooldown_file"):
+    for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir", "preferred_cdn_ip", "cooldown_file"):
         if not isinstance(cfg.get(name), str):
             raise ValueError(f"{name} 必须是文本")
         cfg[name] = cfg[name].strip()
     if not cfg["cache_dir"]:
         raise ValueError("缓存目录不能为空")
-    for name in ("cache_dir", "library_dir", "wd_library_dir", "cooldown_file"):
+    for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir", "cooldown_file"):
         if cfg[name]:
             cfg[name] = os.path.abspath(os.path.join(data_dir(), os.path.expanduser(cfg[name])))
     if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["library_dir"]):
         raise ValueError("缓存目录与永久曲库不能是同一个目录")
     if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["wd_library_dir"]):
         raise ValueError("缓存目录与 WannaDance 曲库不能是同一个目录")
+    if not allow_shared_storage and _same_directory(cfg["cache_dir"], cfg["dudu_library_dir"]):
+        raise ValueError("缓存目录与 DuDu 曲库不能是同一个目录")
     if not allow_shared_storage and cfg["library_dir"] and _same_directory(cfg["library_dir"], cfg["wd_library_dir"]):
         raise ValueError("PyPyDance 曲库与 WannaDance 曲库不能是同一个目录")
+    if not allow_shared_storage and cfg["library_dir"] and _same_directory(cfg["library_dir"], cfg["dudu_library_dir"]):
+        raise ValueError("PyPyDance 曲库与 DuDu 曲库不能是同一个目录")
+    if not allow_shared_storage and cfg["wd_library_dir"] and _same_directory(cfg["wd_library_dir"], cfg["dudu_library_dir"]):
+        raise ValueError("WannaDance 曲库与 DuDu 曲库不能是同一个目录")
     ip = cfg["preferred_cdn_ip"]
     if ip:
         try:
@@ -908,7 +930,7 @@ def update_config(patch):
         changed = [name for name in patch if previous.get(name) != cfg[name]]
         if not changed:
             return {"restart_required": False, "changed": []}
-        paths_changed = bool({"cache_dir", "library_dir", "wd_library_dir"} & set(changed))
+        paths_changed = bool({"cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir"} & set(changed))
         busy = bool(_downloads_in_progress) or rebuilding() or verifying()
         if paths_changed and busy:
             # 目录查找/保存路径每次现读配置，运行中改目录即时生效；
@@ -923,7 +945,7 @@ def update_config(patch):
         if cfg["cooldown_file"] and "cooldown_file" in changed:
             if not os.path.isfile(cfg["cooldown_file"]) or os.path.getsize(cfg["cooldown_file"]) == 0:
                 raise ValueError("放松视频不存在或为空文件")
-        for name in ("cache_dir", "library_dir", "wd_library_dir"):
+        for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir"):
             if cfg[name]:
                 os.makedirs(cfg[name], exist_ok=True)
         _write_config(cfg)
@@ -937,7 +959,7 @@ def update_config(patch):
     return {"restart_required": False, "changed": changed}
 
 
-_DEFERRAL_PREFIXES = ("PyPyDance 永久保存已开启", "WannaDance 永久保存已开启")
+_DEFERRAL_PREFIXES = ("PyPyDance 永久保存已开启", "WannaDance 永久保存已开启", "DuDu 永久保存已开启")
 
 
 def _deferral_warnings():
@@ -948,6 +970,8 @@ def _deferral_warnings():
         out.append("PyPyDance 永久保存已开启但未设置曲库目录，暂缓生效；在存储页填写曲库目录后自动启用")
     if _config.get("wd_permanent") and not (_config.get("wd_library_dir") or "").strip():
         out.append("WannaDance 永久保存已开启但未设置曲库目录，暂缓生效；在存储页填写曲库目录后自动启用")
+    if _config.get("dudu_permanent") and not (_config.get("dudu_library_dir") or "").strip():
+        out.append("DuDu 永久保存已开启但未设置曲库目录，暂缓生效；在存储页填写曲库目录后自动启用")
     return out
 
 
@@ -1400,6 +1424,138 @@ def wd_target_path(song_id):
     return cache_path(wd_cache_name(song_id))
 
 
+# ---------------- DuDu FitDance 源支持（HTTPS API -> global-cdn 签名视频） ----------------
+
+DUDU_CACHE_RE = re.compile(r"^dudu_(\d+)\.mp4$")
+DUDU_FILE_RE = re.compile(r"^(\d+)-[0-9a-f]+\.mp4$", re.IGNORECASE)
+
+
+def dudu_cache_name(song_id):
+    return f"dudu_{song_id}.mp4"
+
+
+def dudu_library_enabled():
+    directory = _config.get("dudu_library_dir") or ""
+    return bool(directory) and os.path.isdir(directory)
+
+
+def dudu_library_path(song_id):
+    return os.path.join(_config.get("dudu_library_dir") or "", dudu_cache_name(song_id))
+
+
+def dudu_local_path(song_id):
+    if dudu_library_enabled():
+        path = dudu_library_path(song_id)
+        if _nonempty_file(path):
+            return path
+    path = cache_path(dudu_cache_name(song_id))
+    return path if _nonempty_file(path) else None
+
+
+def dudu_target_path(song_id):
+    if _config.get("dudu_permanent") and dudu_library_enabled():
+        return dudu_library_path(song_id)
+    return cache_path(dudu_cache_name(song_id))
+
+
+def dudu_api_request(path):
+    ip = (_origin_ips.get(DUDU_API_HOST) or [None])[0]
+    connection = _HTTPSConnectionIP(ip or DUDU_API_HOST, DUDU_API_HOST, 443, timeout=30,
+                                    context=ssl.create_default_context())
+    try:
+        connection.request("GET", path, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
+        response = connection.getresponse()
+        body = response.read(2 * 1048576 + 1)
+        if len(body) > 2 * 1048576:
+            raise RuntimeError("DuDu API 响应过大")
+        return response.status, {key.lower(): value for key, value in response.getheaders()}, body
+    finally:
+        connection.close()
+
+
+def dudu_video_path(song_id):
+    status, headers, body = dudu_api_request(f"/api/v1/videos/{song_id}?cdn=jpn")
+    if status in (301, 302, 303, 307, 308):
+        location = headers.get("location") or ""
+        parsed = urllib.parse.urlparse(location)
+        if parsed.hostname != DUDU_PLAY_HOST:
+            raise RuntimeError("DuDu 视频重定向到未知域名")
+        return (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
+    if status != 200:
+        raise RuntimeError(f"DuDu 视频 API HTTP {status}")
+    data = json.loads(body.decode("utf-8"))
+    url = data.get("url") if isinstance(data, dict) else None
+    if not url:
+        raise RuntimeError("DuDu 视频 API 未返回视频地址")
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname != DUDU_PLAY_HOST:
+        raise RuntimeError("DuDu 视频地址域名无效")
+    return (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
+
+
+def download_dudu(song_id):
+    target = dudu_target_path(song_id)
+    if _nonempty_file(target):
+        return True
+    name = dudu_cache_name(song_id)
+    run_id = _run_id
+    meta = _begin_download(target, name, song_id, "dudu")
+    if meta is None:
+        return False
+    part = target + ".part"
+    ok = False
+    error = None
+    done = total = 0
+    conn = None
+    eof = False
+    try:
+        conn, response = open_upstream(DUDU_PLAY_HOST, dudu_video_path(song_id))
+        if response.status != 200:
+            raise RuntimeError(f"HTTP {response.status}")
+        total = int(response.getheader("Content-Length") or 0)
+        with open(part, "wb") as handle:
+            while not _cancelled(run_id):
+                chunk = response.read(256 * 1024)
+                if not chunk:
+                    eof = True
+                    break
+                handle.write(chunk)
+                done += len(chunk)
+                _note_upstream_progress(conn, len(chunk))
+                emit_progress(name, done, total, meta["task_id"])
+        if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
+            _commit_download(part, target, done)
+            ok = True
+            log(f"DuDu 缓存完成 {name} ({done / 1048576:.1f} MB)")
+        elif not _cancelled(run_id):
+            error = f"下载不完整 ({done}/{total})"
+            log(f"{name}: {error}")
+    except Exception as exc:
+        error = str(exc)
+        log(f"下载 {name} 出错: {error}")
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        cancelled = not ok and _cancelled(run_id)
+        if not ok:
+            _remove_part(part)
+        _finish_download(meta, ok, cancelled, None if cancelled else error, done, total)
+    return ok
+
+
+def start_dudu_download(song_id):
+    target = dudu_target_path(song_id)
+    if _nonempty_file(target):
+        return
+    with _downloads_lock:
+        if _canonical_path(target) in _downloads_in_progress:
+            return
+    threading.Thread(target=download_dudu, args=(song_id,), daemon=True).start()
+
+
 # ---------------- 曲库浏览（GUI 曲库管理窗口） ----------------
 
 WD_FAVORITES_FILENAME = "wanna-favorites.json"
@@ -1526,7 +1682,7 @@ def _fetch_wd_catalog():
     request = urllib.request.Request(
         "http://api.udon.dance/Api/Songs/list",
         headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
-    with urllib.request.urlopen(request, timeout=20) as response:
+    with _tracked_urlopen(request, timeout=20) as response:
         if getattr(response, "status", 200) != 200:
             raise RuntimeError(f"WannaDance 清单 HTTP {response.status}")
         raw = response.read(20 * 1048576 + 1)
@@ -1591,12 +1747,88 @@ def _ensure_wd_catalog():
         return catalog
 
 
+DUDU_CATALOG_CACHE_FILENAME = "dudu-catalog.json"
+DUDU_CATALOG_CACHE_SECONDS = 86400
+_dudu_catalog_retry_at = 0.0
+
+
+def _read_dudu_catalog():
+    try:
+        with open(os.path.join(data_dir(), DUDU_CATALOG_CACHE_FILENAME), "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return None
+    catalog = {}
+    for song in data.get("videos", []) if isinstance(data, dict) else []:
+        if not isinstance(song, dict):
+            continue
+        sid = song.get("id")
+        if isinstance(sid, int) and not isinstance(sid, bool) and sid > 0:
+            catalog[sid] = song
+    return catalog or None
+
+
+def _fetch_dudu_catalog():
+    status, _, body = dudu_api_request("/api/v1/videos?cdn=jpn")
+    if status != 200:
+        raise RuntimeError(f"DuDu 清单 HTTP {status}")
+    data = json.loads(body.decode("utf-8"))
+    videos = data.get("videos") if isinstance(data, dict) else None
+    if not isinstance(videos, list) or not videos:
+        raise ValueError("DuDu 清单为空或格式无效")
+    catalog = {}
+    for song in videos:
+        if not isinstance(song, dict):
+            continue
+        sid = song.get("id")
+        if isinstance(sid, int) and not isinstance(sid, bool) and sid > 0:
+            catalog[sid] = song
+    if not catalog:
+        raise ValueError("DuDu 清单没有有效歌曲")
+    base = data_dir()
+    os.makedirs(base, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="dudu-catalog-", suffix=".tmp", dir=base)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, os.path.join(base, DUDU_CATALOG_CACHE_FILENAME))
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    log(f"DuDu 官方清单已更新：{len(catalog)} 首")
+    return catalog
+
+
+def _ensure_dudu_catalog():
+    global _dudu_catalog_retry_at
+    catalog = _read_dudu_catalog()
+    path = os.path.join(data_dir(), DUDU_CATALOG_CACHE_FILENAME)
+    try:
+        if catalog is not None and time.time() - os.path.getmtime(path) < DUDU_CATALOG_CACHE_SECONDS:
+            return catalog
+    except OSError:
+        pass
+    if time.time() < _dudu_catalog_retry_at:
+        return catalog
+    try:
+        return _fetch_dudu_catalog()
+    except Exception as error:
+        _dudu_catalog_retry_at = time.time() + 60
+        log(f"DuDu 官方清单获取失败: {error}" + ("，继续使用旧缓存" if catalog else ""))
+        return catalog
+
+
 def scan_library(kind):
-    """扫描曲库目录。kind: "pypy" | "wd"。未配置目录返回 None，否则返回
+    """扫描曲库目录。kind: "pypy" | "wd" | "dudu"。未配置目录返回 None，否则返回
     {"dir", "kind", "songs": [{id, name, size, mtime}], "parts", "total_bytes"}。
-    .part 只计数不列入；歌名 PyPyDance 读官方歌单直取表，WannaDance 读 catalog。"""
+    .part 只计数不列入；歌名分别读取 PyPyDance 直取表或对应官方清单。"""
     with _config_lock:
-        if kind == "wd":
+        if kind == "dudu":
+            directory = _config.get("dudu_library_dir") or ""
+            pattern = DUDU_CACHE_RE
+        elif kind == "wd":
             directory = _config.get("wd_library_dir") or ""
             pattern = WD_CACHE_RE
         else:
@@ -1608,7 +1840,16 @@ def scan_library(kind):
         refresh_wd_favorites()
     favorite_ids = get_wd_favorites() if kind == "wd" else set()
     names = {}
-    if kind == "wd":
+    if kind == "dudu":
+        catalog = _ensure_dudu_catalog()
+        if catalog:
+            for sid, item in catalog.items():
+                nm = str(item.get("name") or "").strip()
+                ar = str(item.get("artist") or "").strip()
+                label = f"{nm} - {ar}" if ar and ar != nm else nm
+                if label:
+                    names[sid] = label
+    elif kind == "wd":
         catalog = _wd_catalog()
         if catalog:
             for sid, item in catalog.items():
@@ -1671,7 +1912,21 @@ def library_missing(kind):
     have = {s["id"] for s in scan["songs"]}
     names = {}
     dead = []
-    if kind == "wd":
+    if kind == "dudu":
+        catalog = _ensure_dudu_catalog()
+        if catalog is None:
+            return {"source": None, "expected": 0, "missing": [], "dead": [],
+                    "names": {}, "dir": scan["dir"]}
+        expected = set(catalog)
+        source = "DuDu 官方清单"
+        for sid in expected - have:
+            item = catalog.get(sid) or {}
+            nm = str(item.get("name") or "").strip()
+            ar = str(item.get("artist") or "").strip()
+            label = f"{nm} - {ar}" if ar and ar != nm else nm
+            if label:
+                names[sid] = label
+    elif kind == "wd":
         catalog = _ensure_wd_catalog()
         if catalog is None:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
@@ -1715,7 +1970,10 @@ def delete_library_songs(kind, ids):
     """从曲库目录永久删除指定编号的 mp4（不进回收站）。
     服务运行中或曲库维护任务（重建/校验）进行中拒绝。返回 {"deleted", "failed", "freed"}。"""
     with _config_lock:
-        if kind == "wd":
+        if kind == "dudu":
+            directory = _config.get("dudu_library_dir") or ""
+            name_for = dudu_cache_name
+        elif kind == "wd":
             directory = _config.get("wd_library_dir") or ""
             name_for = wd_cache_name
         else:
@@ -1765,10 +2023,7 @@ def api_request(path):
     """向真实 api.pypy.dance 发起 HTTP 请求（走真实 IP，绕过本地劫持）。
     返回 (status, {小写头名: 值}, body)"""
     ip = _api_ip()
-    if ip:
-        conn = _HTTPConnectionIP(ip, 80, timeout=30)
-    else:
-        conn = http.client.HTTPConnection(API_HOST, 80, timeout=30)
+    conn = _HTTPConnectionIP(ip or API_HOST, API_HOST, 80, timeout=30)
     try:
         conn.request("GET", path, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
         resp = conn.getresponse()
@@ -1782,7 +2037,7 @@ def api_request(path):
 
 
 def get_cache_stats():
-    count = total = lib_count = lib_total = wd_count = wd_total = 0
+    count = total = lib_count = lib_total = wd_count = wd_total = dudu_count = dudu_total = 0
     try:
         for name in os.listdir(_config["cache_dir"]):
             p = os.path.join(_config["cache_dir"], name)
@@ -1810,14 +2065,24 @@ def get_cache_stats():
                     wd_total += os.path.getsize(p)
         except Exception:
             pass
-    return count, total, lib_count, lib_total, wd_count, wd_total
+    if dudu_library_enabled():
+        try:
+            directory = _config["dudu_library_dir"]
+            for name in os.listdir(directory):
+                path = os.path.join(directory, name)
+                if DUDU_CACHE_RE.match(name) and os.path.isfile(path):
+                    dudu_count += 1
+                    dudu_total += os.path.getsize(path)
+        except Exception:
+            pass
+    return count, total, lib_count, lib_total, wd_count, wd_total, dudu_count, dudu_total
 
 
 def emit_stats():
-    count, total, lib_count, lib_total, wd_count, wd_total = get_cache_stats()
+    count, total, lib_count, lib_total, wd_count, wd_total, dudu_count, dudu_total = get_cache_stats()
     emit("stats", count=count, total_mb=total / 1048576, limit_mb=int(_config["max_cache_mb"]),
          lib_count=lib_count, lib_mb=lib_total / 1048576, lib_enabled=library_enabled(),
-         wd_count=wd_count, wd_mb=wd_total / 1048576)
+         wd_count=wd_count, wd_mb=wd_total / 1048576, dudu_count=dudu_count, dudu_mb=dudu_total / 1048576)
 
 
 def clear_cache():
@@ -1826,7 +2091,8 @@ def clear_cache():
               "failed_count": 0, "errors": []}
     with _downloads_lock:
         directory = _config["cache_dir"]
-        if _same_directory(directory, _config.get("library_dir")) or _same_directory(directory, _config.get("wd_library_dir")):
+        if (_same_directory(directory, _config.get("library_dir")) or _same_directory(directory, _config.get("wd_library_dir"))
+                or _same_directory(directory, _config.get("dudu_library_dir"))):
             raise ValueError("缓存目录与永久曲库相同，已拒绝清理以保护曲库")
         try:
             names = os.listdir(directory)
@@ -1884,7 +2150,7 @@ def ensure_admin():
 
 def resolve_real_ips():
     _origin_ips.clear()
-    for host in HIJACK_HOSTS + [UDON_API_HOST, UDON_PLAY_HOST]:
+    for host in HIJACK_HOSTS + [UDON_API_HOST, UDON_PLAY_HOST, DUDU_API_HOST, DUDU_PLAY_HOST]:
         ips = []
         try:
             _, _, ips = __import__("socket").gethostbyname_ex(host)
@@ -1908,17 +2174,20 @@ DOH_PROVIDERS = (
 
 
 def _doh_query(doh, host, timeout=8):
+    conn = None
     try:
         ctx = ssl.create_default_context()
         u = urllib.parse.urlparse(doh)
-        conn = http.client.HTTPSConnection(u.hostname, 443, timeout=timeout, context=ctx)
+        conn = _HTTPSConnectionIP(u.hostname, u.hostname, 443, timeout=timeout, context=ctx)
         conn.request("GET", f"{u.path}?name={host}&type=A", headers={"Accept": "application/dns-json"})
         resp = conn.getresponse()
         data = json.loads(resp.read().decode("utf-8", "replace"))
-        conn.close()
         return [a["data"] for a in data.get("Answer", []) if a.get("type") == 1]
     except Exception:
         return []
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def doh_lookup(host):
@@ -2100,7 +2369,11 @@ def _open_upstream_once(host, path, extra_headers=None, redirects=3):
         for ip in ips:
             conn = None
             try:
-                conn = http.client.HTTPConnection(ip, 80, timeout=30)
+                if cur_host in (DUDU_API_HOST, DUDU_PLAY_HOST):
+                    conn = _HTTPSConnectionIP(ip, cur_host, 443, timeout=30,
+                                              context=ssl.create_default_context())
+                else:
+                    conn = _HTTPConnectionIP(ip, cur_host, 80, timeout=30)
                 headers = {"Host": cur_host, "User-Agent": "stagefright/1.2 (Linux;Android 10)", "Accept-Encoding": "identity"}
                 if extra_headers:
                     headers.update(extra_headers)
@@ -2168,27 +2441,102 @@ def open_upstream(host, path, extra_headers=None, redirects=3, retries=5):
     raise RuntimeError(f"重试 {retries} 次后仍失败: {last_err}")
 
 
+_active_connections = set()
+_connections_lock = threading.Lock()
+
+
+def _register_connection(conn):
+    with _connections_lock:
+        _active_connections.add(conn)
+
+
+def _unregister_connection(conn):
+    with _connections_lock:
+        _active_connections.discard(conn)
+
+
+def close_active_connections():
+    with _connections_lock:
+        connections = list(_active_connections)
+    for conn in connections:
+        try:
+            sock = getattr(conn, "sock", None)
+            if sock is None:
+                raw = getattr(getattr(conn, "fp", None), "raw", None)
+                sock = getattr(raw, "_sock", None)
+            forced = False
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except (OSError, AttributeError):
+                    pass
+                try:
+                    descriptor = sock.detach()
+                    if not isinstance(descriptor, int):
+                        raise TypeError("无效 socket 描述符")
+                    forced = True
+                    socket.socket(fileno=descriptor).close()
+                except (OSError, AttributeError, TypeError):
+                    pass
+            # Windows 上跨线程关闭 HTTPResponse 会等待读取锁；底层 socket 已脱离时由读取方自行收尾。
+            if not forced:
+                conn.close()
+        except Exception:
+            pass
+        finally:
+            _unregister_connection(conn)
+
+
+@contextmanager
+def _tracked_urlopen(request, timeout):
+    response = urllib.request.urlopen(request, timeout=timeout)
+    _register_connection(response)
+    try:
+        yield response
+    finally:
+        try:
+            response.close()
+        finally:
+            _unregister_connection(response)
+
+
 class _HTTPConnectionIP(http.client.HTTPConnection):
     """连接真实 IP，但 Host 头仍用域名（api 被 hosts 劫持后必须绕开本地回环）"""
 
-    def __init__(self, ip, port=80, **kw):
+    def __init__(self, ip, host=API_HOST, port=80, **kw):
         self._ip = ip
-        super().__init__(API_HOST, port, **kw)
+        self._selected_ip = ip
+        super().__init__(host, port, **kw)
+        _register_connection(self)
 
     def connect(self):
         self.sock = socket.create_connection((self._ip, self.port), self.timeout, self.source_address)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            _unregister_connection(self)
 
 
 class _HTTPSConnectionIP(http.client.HTTPSConnection):
     """连接真实 IP，TLS 握手/SNI 仍用域名，证书校验不受影响"""
 
-    def __init__(self, ip, port=443, **kw):
+    def __init__(self, ip, host=API_HOST, port=443, **kw):
         self._ip = ip
-        super().__init__(API_HOST, port, **kw)
+        self._selected_ip = ip
+        super().__init__(host, port, **kw)
+        _register_connection(self)
 
     def connect(self):
-        sock = socket.create_connection((self._ip, self.port), self.timeout, self.source_address)
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        self.sock = socket.create_connection((self._ip, self.port), self.timeout, self.source_address)
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            _unregister_connection(self)
 
 
 def _api_ip():
@@ -2207,16 +2555,11 @@ def _api_conn():
         ip = _api_ip()
         if getattr(_api_conns, "use_https", False):
             ctx = ssl.create_default_context()
-            if ip:
-                conn = _HTTPSConnectionIP(ip, 443, timeout=15, context=ctx)
-            else:
-                conn = http.client.HTTPSConnection(API_HOST, 443, timeout=15, context=ctx)
+            conn = _HTTPSConnectionIP(ip or API_HOST, API_HOST, 443, timeout=15, context=ctx)
         else:
-            if ip:
-                conn = _HTTPConnectionIP(ip, 80, timeout=15)
-            else:
-                conn = http.client.HTTPConnection(API_HOST, 80, timeout=15)
+            conn = _HTTPConnectionIP(ip or API_HOST, API_HOST, 80, timeout=15)
         _api_conns.conn = conn
+    _register_connection(conn)
     return conn
 
 
@@ -2333,7 +2676,8 @@ def _cancelled(run_id):
 def _storage_label(path):
     """文件落在永久曲库（PyPyDance 或 WannaDance）返回 library，否则 cache"""
     dirname = os.path.dirname(path)
-    if _same_directory(dirname, _config.get("library_dir")) or _same_directory(dirname, _config.get("wd_library_dir")):
+    if (_same_directory(dirname, _config.get("library_dir")) or _same_directory(dirname, _config.get("wd_library_dir"))
+            or _same_directory(dirname, _config.get("dudu_library_dir"))):
         return "library"
     return "cache"
 
@@ -2443,6 +2787,7 @@ def download_file(filename, song_id=None, stall_timeout=None):
                     break
                 f.write(chunk)
                 done += len(chunk)
+                _note_upstream_progress(conn, len(chunk))
                 last_progress = time.monotonic()
                 emit_progress(filename, done, total, meta["task_id"])
         if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
@@ -2510,6 +2855,7 @@ def download_wd(song_id):
                     break
                 f.write(chunk)
                 done += len(chunk)
+                _note_upstream_progress(conn, len(chunk))
                 emit_progress(name, done, total, meta["task_id"])
         if not _cancelled(run_id) and eof and done > 0 and (total == 0 or done == total):
             _commit_download(part, target, done)
@@ -2583,7 +2929,7 @@ def download_googlevideo(song_id, url):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         log(f"捕获到播放中的 YouTube 源 id={song_id}，开始录制...")
-        with urllib.request.urlopen(req, timeout=30) as r:
+        with _tracked_urlopen(req, timeout=30) as r:
             status = getattr(r, "status", 200)
             if status != 200:
                 raise RuntimeError(f"HTTP {status}")
@@ -2632,7 +2978,8 @@ def cleanup_cache():
     with _downloads_lock:
         try:
             directory = _config["cache_dir"]
-            if _same_directory(directory, _config.get("library_dir")) or _same_directory(directory, _config.get("wd_library_dir")):
+            if (_same_directory(directory, _config.get("library_dir")) or _same_directory(directory, _config.get("wd_library_dir"))
+                    or _same_directory(directory, _config.get("dudu_library_dir"))):
                 return
             limit = int(_config["max_cache_mb"]) * 1048576
             files = []
@@ -2841,7 +3188,7 @@ CDN_POOL_FAILURE_LIMIT = 3
 QUICK_CANDIDATE_LIMIT = 8
 QUICK_NEW_IPS = 4
 QUICK_PROBE_BYTES = 256 * 1024
-QUICK_FINALISTS = 4
+QUICK_FINALISTS = 8
 _cdn_pool_lock = threading.RLock()
 
 
@@ -2983,25 +3330,46 @@ def _pick_test_file():
     return "KhlUAAndf98.mp4"
 
 
-def _download_test(ip, filename, nbytes, timeout=20):
+def _download_test(ip, filename, nbytes, timeout=20, include_latency=False):
     """从指定 CF IP 下载 nbytes 测速，返回 (MB/s, None) 或 (None, 错误)。
-    节点可能忽略 Range 返回完整文件，读到 nbytes 即主动停止；另有总时限兜底。
-    cdn.pypy.dance 会 301 到带哈希的子域名，需跟随重定向（同一 IP 换 Host 头即可）。"""
-    deadline = time.time() + timeout
+    include_latency=True 时追加响应延迟（含重定向），供初筛筛选，不冒充下载速度。
+    节点可能忽略 Range 返回完整文件，读到 nbytes 即主动停止；另有总时限兜底。"""
+    deadline = time.monotonic() + timeout
+    t0 = time.monotonic()
+    conn = None
+    got = 0
+    responded_at = None
+
+    def finish(speed, error):
+        if include_latency:
+            return speed, error, max((responded_at or time.monotonic()) - t0, 0.0)
+        return speed, error
+
     try:
-        conn = http.client.HTTPConnection(ip, 80, timeout=timeout)
-        t0 = time.time()
+        conn = _HTTPConnectionIP(ip, "cdn.pypy.dance", 80, timeout=timeout)
+
+        def apply_remaining_timeout():
+            if _speedtest_stop.is_set():
+                raise RuntimeError("测速已停止")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("超时（速度过慢）")
+            conn.timeout = max(0.1, remaining)
+
         host, path = "cdn.pypy.dance", "/" + filename
         resp = None
         for _ in range(3):  # 跟随重定向，上限防环
+            apply_remaining_timeout()
             conn.request("GET", path, headers={
                 "Host": host,
                 "Range": f"bytes=0-{nbytes - 1}",
                 "Accept-Encoding": "identity",
             })
+            apply_remaining_timeout()
             resp = conn.getresponse()
             if resp.status in (301, 302, 303, 307, 308):
                 loc = resp.getheader("Location") or ""
+                apply_remaining_timeout()
                 resp.read()
                 u = urllib.parse.urlparse(loc)
                 if not u.hostname:
@@ -3010,26 +3378,43 @@ def _download_test(ip, filename, nbytes, timeout=20):
                 path = (u.path or "/") + (("?" + u.query) if u.query else "")
                 continue
             break
+        responded_at = time.monotonic()
         if resp is None or resp.status not in (200, 206):
             err = f"HTTP {resp.status if resp else '无响应'}"
             if resp is not None:
+                apply_remaining_timeout()
                 resp.read()
-            conn.close()
-            return None, err
-        got = 0
+            return finish(None, err)
+        try:
+            expected = min(nbytes, int(resp.getheader("Content-Length") or nbytes))
+        except (TypeError, ValueError):
+            expected = nbytes
         while got < nbytes:
-            if time.time() > deadline:
-                conn.close()
-                return (None, "超时（速度过慢）") if got < nbytes // 4 else (got / 1048576 / max(time.time() - t0, 0.01), None)
+            if time.monotonic() >= deadline:
+                result = (None, "超时（速度过慢）") if got < nbytes // 4 else (got / 1048576 / max(time.monotonic() - t0, 0.01), None)
+                return finish(*result)
+            apply_remaining_timeout()
             chunk = resp.read(min(256 * 1024, nbytes - got))
             if not chunk:
                 break
             got += len(chunk)
-        dt = max(time.time() - t0, 0.01)
-        conn.close()
-        return got / 1048576 / dt, None
+        if got <= 0:
+            return finish(None, "节点未返回测速数据")
+        if got < expected:
+            return finish(None, f"测速响应不完整 ({got}/{expected})")
+        dt = max(time.monotonic() - t0, 0.01)
+        return finish(got / 1048576 / dt, None)
+    except (TimeoutError, socket.timeout) as e:
+        if _speedtest_stop.is_set():
+            return finish(None, "测速已停止")
+        if got >= nbytes // 4:
+            return finish(got / 1048576 / max(time.monotonic() - t0, 0.01), None)
+        return finish(None, str(e))
     except Exception as e:
-        return None, str(e)
+        return finish(None, "测速已停止" if _speedtest_stop.is_set() else str(e))
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _speedtest_thread_count():
@@ -3048,7 +3433,7 @@ def _speedtest_sample_bytes():
     return value * 1048576
 
 
-def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True):
+def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True, with_latency=False):
     if not candidates:
         return []
     if nbytes is None:
@@ -3058,6 +3443,8 @@ def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True):
     log(f"{'测速' if report else '初筛'}使用 {workers} 个并发线程，每个节点下载 {sample} 取样...")
 
     def download(ip):
+        if with_latency:
+            return _download_test(ip, filename, nbytes, 20 if timeout is None else timeout, True)
         if timeout is None:
             return _download_test(ip, filename, nbytes)
         return _download_test(ip, filename, nbytes, timeout)
@@ -3067,8 +3454,16 @@ def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True):
         futures = {pool.submit(download, ip): ip for ip in candidates}
         for future in as_completed(futures):
             ip = futures[future]
-            mbps, err = future.result()
-            results.append({"ip": ip, "mbps": mbps, "error": err})
+            outcome = future.result()
+            if with_latency:
+                mbps, err, latency = outcome
+            else:
+                mbps, err = outcome
+                latency = None
+            item = {"ip": ip, "mbps": mbps, "error": err}
+            if with_latency:
+                item["latency"] = latency
+            results.append(item)
             if report:
                 if mbps is not None:
                     log(f"测速 {ip}: {mbps:.2f} MB/s")
@@ -3080,10 +3475,14 @@ def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True):
 
 
 def _quick_speedtest(candidates, filename):
-    probes = _measure_ips(candidates, filename, QUICK_PROBE_BYTES, 6, report=False)
+    probes = _measure_ips(candidates, filename, QUICK_PROBE_BYTES, 6,
+                          report=False, with_latency=True)
     usable = [item for item in probes if not item.get("error") and (item.get("mbps") or 0) > 0]
-    top = sorted(usable, key=lambda item: item["mbps"], reverse=True)[:QUICK_FINALISTS]
-    finalists = [item["ip"] for item in top]
+    if len(usable) <= QUICK_FINALISTS:
+        finalists = [item["ip"] for item in usable]
+    else:
+        finalists = [item["ip"] for item in sorted(
+            usable, key=lambda item: item.get("latency", float("inf")))[:QUICK_FINALISTS]]
     pref = (get_config().get("preferred_cdn_ip") or "").strip()
     current = next((item for item in usable if item["ip"] == pref), None)
     if current is not None and pref not in finalists:
@@ -3119,7 +3518,133 @@ def _apply_fastest_result(results):
     return True
 
 
-def speed_test_ips(ips=None):
+SLOW_WINDOW_SECONDS = 10.0
+SLOW_WINDOW_BYTES = 2 * 1048576
+SLOW_THRESHOLD_MBPS = 0.75
+SLOW_RECHECK_BYTES = 2 * 1048576
+SLOW_RECHECK_COOLDOWN = 300.0
+SLOW_RECHECK_IMPROVEMENT = 1.3
+_slow_check_lock = threading.Lock()
+_slow_check_running = False
+_slow_check_after = 0.0
+
+
+def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None):
+    global _slow_check_running
+    if preferred_at_trigger is None:
+        preferred_at_trigger = get_config().get("preferred_cdn_ip") or ""
+    try:
+        candidates = [current_ip]
+        history = sorted((item for item in _load_cdn_pool().items()
+                          if item[1].get("failures", 0) == 0 and (item[1].get("mbps") or 0) > 0),
+                         key=lambda pair: pair[1]["mbps"], reverse=True)
+        for ip, _ in history:
+            if ip not in candidates:
+                candidates.append(ip)
+        for ip in _origin_ips.get("cdn.pypy.dance", []):
+            if ip not in candidates:
+                candidates.append(ip)
+        candidates = candidates[:4]
+        log(f"检测到 CDN 持续偏慢（{observed_speed:.2f} MB/s），后台小样本复测 {len(candidates)} 个节点...")
+        results = []
+        with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as pool:
+            futures = {pool.submit(_download_test, ip, _pick_test_file(), SLOW_RECHECK_BYTES, 12): ip
+                       for ip in candidates}
+            for future in as_completed(futures):
+                speed, error = future.result()
+                results.append({"ip": futures[future], "mbps": speed, "error": error})
+        _record_speedtest_results(results)
+        if _stop_event.is_set() or _speedtest_stop.is_set():
+            return
+        current = next((item for item in results if item["ip"] == current_ip
+                        and not item["error"] and (item["mbps"] or 0) > 0), None)
+        baseline = max(observed_speed, current["mbps"] if current else 0.0)
+        alternatives = [item for item in results if item["ip"] != current_ip
+                        and not item["error"] and (item["mbps"] or 0) > 0]
+        best = max(alternatives, key=lambda item: item["mbps"]) if alternatives else None
+        if best is None or best["mbps"] < baseline * SLOW_RECHECK_IMPROVEMENT:
+            log(f"CDN 慢速复测：当前节点已恢复或没有明显更快的替代节点，保持不变（基准 {baseline:.2f} MB/s）")
+            return
+        config = get_config()
+        if not config.get("auto_prefer_cdn", True):
+            return
+        previous = config.get("preferred_cdn_ip") or ""
+        if previous != preferred_at_trigger:
+            log("CDN 慢速复测期间用户已更改节点，放弃自动覆盖")
+            return
+        update_config({"preferred_cdn_ip": best["ip"]})
+        log(f"CDN 慢速恢复：后续请求改用 {best['ip']}（{best['mbps']:.2f} MB/s），"
+            f"当前连接不中断" + (f"，原节点 {previous}" if previous else ""))
+    except Exception as error:
+        log(f"CDN 慢速复测失败: {error}")
+    finally:
+        with _slow_check_lock:
+            _slow_check_running = False
+
+
+def _maybe_recheck_slow_connection(conn, speed):
+    global _slow_check_running, _slow_check_after
+    now = time.time()
+    with _slow_check_lock:
+        if _slow_check_running or now < _slow_check_after:
+            return
+        _slow_check_running = True
+        _slow_check_after = now + SLOW_RECHECK_COOLDOWN
+    try:
+        preferred = get_config().get("preferred_cdn_ip") or ""
+        _spawn_service_thread(_slow_recheck, (conn._selected_ip, speed, preferred))
+    except Exception:
+        with _slow_check_lock:
+            _slow_check_running = False
+
+
+def _note_upstream_progress(conn, byte_count):
+    if (byte_count <= 0 or not _running or _stop_event.is_set()
+            or not _config.get("auto_prefer_cdn", True)):
+        return
+    host = getattr(conn, "host", "")
+    current_ip = getattr(conn, "_selected_ip", "")
+    if not (host == UDON_PLAY_HOST or host == "cdn.pypy.dance"
+            or host.endswith(".cdn.pypy.dance")) or not _is_public_ip(current_ip):
+        return
+    if any(thread.name in ("auto_speedtest_apply", "_speed_test_ips", "_full_scan_ips")
+           and thread.is_alive() for thread in list(_service_threads)):
+        return
+    now = time.monotonic()
+    started = getattr(conn, "_slow_window_started", None)
+    if started is None:
+        conn._slow_window_started = now
+        conn._slow_window_bytes = byte_count
+        return
+    conn._slow_window_bytes += byte_count
+    elapsed = now - started
+    if elapsed < SLOW_WINDOW_SECONDS or conn._slow_window_bytes < SLOW_WINDOW_BYTES:
+        return
+    speed = conn._slow_window_bytes / 1048576 / elapsed
+    conn._slow_window_started = now
+    conn._slow_window_bytes = 0
+    if speed < SLOW_THRESHOLD_MBPS:
+        _maybe_recheck_slow_connection(conn, speed)
+
+
+def _run_tracked_speedtest(function, *args):
+    if get_runtime_state().get("phase") != "stopping":
+        _speedtest_stop.clear()
+    thread = threading.current_thread()
+    added = thread not in _service_threads
+    previous_name = thread.name
+    if added:
+        _service_threads.append(thread)
+    thread.name = function.__name__
+    try:
+        return function(*args)
+    finally:
+        thread.name = previous_name
+        if added and thread in _service_threads:
+            _service_threads.remove(thread)
+
+
+def _speed_test_ips(ips=None):
     """收藏测速直接完整测速；快速扫描合并当前、DNS、收藏、历史与新随机节点。"""
     filename = _pick_test_file()
     pref = (get_config().get("preferred_cdn_ip") or "").strip()
@@ -3140,8 +3665,13 @@ def speed_test_ips(ips=None):
         results = _quick_speedtest(candidates, filename)
     else:
         results = _measure_ips(candidates, filename)
-    _apply_fastest_result(results)
+    if not _speedtest_stop.is_set():
+        _apply_fastest_result(results)
     emit("speedtest_done", results=results)
+
+
+def speed_test_ips(ips=None):
+    return _run_tracked_speedtest(_speed_test_ips, ips)
 
 
 def auto_speedtest_apply():
@@ -3186,7 +3716,7 @@ def _sample_cf_ips(n):
     return list(ips)
 
 
-def full_scan_ips():
+def _full_scan_ips():
     """全部扫描：从 Cloudflare 全段随机抽样快速探测，筛出最快的一批再做完整下载测速"""
     filename = _pick_test_file()
     samples = _sample_cf_ips(FULLSCAN_SAMPLES)
@@ -3198,10 +3728,10 @@ def full_scan_ips():
     probe_results = []
     done = 0
     with ThreadPoolExecutor(max_workers=50) as pool:
-        futures = {pool.submit(_download_test, ip, filename, FULLSCAN_PROBE_BYTES, 4): ip for ip in samples}
+        futures = {pool.submit(_download_test, ip, filename, FULLSCAN_PROBE_BYTES, 4, True): ip for ip in samples}
         for fut in as_completed(futures):
-            mbps, error = fut.result()
-            result = {"ip": futures[fut], "mbps": mbps, "error": error}
+            mbps, error, latency = fut.result()
+            result = {"ip": futures[fut], "mbps": mbps, "error": error, "latency": latency}
             probe_results.append(result)
             done += 1
             if mbps is not None:
@@ -3209,18 +3739,26 @@ def full_scan_ips():
             if done % 50 == 0 or done == len(samples):
                 log(f"全部扫描初筛进度: {done}/{len(samples)}（可用 {len(probes)}）")
     _record_speedtest_results(probe_results, update_speed=False)
+    if _speedtest_stop.is_set():
+        emit("speedtest_done", results=probe_results)
+        return
     if not probes:
         log("全部扫描失败: 抽样 IP 全部不可用，请检查网络（如开着代理请关闭后重试）")
         emit("speedtest_done")
         return
-    top = sorted(probes, key=lambda r: -r["mbps"])[:FULLSCAN_TOP]
+    top = sorted(probes, key=lambda item: item["latency"])[:FULLSCAN_TOP]
     current = next((item for item in probes if item["ip"] == pref and (item.get("mbps") or 0) > 0), None)
     if current is not None and all(item["ip"] != pref for item in top):
         top.append(current)
     log(f"初筛完成，对 {len(top)} 个候选做 {_speedtest_sample_bytes() // 1048576}MB 完整测速...")
     results = _measure_ips([item["ip"] for item in top], filename)
-    _apply_fastest_result(results)
+    if not _speedtest_stop.is_set():
+        _apply_fastest_result(results)
     emit("speedtest_done", results=results)
+
+
+def full_scan_ips():
+    return _run_tracked_speedtest(_full_scan_ips)
 
 
 # ---------------- 本地 HTTP 服务 ----------------
@@ -3263,6 +3801,8 @@ class DanceHandler(BaseHTTPRequestHandler):
         return name if FILENAME_RE.match(name) else None
 
     def do_HEAD(self):
+        if self._host() == DUDU_PLAY_HOST:
+            return self._handle_dudu(head_only=True)
         if self._host() == API_HOST:
             return self._handle_api(head_only=True)
         if self._host() == UDON_PLAY_HOST:
@@ -3282,6 +3822,8 @@ class DanceHandler(BaseHTTPRequestHandler):
             self._proxy(head_only=True)
 
     def do_GET(self):
+        if self._host() == DUDU_PLAY_HOST:
+            return self._handle_dudu()
         if self._host() == API_HOST:
             return self._handle_api()
         if self._host() == UDON_PLAY_HOST:
@@ -3302,6 +3844,42 @@ class DanceHandler(BaseHTTPRequestHandler):
             log(f"本地未命中 {name}，回源拉取")
             _note_session_miss(name)
             self._proxy()
+
+    # ---------------- global-cdn.dudufit.dance（DuDu FitDance）处理 ----------------
+
+    def _handle_dudu(self, head_only=False):
+        path = urllib.parse.urlparse(self.path).path
+        match = DUDU_FILE_RE.match(os.path.basename(path))
+        if not match:
+            self.send_error(404)
+            return
+        sid = int(match.group(1))
+        name = dudu_cache_name(sid)
+        if head_only:
+            path = cooldown_check(name, consume=False) or dudu_local_path(sid)
+            if path:
+                self.send_response(200)
+                self.send_header("Content-Type", "video/mp4")
+                self.send_header("Content-Length", str(os.path.getsize(path)))
+                self.send_header("Accept-Ranges", "bytes")
+                self.end_headers()
+            else:
+                self._proxy(head_only=True, upstream_host=DUDU_PLAY_HOST,
+                            upstream_path=self.path, name=name, dudu_id=sid)
+            return
+        replacement = cooldown_check(name)
+        path = replacement or dudu_local_path(sid)
+        if path:
+            log(f"本地命中 {name} (DuDu) -> {os.path.basename(path)}")
+            if not replacement:
+                touch(path)
+            _note_session_hit(name, path)
+            self._serve_file(path)
+        else:
+            log(f"本地未命中 {name} (DuDu)，回源拉取")
+            _note_session_miss(name)
+            self._proxy(upstream_host=DUDU_PLAY_HOST, upstream_path=self.path,
+                        name=name, dudu_id=sid)
 
     # ---------------- play.udon.dance（WannaDance）处理 ----------------
 
@@ -3430,7 +4008,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _proxy(self, head_only=False, upstream_host="cdn.pypy.dance", upstream_path=None, name=None, wd_id=None):
+    def _proxy(self, head_only=False, upstream_host="cdn.pypy.dance", upstream_path=None, name=None, wd_id=None, dudu_id=None):
         if name is None:
             name = self._filename()
         if upstream_path is None:
@@ -3446,6 +4024,11 @@ class DanceHandler(BaseHTTPRequestHandler):
         error = None
         try:
             conn, resp = open_upstream(upstream_host, upstream_path, extra_headers=extra)
+            if dudu_id is not None and resp.status in (401, 403):
+                resp.read()
+                conn.close()
+                upstream_path = dudu_video_path(dudu_id)
+                conn, resp = open_upstream(upstream_host, upstream_path, extra_headers=extra)
             if _cancelled(run_id):
                 return
             self.send_response(resp.status)
@@ -3462,21 +4045,27 @@ class DanceHandler(BaseHTTPRequestHandler):
             # 错误正文与服务器未按完整请求返回的片段只透传，绝不登记为缓存。
             if range_header and resp.status in (200, 206):
                 if _config.get("preload_sequential", True):
-                    _queue_serial_download("wd" if wd_id is not None else "cdn",
-                                           None if wd_id is not None else name, wd_id)
+                    kind = "dudu" if dudu_id is not None else "wd" if wd_id is not None else "cdn"
+                    song_id = dudu_id if dudu_id is not None else wd_id
+                    _queue_serial_download(kind, None if song_id is not None else name, song_id)
+                elif dudu_id is not None:
+                    start_dudu_download(dudu_id)
                 elif wd_id is not None:
                     start_wd_download(wd_id)
                 else:
                     start_background_download(name)
             elif not range_header and resp.status == 200:
-                target = wd_target_path(wd_id) if wd_id is not None else target_path(name)
+                target = (dudu_target_path(dudu_id) if dudu_id is not None else
+                          wd_target_path(wd_id) if wd_id is not None else target_path(name))
                 total = int(resp.getheader("Content-Length") or 0)
-                meta = _begin_download(target, name, wd_id, "wannadance" if wd_id is not None else "cdn")
+                source = "dudu" if dudu_id is not None else "wannadance" if wd_id is not None else "cdn"
+                meta = _begin_download(target, name, dudu_id if dudu_id is not None else wd_id, source)
             if meta is None:
                 while not _cancelled(run_id):
                     chunk = resp.read(256 * 1024)
                     if not chunk:
                         break
+                    _note_upstream_progress(conn, len(chunk))
                     self.wfile.write(chunk)
                 return
 
@@ -3491,6 +4080,7 @@ class DanceHandler(BaseHTTPRequestHandler):
                         break
                     f.write(chunk)
                     saved += len(chunk)
+                    _note_upstream_progress(conn, len(chunk))
                     emit_progress(name, saved, total, meta["task_id"])
                     if client_alive:
                         try:
@@ -3606,56 +4196,94 @@ def find_newest_log():
 
 _wd_current_song = None  # WannaDance 正在播放的歌曲（queue info 不含当前歌曲，从 UpdateState 行解析）
 _wd_last_queue = None    # WannaDance 最近一次排队列表
+_dudu_current_song = None
+_dudu_last_queue = None
+DUDU_STATE_RE = re.compile(r"VideoQueueHandler\.DeserializeVideoSongData\] deserialize video data: (\{.*\})")
 
 
 def _reset_wd_state():
     """服务停止时清空当前歌曲与实际播放去重状态，避免残留到下次启动"""
-    global _wd_current_song, _wd_last_queue, _last_playing_key
+    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue, _last_playing_key
     _wd_current_song = None
     _wd_last_queue = None
+    _dudu_current_song = None
+    _dudu_last_queue = None
     _last_playing_key = None
 
 
 def extract_queue_items(lines):
-    """从日志行中取最后一条队列（PyPyDance 或 WannaDance，后出现的生效）。
-    WannaDance 的 queue info 开播即把当前歌曲移出队列，当前歌曲从 UpdateState
-    行解析；两种行独立出现，各自更新模块状态后合成：当前歌曲 + 排队列表。"""
-    global _wd_current_song, _wd_last_queue
+    """取最后一条 PyPyDance / WannaDance / DuDu 队列，后出现的来源生效。"""
+    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue
     items = None
     source = None
     for line in lines:
         content = line.split("  -  ", 1)[-1].strip()
-        m = QUEUE_RE.match(content)
-        if m:
+        match = QUEUE_RE.match(content)
+        if match:
             try:
-                items = json.loads(m.group(1))
+                items = json.loads(match.group(1))
                 source = "pypy"
             except Exception:
                 pass
             continue
-        m = WD_QUEUE_RE.search(content)
-        if m:
+        match = WD_QUEUE_RE.search(content)
+        if match:
             try:
-                raw = json.loads(m.group(1))
-                _wd_last_queue = [_normalize_wd_item(x) for x in raw if isinstance(x, dict)]
-                source = "wd"
+                raw = json.loads(match.group(1))
+                is_dudu = (bool(raw) and all("playerNames" not in item for item in raw if isinstance(item, dict)) or (_dudu_current_song is not None and not raw))
+                if is_dudu:
+                    _dudu_last_queue = [_normalize_dudu_item(item) for item in raw if isinstance(item, dict)]
+                    source = "dudu"
+                else:
+                    _wd_last_queue = [_normalize_wd_item(item) for item in raw if isinstance(item, dict)]
+                    source = "wd"
             except Exception:
                 pass
             continue
-        m = WD_STATE_RE.search(content)
-        if m:
-            _wd_current_song = _normalize_wd_state(m)
+        match = WD_STATE_RE.search(content)
+        if match:
+            _wd_current_song = _normalize_wd_state(match)
             source = "wd"
+            continue
+        match = DUDU_STATE_RE.search(content)
+        if match:
+            try:
+                current = json.loads(match.group(1))
+                _dudu_current_song = {
+                    "songNum": current.get("id"),
+                    "videoName": current.get("info") or current.get("title") or "?",
+                    "playerName": current.get("user") or "",
+                    "dudu": True,
+                }
+                source = "dudu"
+            except Exception:
+                pass
     if source == "wd":
         queue = list(_wd_last_queue or [])
         current = _wd_current_song
         if current is None:
             return queue
-        queue = [x for x in queue if x.get("songNum") != current.get("songNum")]
+        queue = [item for item in queue if item.get("songNum") != current.get("songNum")]
+        return [current] + queue
+    if source == "dudu":
+        queue = list(_dudu_last_queue or [])
+        current = _dudu_current_song
+        if current is None:
+            return queue
+        queue = [item for item in queue if item.get("songNum") != current.get("songNum")]
         return [current] + queue
     if source == "pypy":
         return items
     return None
+
+
+def _normalize_dudu_item(item):
+    return {
+        "songNum": item.get("songId"),
+        "videoName": item.get("title") or "?",
+        "playerName": item.get("playerName") or "",
+        "dudu": True,
+    }
 
 
 def _normalize_wd_item(x):
@@ -3696,7 +4324,12 @@ def describe_queue(items):
             continue
         sn = it.get("songNum", 0)
         valid_id = isinstance(sn, int) and not isinstance(sn, bool) and sn > 0
-        if it.get("wd"):
+        if it.get("dudu"):
+            kind, payload = ("dudu", dudu_cache_name(sn)) if valid_id else (None, None)
+            filename = payload
+            source = "dudu" if valid_id else "external"
+            local = dudu_local_path(sn) if valid_id else None
+        elif it.get("wd"):
             # WannaDance：文件名即编号，无需映射表
             kind, payload = ("cdn", wd_cache_name(sn)) if valid_id else (None, None)
             filename = payload
@@ -3711,12 +4344,11 @@ def describe_queue(items):
             local = local_path_for(filename) if filename else None
             if local is None and valid_id and in_library(sn):
                 local = library_path(sn)
-        expect_wd = bool(it.get("wd"))
+        expected_sources = ({"dudu"} if it.get("dudu") else {"wannadance"} if it.get("wd") else {"cdn", "youtube"})
 
-        def matches(task, expect_wd=expect_wd, sn=sn, filename=filename, valid_id=valid_id):
-            # PyPyDance 与 WannaDance 编号同范围，按来源各自匹配；否则换房间后
-            # 旧房间的下载结果（保留最近 200 条）会贴到新房间同编号的歌上
-            if (task.get("source") == "wannadance") != expect_wd:
+        def matches(task, expected_sources=expected_sources, sn=sn, filename=filename, valid_id=valid_id):
+            # 不同房间编号同范围时按来源匹配，避免旧房间结果贴错歌曲。
+            if task.get("source") not in expected_sources:
                 return False
             return (valid_id and task.get("song_id") == sn) or (filename and task.get("filename") == filename)
         task = next((task for task in tasks if matches(task)), None)
@@ -3774,6 +4406,10 @@ def submit_preload(items):
         sn = it.get("songNum", 0)
         if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
             continue
+        if it.get("dudu"):
+            if _config.get("dudu_enabled") and not dudu_local_path(sn):
+                tasks.append(("dudu", None, sn, None))
+            continue
         if it.get("wd"):
             # WannaDance：文件名即编号，直接走 api.udon.dance 302 下载
             if not wd_local_path(sn):
@@ -3795,7 +4431,9 @@ def submit_preload(items):
         _preload_dl_wake.set()
     else:
         for kind, key, sn, _ in tasks:
-            if kind == "wd":
+            if kind == "dudu":
+                start_dudu_download(sn)
+            elif kind == "wd":
                 start_wd_download(sn)
             else:
                 start_background_download(key, sn)
@@ -3812,7 +4450,7 @@ _preload_dl_wake = threading.Event()
 
 
 def _preload_target(kind, key, song_id):
-    return wd_target_path(song_id) if kind == "wd" else target_path(key, song_id)
+    return dudu_target_path(song_id) if kind == "dudu" else wd_target_path(song_id) if kind == "wd" else target_path(key, song_id)
 
 
 def _wait_for_active_download(target):
@@ -3850,7 +4488,9 @@ def _preload_download_loop():
             return
         kind, key, song_id, stall_timeout = task
         try:
-            if kind == "wd":
+            if kind == "dudu":
+                download_dudu(song_id)
+            elif kind == "wd":
                 download_wd(song_id)
             else:
                 download_file(key, song_id, stall_timeout=stall_timeout)
@@ -3901,7 +4541,9 @@ def _preload_retry_loop():
             sn = it.get("songNum", 0)
             if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
                 continue
-            if it.get("wd"):
+            if it.get("dudu"):
+                needs_retry = _config.get("dudu_enabled") and not dudu_local_path(sn)
+            elif it.get("wd"):
                 needs_retry = not wd_local_path(sn)
             elif in_library(sn) or yt_local_path(sn):
                 continue
@@ -3959,6 +4601,8 @@ def _queue_item_filename(item):
     sn = item.get("songNum", 0)
     if not (isinstance(sn, int) and not isinstance(sn, bool) and sn > 0):
         return None
+    if item.get("dudu"):
+        return dudu_cache_name(sn)
     if item.get("wd"):
         return wd_cache_name(sn)
     kind, payload = song_route(sn)
@@ -4202,9 +4846,50 @@ def _ensure_service_threads():
             _spawn_service_thread(target)
 
 
+_SERVICE_TASK_LABELS = {
+    "auto_speedtest_apply": "CDN 测速",
+    "_speed_test_ips": "CDN 测速",
+    "_full_scan_ips": "扩大范围 CDN 测速",
+    "_slow_recheck": "CDN 慢速复测",
+    "fetch_bundle": "歌单直取表更新",
+    "_preload_worker_loop": "队列预载",
+    "_preload_download_loop": "队列预载下载",
+    "_preload_retry_loop": "预载重试",
+    "_mapping_flush_loop": "映射保存",
+    "_hosts_watchdog_loop": "hosts 恢复检查",
+    "_tunnel_loop": "YouTube 隧道关闭",
+    "serve_forever": "本地播放服务",
+    "LogWatcher": "房间日志监听",
+}
+
+
+def _finishing_tasks():
+    tasks = []
+    with _downloads_lock:
+        for key in _downloads_in_progress:
+            meta = _download_meta.get(key) or {}
+            filename = meta.get("filename") or os.path.basename(key)
+            tasks.append(f"{filename} 下载")
+    if rebuilding():
+        tasks.append("曲库索引重建")
+    if verifying():
+        tasks.append("曲库校验")
+    for thread in list(_service_threads):
+        if thread.is_alive() and thread is not threading.current_thread():
+            tasks.append(_SERVICE_TASK_LABELS.get(thread.name, f"后台线程 {thread.name}"))
+    return list(dict.fromkeys(tasks))
+
+
+def _finishing_error(tasks):
+    shown = "、".join(tasks[:5])
+    if len(tasks) > 5:
+        shown += f" 等 {len(tasks)} 项"
+    return f"仍有后台任务正在结束：{shown}，请稍后再启动服务"
+
+
 def start_services():
     """串行启停，返回 None 表示成功；兼容旧 CLI 的错误字符串。"""
-    global _server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
+    global _server, _dudu_server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
     with _lifecycle_lock:
         if _running:
             return None
@@ -4220,15 +4905,19 @@ def start_services():
             error = "缓存目录与 WannaDance 曲库相同，请先在设置中分开保存目录再启动服务"
             _set_runtime_state(phase="failed", running=False, error=error)
             return error
-        with _downloads_lock:
-            finishing = bool(_downloads_in_progress)
-        if finishing or rebuilding() or verifying() or any(t.is_alive() for t in _service_threads):
-            error = "仍有后台任务正在结束，请稍后再启动服务"
+        if _same_directory(_config.get("cache_dir"), _config.get("dudu_library_dir")):
+            error = "缓存目录与 DuDu 曲库相同，请先在设置中分开保存目录再启动服务"
+            _set_runtime_state(phase="failed", running=False, error=error)
+            return error
+        finishing = _finishing_tasks()
+        if finishing:
+            error = _finishing_error(finishing)
             _set_runtime_state(phase="failed", running=False, error=error)
             return error
         _service_threads.clear()
         _run_id += 1
         _stop_event.clear()
+        _speedtest_stop.clear()
         _library_stop.clear()
         _set_runtime_state(phase="starting", running=False, youtube_available=False,
                            queue_watcher_available=False, hosts_restore_pending=False,
@@ -4253,7 +4942,18 @@ def start_services():
             if yt_mode and not _origin_ips.get(API_HOST):
                 warnings.append("无法解析 api.pypy.dance，YouTube 源缓存不可用")
                 yt_mode = False
-            if yt_mode:
+            if _config.get("dudu_enabled"):
+                from dance_ui.dudu_https import ensure_certificate
+                certificate, private_key = ensure_certificate()
+                try:
+                    _dudu_server = ThreadingHTTPServer(("127.0.0.1", 443), DanceHandler)
+                    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+                    context.load_cert_chain(str(certificate), str(private_key))
+                    _dudu_server.socket = context.wrap_socket(_dudu_server.socket, server_side=True)
+                    _dudu_server.daemon_threads = True
+                except OSError as e:
+                    raise RuntimeError(f"无法绑定 DuDu HTTPS 443 端口 ({e})") from e
+            elif yt_mode:
                 try:
                     _tunnel_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     _tunnel_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -4276,6 +4976,8 @@ def start_services():
                 raise _StartCancelled()
             _spawn_service_thread(_server.serve_forever)
             server_started = True
+            if _dudu_server is not None:
+                _spawn_service_thread(_dudu_server.serve_forever)
             _spawn_service_thread(_hosts_watchdog_loop, (yt_mode,))
             if _tunnel_sock is not None:
                 _spawn_service_thread(_tunnel_loop, (_tunnel_sock, list(_origin_ips[API_HOST])))
@@ -4316,6 +5018,14 @@ def start_services():
                 except Exception:
                     pass
                 _server = None
+            if _dudu_server is not None:
+                try:
+                    if server_started:
+                        _dudu_server.shutdown()
+                    _dudu_server.server_close()
+                except Exception:
+                    pass
+                _dudu_server = None
             if _tunnel_sock is not None:
                 try:
                     _tunnel_sock.close()
@@ -4338,15 +5048,18 @@ def start_services():
 
 def stop_services():
     """停止并恢复 hosts；None 表示成功，错误字符串表示需留窗重试。"""
-    global _server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
+    global _server, _dudu_server, _watcher, _running, _tunnel_sock, _run_id, _hosts_restore_pending
     global _last_queue_items, _preload_pending
     # 在等待生命周期锁之前通知启动线程取消，防止窗口关闭后又启动成功。
     _stop_event.set()
+    _speedtest_stop.set()
+    close_active_connections()
     with _lifecycle_lock:
         needs_restore = _hosts_restore_pending or _running
         _set_runtime_state(phase="stopping", error=None)
         _run_id += 1
         cancel_library_download()
+        close_active_connections()
         cooldown_disarm(silent=True)
         if _server is not None:
             try:
@@ -4355,6 +5068,13 @@ def stop_services():
             except Exception as e:
                 log(f"HTTP 服务关闭异常: {e}")
             _server = None
+        if _dudu_server is not None:
+            try:
+                _dudu_server.shutdown()
+                _dudu_server.server_close()
+            except Exception as e:
+                log(f"DuDu HTTPS 服务关闭异常: {e}")
+            _dudu_server = None
         if _tunnel_sock is not None:
             try:
                 _tunnel_sock.close()
@@ -4386,6 +5106,33 @@ def stop_services():
         _reset_wd_state()
         refresh_queue_state()
         return error
+
+
+def configure_dudu(enabled):
+    """按需启停 DuDu，并在用户明确关闭时移除本机 CA。"""
+    if not isinstance(enabled, bool):
+        raise ValueError("DuDu 开关必须是布尔值")
+    was_running = bool(is_running())
+    if was_running:
+        error = stop_services()
+        if error:
+            raise RuntimeError(error)
+    try:
+        if enabled:
+            from dance_ui.dudu_https import ensure_certificate
+            ensure_certificate()
+        update_config({"dudu_enabled": enabled})
+        if not enabled:
+            from dance_ui.dudu_https import remove_certificate
+            remove_certificate()
+        if was_running or enabled:
+            error = start_services()
+            if error:
+                raise RuntimeError(error)
+    except Exception:
+        if was_running and not is_running():
+            start_services()
+        raise
 
 
 def is_running():
@@ -4424,7 +5171,7 @@ def fetch_latest_release_tag(timeout=8):
     req = urllib.request.Request(UPDATE_CHECK_API, headers={
         "User-Agent": "VRChatDanceAssistant", "Accept": "application/vnd.github+json"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _tracked_urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
@@ -4494,10 +5241,11 @@ def collect_diagnostics():
 
     add("")
     add("== 缓存与曲库 ==")
-    count, total, lib_count, lib_total, wd_count, wd_total = get_cache_stats()
+    count, total, lib_count, lib_total, wd_count, wd_total, dudu_count, dudu_total = get_cache_stats()
     add(f"临时缓存: {count} 个 | {total / 1048576:.1f} MB / {get_config()['max_cache_mb']} MB")
     add(f"PyPyDance 曲库: {lib_count} 首 | {lib_total / 1048576:.1f} MB")
     add(f"WannaDance 曲库: {wd_count} 首 | {wd_total / 1048576:.1f} MB")
+    add(f"DuDu FitDance 曲库: {dudu_count} 首 | {dudu_total / 1048576:.1f} MB")
     session = get_session_stats()
     add(f"本次会话: 本地命中 {session['hits']} 首 | 回源 {session['misses']} 首 | 节省流量 {session['saved_mb']:.1f} MB")
 

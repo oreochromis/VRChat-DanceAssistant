@@ -63,7 +63,7 @@ class ReportCanvas(QWidget):
         self.favorite_hour_seconds = int(vrcx.get("favorite_hour_seconds", 0)) if isinstance(vrcx, dict) else 0
         self.data_status = vrcx.get("data_status", "") if isinstance(vrcx, dict) else ""
         world_play = vrcx.get("world_play") if isinstance(vrcx, dict) else {}
-        self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd")}
+        self.world_play = {key: int((world_play or {}).get(key, 0)) for key in ("pypy", "wd", "dudu")}
         self.self_played = int(self.data.get("self_played", 0))
         self.trend_mode, self.summary_mode = "day", "month"
         self.partner_mode = "co_play"
@@ -390,7 +390,7 @@ class ReportCanvas(QWidget):
             name_rect = QRectF(card.left() + 18, card.top() + 70, card.width() - 36, 58)
             painter.drawText(name_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
                              | Qt.TextFlag.TextWordWrap, song.get("name") or f"编号 {song.get('id')}")
-            source = "WannaDance" if song.get("kind") == "wd" else "PyPyDance"
+            source = "WannaDance" if song.get("kind") == "wd" else "DuDu FitDance" if song.get("kind") == "dudu" else "PyPyDance"
             _text(painter, QRectF(card.left() + 18, card.bottom() - 35, card.width() - 36, 22),
                   f"#{song.get('id')}  ·  {source}", size=11, color=self.muted)
 
@@ -518,9 +518,10 @@ class ReportCanvas(QWidget):
         self._card(painter, rect)
         _text(painter, QRectF(rect.left() + 20, rect.top() + 15, rect.width() - 40, 30),
               "歌曲来源", size=18, color=self.text, weight=QFont.Weight.DemiBold)
-        pypy = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") != "wd")
+        pypy = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") == "pypy")
         wd = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") == "wd")
-        total = pypy + wd
+        dudu = sum(int(song.get("count", 0)) for song in self.songs if song.get("kind") == "dudu")
+        total = pypy + wd + dudu
         center = QPointF(rect.center().x(), rect.top() + (142 if rect.height() >= 280 else 105))
         radius = min(62 if rect.height() >= 280 else 48, rect.width() / 5)
         ring = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
@@ -529,7 +530,7 @@ class ReportCanvas(QWidget):
         painter.drawEllipse(ring)
         if total:
             start = 90 * 16
-            for count, color in ((pypy, self.accent), (wd, self.secondary)):
+            for count, color in ((pypy, self.accent), (wd, self.secondary), (dudu, self.highlight)):
                 if not count:
                     continue
                 span = round(-5760 * count / total)
@@ -541,15 +542,16 @@ class ReportCanvas(QWidget):
         _text(painter, QRectF(center.x() - 60, center.y() + 10, 120, 20), "次点歌",
               size=11, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
         self._draw_legend(painter, rect, ((f"PyPyDance {pypy}", self.accent),
-                                          (f"WannaDance {wd}", self.secondary)),
+                                          (f"WannaDance {wd}", self.secondary),
+                                          (f"DuDu {dudu}", self.highlight)),
                           rect.bottom() - 55, 10)
 
     def _draw_world_play(self, painter, rect):
         self._card(painter, rect)
         _text(painter, QRectF(rect.left() + 20, rect.top() + 15, rect.width() - 40, 30),
               "游玩时长分布", size=18, color=self.text, weight=QFont.Weight.DemiBold)
-        pypy, wd = self.world_play["pypy"], self.world_play["wd"]
-        total = pypy + wd
+        pypy, wd, dudu = self.world_play["pypy"], self.world_play["wd"], self.world_play["dudu"]
+        total = pypy + wd + dudu
         center = QPointF(rect.center().x(), rect.top() + 105)
         radius = 48
         ring = QRectF(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
@@ -558,7 +560,7 @@ class ReportCanvas(QWidget):
         painter.drawEllipse(ring)
         if total:
             start = 90 * 16
-            for count, color in ((pypy, self.accent), (wd, self.secondary)):
+            for count, color in ((pypy, self.accent), (wd, self.secondary), (dudu, self.highlight)):
                 if not count:
                     continue
                 span = round(-5760 * count / total)
@@ -586,7 +588,8 @@ class ReportCanvas(QWidget):
                   align=Qt.AlignmentFlag.AlignCenter)
         self._draw_legend(painter, rect,
                           ((f"PyPyDance · {format_duration(pypy)}", self.accent),
-                           (f"WannaDance · {format_duration(wd)}", self.secondary)),
+                           (f"WannaDance · {format_duration(wd)}", self.secondary),
+                           (f"DuDu · {format_duration(dudu)}", self.highlight)),
                           rect.bottom() - 46, 11)
 
     def _draw_vrcx_friend(self, painter, rect):

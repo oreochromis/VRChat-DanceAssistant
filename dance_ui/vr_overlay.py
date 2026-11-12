@@ -10,8 +10,8 @@ vrclient 的进程内状态损坏（失败 init 静态缓存、vrserver 死亡�
 面板出现在 SteamVR 菜单（dashboard overlay + 缩略图）、显示当前歌曲与缓存状态、
 接收控制器激光的鼠标事件（启停服务 + CoolDown 两个按钮）。
 纹理优先用常驻 OpenGL 纹理原地更新（不闪烁，在子进程主线程创建，符合 Qt 线程约束），
-GL 不可用时回退 setOverlayRaw。SteamVR 未运行时子进程报 init-error 退出，
-父进程按 15 秒间隔拉起新子进程重试。"""
+GL 不可用时回退 setOverlayRaw。SteamVR 未就绪时仅运行 Background 探针，
+按 15 秒间隔安全重试，不创建会主动拉起 SteamVR 的 Overlay 子进程。"""
 from __future__ import annotations
 
 import json
@@ -26,6 +26,7 @@ import time
 from PySide6.QtCore import QObject, Signal
 
 from .steamvr_startup import APP_KEY
+from .openvr_probe import probe_steamvr_ready
 from . import __version__
 
 PANEL_KEY = APP_KEY + ".panel"
@@ -533,15 +534,17 @@ class VROverlayService:
 
     会话本体在子进程（vr_panel_worker）：vrclient 的进程内状态损坏、ctypes
     访问冲突、GL 崩溃都只影响子进程，父进程拉新子进程即可恢复，主程序
-    （缓存服务/hosts 劫持）完全不受影响。"""
+    （缓存服务/hosts 劫持）完全不受影响。Overlay init 会拉起 SteamVR，
+    因此必须先由不会主动拉起 SteamVR 的 Background 探针确认就绪。"""
 
     def __init__(self, bridge=None, state_provider=None, logger=None,
-                 restart_state_path=None, worker_factory=None):
+                 restart_state_path=None, worker_factory=None, ready_probe=None):
         self.bridge = bridge or OverlayBridge()
         self.state_provider = state_provider or collect_state
         self.logger = logger or self._default_logger
         self._restart_budget = AutoRestartBudget(restart_state_path) if restart_state_path else None
         self._worker_factory = worker_factory  # 测试注入；None 用真实子进程
+        self._ready_probe = ready_probe or probe_steamvr_ready
         self._stop = threading.Event()
         self._thread = None
         self._notice = None   # (文本, 过期时间戳)，父进程侧推给面板的临时反馈
@@ -612,6 +615,18 @@ class VROverlayService:
     def _run(self):
         last_reason = None
         while not self._stop.is_set():
+            try:
+                ready, probe_error = self._ready_probe()
+            except Exception as exc:
+                ready, probe_error = False, type(exc).__name__
+            if not ready:
+                reason = _describe_error_name(probe_error)
+                if reason != last_reason:
+                    self.logger(reason)
+                    last_reason = reason
+                self._stop.wait(RETRY_INTERVAL)
+                continue
+            last_reason = None
             try:
                 worker = self._spawn_worker()
             except Exception as exc:

@@ -169,6 +169,24 @@ class FriendAvatarTests(unittest.TestCase):
                 vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", friends)
             self.assertGreater(maximum, 1)
 
+    def test_friend_without_avatar_does_not_keep_previous_image(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with (patch.object(vrcx_profile.core, "data_dir", return_value=str(root)),
+                  patch.object(vrcx_profile, "_cookie_header", return_value="session"),
+                  patch.object(vrcx_profile, "_download", return_value=b"{}")):
+                target = vrcx_profile.friend_avatar_path("friend-1")
+                target.parent.mkdir(parents=True)
+                target.write_bytes(b"old avatar")
+                (root / "avatar-index.json").write_text(json.dumps({
+                    "friend-1": {"checked_at": 0, "url": "https://api.vrchat.cloud/old.png"},
+                }), encoding="utf-8")
+                index = vrcx_profile.sync_friend_avatars(root / "VRCX.sqlite3", [
+                    {"user_id": "friend-1", "name": "Friend"},
+                ])
+            self.assertFalse(target.exists())
+            self.assertNotIn("url", index["friend-1"])
+
     def test_failed_friend_avatar_request_waits_before_retrying(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

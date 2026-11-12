@@ -106,7 +106,7 @@ class RecordFieldsDialog(QDialog):
             self._text_field(form, "location", "位置 / 实例 ID")
             self._text_field(form, "time", "原始 time 值")
         else:
-            self._choice_field(form, "kind", "来源", ("pypy", "wd"))
+            self._choice_field(form, "kind", "来源", ("pypy", "wd", "dudu"))
             song_id = QSpinBox()
             song_id.setRange(1, 1000000000)
             song_id.setValue(max(1, int(self.record.get("id") or 1)))

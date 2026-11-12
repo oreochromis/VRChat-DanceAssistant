@@ -561,13 +561,16 @@ class ReleaseAssetTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         content = (root / "演示.bat").read_text(encoding="utf-8")
         self.assertIn('call "启动.bat" --demo %*', content)
-        self.assertIn('"启动.bat", "演示.bat"', (root / "build_windows.ps1").read_text(encoding="utf-8"))
+        build_script = (root / "build_windows.ps1").read_text(encoding="utf-8")
+        self.assertIn('"README.md", "LICENSE"', build_script)
+        self.assertIn('Remove-Item -LiteralPath (Join-Path $bundleRoot "启动.bat")', build_script)
+        self.assertIn('Remove-Item -LiteralPath (Join-Path $bundleRoot "演示.bat")', build_script)
 
     def test_packager_excludes_presets_and_records_user_feedback_separately(self):
         bundle = self.assets / "VRChatDanceAssistant"
         for name in (
             "VRChatDanceAssistant.exe", "_internal/python312.dll", "README.md", "LICENSE",
-            "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md", "启动.bat", "演示.bat",
+            "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md",
         ):
             target = bundle / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -615,6 +618,11 @@ class ReleaseAssetTests(unittest.TestCase):
             preset.parent.parent.rmdir()
             with self.assertRaisesRegex(SystemExit, "refusing to overwrite"):
                 packager.main()
+            for launcher in ("启动.bat", "演示.bat"):
+                (bundle / launcher).write_text("launcher", encoding="utf-8")
+                with self.assertRaisesRegex(SystemExit, "must not include the launcher"):
+                    packager.main()
+                (bundle / launcher).unlink()
 
 
 if __name__ == "__main__":

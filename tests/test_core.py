@@ -206,8 +206,12 @@ class CoreTests(unittest.TestCase):
 
     def test_set_storage_mode_migrates_and_reloads(self):
         self.dc._storage_mode_override = None
-        # 默认 roaming；先切到便携（空迁移），再造数据切回用户目录验证完整迁移
+        # 默认 roaming；证书目录也随数据位置迁移，避免换位置后重新生成并残留旧 CA
+        certificate_dir = Path(self.dc.ROAMING_ROOT) / "dudu-https"
+        certificate_dir.mkdir(parents=True)
+        (certificate_dir / "ca.crt").write_bytes(b"test certificate")
         self.assertEqual(self.dc.set_storage_mode("portable")["mode"], "portable")
+        self.assertEqual((self.root / "dudu-https" / "ca.crt").read_bytes(), b"test certificate")
         self.dc.mark_mapping(3528, "video.mp4")
         self.dc.flush_mapping()
         info = self.dc.set_storage_mode("roaming")
@@ -551,14 +555,16 @@ class CoreTests(unittest.TestCase):
             candidates = self.dc._quick_cdn_candidates()
         self.assertEqual(candidates, ["1.1.1.1", "2.2.2.2"])
 
-    def test_quick_speedtest_probes_all_then_measures_top_four_and_current(self):
+    def test_quick_speedtest_measures_all_default_candidates(self):
         self.dc._config["preferred_cdn_ip"] = "6.6.6.6"
         candidates = [f"{index}.{index}.{index}.{index}" for index in range(1, 7)]
         speeds = {ip: float(11 - int(ip[0])) for ip in candidates}
         calls = []
 
-        def download(ip, filename, nbytes, timeout=20):
+        def download(ip, filename, nbytes, timeout=20, include_latency=False):
             calls.append((ip, nbytes))
+            if include_latency:
+                return speeds[ip], None, int(ip[0]) / 10
             return speeds[ip], None
 
         with mock.patch.object(self.dc, "_download_test", side_effect=download):
@@ -566,8 +572,24 @@ class CoreTests(unittest.TestCase):
         probed = {ip for ip, nbytes in calls if nbytes == self.dc.QUICK_PROBE_BYTES}
         measured = {ip for ip, nbytes in calls if nbytes == self.dc.SPEEDTEST_BYTES}
         self.assertEqual(probed, set(candidates))
-        self.assertEqual(measured, {"1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "6.6.6.6"})
+        self.assertEqual(measured, set(candidates))
         self.assertEqual({item["ip"] for item in results}, measured)
+
+    def test_large_candidate_set_uses_latency_not_probe_speed(self):
+        candidates = [f"{index}.{index}.{index}.{index}" for index in range(1, 11)]
+        self.dc._config["preferred_cdn_ip"] = "10.10.10.10"
+        measured = []
+
+        def download(ip, filename, nbytes, timeout=20, include_latency=False):
+            number = int(ip.split(".")[0])
+            if include_latency:
+                return 100.0 if number == 10 else 1.0, None, number / 10
+            measured.append(ip)
+            return 1.0, None
+
+        with mock.patch.object(self.dc, "_download_test", side_effect=download):
+            self.dc._quick_speedtest(candidates, "video.mp4")
+        self.assertEqual(set(measured), set(candidates[:8] + ["10.10.10.10"]))
 
     def test_auto_speedtest_applies_fastest_ip(self):
         self.dc._config["preferred_cdn_ip"] = ""
@@ -600,6 +622,79 @@ class CoreTests(unittest.TestCase):
              mock.patch.object(self.dc._stop_event, "wait", return_value=False):
             self.dc.auto_speedtest_apply()
         self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
+
+    def test_slow_download_detection_requires_a_full_window(self):
+        connection = mock.Mock()
+        connection.host = "cdn.pypy.dance"
+        connection._selected_ip = "1.1.1.1"
+        connection._slow_window_started = None
+        self.dc._running = True
+        self.dc._stop_event.clear()
+        self.dc._config["auto_prefer_cdn"] = True
+        with mock.patch.object(self.dc.time, "monotonic", side_effect=[0.0, 9.0, 11.0]), \
+             mock.patch.object(self.dc, "_maybe_recheck_slow_connection") as recheck:
+            for _ in range(3):
+                self.dc._note_upstream_progress(connection, self.dc.SLOW_WINDOW_BYTES)
+        recheck.assert_called_once()
+        self.assertIs(recheck.call_args.args[0], connection)
+        self.assertAlmostEqual(recheck.call_args.args[1], 6 / 11)
+
+    def test_slow_recheck_switches_only_a_clearly_faster_alternative(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        speeds = {"1.1.1.1": 0.2, "2.2.2.2": 2.0}
+        pool = {"2.2.2.2": {"mbps": 5.0, "failures": 0, "last_success": 1.0}}
+        with mock.patch.object(self.dc, "_load_cdn_pool", return_value=pool), \
+             mock.patch.object(self.dc, "_record_speedtest_results"), \
+             mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes, timeout: (speeds[ip], None)):
+            self.dc._slow_recheck("1.1.1.1", 0.2)
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "2.2.2.2")
+        self.assertFalse(self.dc._slow_check_running)
+
+    def test_slow_recheck_keeps_a_recovered_current_ip(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        speeds = {"1.1.1.1": 1.0, "2.2.2.2": 0.9}
+        pool = {"2.2.2.2": {"mbps": 5.0, "failures": 0, "last_success": 1.0}}
+        with mock.patch.object(self.dc, "_load_cdn_pool", return_value=pool), \
+             mock.patch.object(self.dc, "_record_speedtest_results"), \
+             mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes, timeout: (speeds[ip], None)):
+            self.dc._slow_recheck("1.1.1.1", 0.2)
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "1.1.1.1")
+
+    def test_slow_recheck_does_not_override_a_user_change(self):
+        self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
+        speeds = {"1.1.1.1": 0.2, "2.2.2.2": 5.0}
+        pool = {"2.2.2.2": {"mbps": 5.0, "failures": 0, "last_success": 1.0}}
+        with mock.patch.object(self.dc, "_load_cdn_pool", return_value=pool), \
+             mock.patch.object(self.dc, "_record_speedtest_results"), \
+             mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes, timeout: (speeds[ip], None)):
+            self.dc._slow_recheck("1.1.1.1", 0.2, "1.1.1.1")
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
+
+    def test_slow_recheck_allows_recovery_from_a_fallback_ip(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        speeds = {"2.2.2.2": 0.2, "3.3.3.3": 5.0}
+        pool = {"3.3.3.3": {"mbps": 5.0, "failures": 0, "last_success": 1.0}}
+        with mock.patch.object(self.dc, "_load_cdn_pool", return_value=pool), \
+             mock.patch.object(self.dc, "_record_speedtest_results"), \
+             mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes, timeout: (speeds[ip], None)):
+            self.dc._slow_recheck("2.2.2.2", 0.2, "1.1.1.1")
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "3.3.3.3")
+
+    def test_stopped_slow_recheck_never_applies_a_new_ip(self):
+        self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
+        self.dc._speedtest_stop.set()
+        speeds = {"1.1.1.1": 0.2, "2.2.2.2": 5.0}
+        pool = {"2.2.2.2": {"mbps": 5.0, "failures": 0, "last_success": 1.0}}
+        with mock.patch.object(self.dc, "_load_cdn_pool", return_value=pool), \
+             mock.patch.object(self.dc, "_record_speedtest_results"), \
+             mock.patch.object(self.dc, "_download_test",
+                               side_effect=lambda ip, filename, nbytes, timeout: (speeds[ip], None)):
+            self.dc._slow_recheck("1.1.1.1", 0.2)
+        self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "1.1.1.1")
 
     def test_favorite_speedtest_auto_applies_best_and_compares_current(self):
         self.dc._config["preferred_cdn_ip"] = "3.3.3.3"
@@ -1801,6 +1896,131 @@ class CoreTests(unittest.TestCase):
              mock.patch("builtins.open", side_effect=stop_during_read):
             self.dc._hosts_watchdog_loop(False)
         self.assertEqual(hosts.read_text(encoding="utf-8"), original)
+
+    def test_stop_closes_and_unregisters_active_connections(self):
+        connection = FakeConnection()
+        connection.sock = mock.Mock()
+        self.dc._register_connection(connection)
+        self.assertIsNone(self.dc.stop_services())
+        connection.sock.shutdown.assert_called_once_with(self.dc.socket.SHUT_RDWR)
+        self.assertTrue(connection.closed)
+        self.assertEqual(self.dc._active_connections, set())
+
+    def test_force_close_detaches_socket_without_waiting_for_response_close(self):
+        connection = FakeConnection()
+        connection.sock = mock.Mock()
+        connection.sock.detach.return_value = 123
+        raw_socket = mock.Mock()
+        self.dc._register_connection(connection)
+        with mock.patch.object(self.dc.socket, "socket", return_value=raw_socket) as factory:
+            self.dc.close_active_connections()
+        connection.sock.shutdown.assert_called_once_with(self.dc.socket.SHUT_RDWR)
+        connection.sock.detach.assert_called_once_with()
+        factory.assert_called_once_with(fileno=123)
+        raw_socket.close.assert_called_once_with()
+        self.assertFalse(connection.closed)
+        self.assertEqual(self.dc._active_connections, set())
+
+    def test_start_reports_speedtest_that_is_still_finishing(self):
+        release = threading.Event()
+        thread = threading.Thread(target=release.wait, name="auto_speedtest_apply", daemon=True)
+        self.dc._service_threads.append(thread)
+        thread.start()
+        try:
+            error = self.dc.start_services()
+            self.assertIn("CDN 测速", error)
+            self.assertIn("请稍后再启动服务", error)
+            self.dc.resolve_real_ips.assert_not_called()
+        finally:
+            release.set()
+            thread.join(2)
+
+    def test_start_reports_filename_of_download_that_is_still_finishing(self):
+        target = self.cache / "dudu_2137.mp4"
+        key = self.dc._canonical_path(str(target))
+        with self.dc._downloads_lock:
+            self.dc._downloads_in_progress[key] = threading.current_thread()
+            self.dc._download_meta[key] = {"filename": target.name, "task_id": key}
+        try:
+            error = self.dc.start_services()
+            self.assertIn("dudu_2137.mp4 下载", error)
+            self.dc.resolve_real_ips.assert_not_called()
+        finally:
+            with self.dc._downloads_lock:
+                self.dc._downloads_in_progress.pop(key, None)
+                self.dc._download_meta.pop(key, None)
+
+    def test_cancelled_speedtest_does_not_start_a_new_request(self):
+        self.dc._speedtest_stop.set()
+        connection = mock.Mock()
+        with mock.patch.object(self.dc, "_HTTPConnectionIP", return_value=connection):
+            speed, error = self.dc._download_test("1.1.1.1", "video.mp4", 1024)
+        self.assertIsNone(speed)
+        self.assertEqual(error, "测速已停止")
+        connection.request.assert_not_called()
+        connection.close.assert_called_once_with()
+
+    def test_cancelled_speedtest_does_not_apply_a_new_preferred_ip(self):
+        self.dc._speedtest_stop.set()
+        results = [{"ip": "1.1.1.1", "mbps": 5.0, "error": None}]
+        with mock.patch.object(self.dc, "_measure_ips", return_value=results), \
+             mock.patch.object(self.dc, "_apply_fastest_result") as apply:
+            self.dc._speed_test_ips(["1.1.1.1"])
+        apply.assert_not_called()
+
+    def test_speedtest_rejects_an_incomplete_response(self):
+        response = FakeResponse([b"x" * 1024, b""], total=4096, status=206)
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(self.dc, "_HTTPConnectionIP", return_value=connection):
+            speed, error = self.dc._download_test("1.1.1.1", "video.mp4", 4096)
+        self.assertIsNone(speed)
+        self.assertIn("不完整", error)
+
+    def test_speedtest_timeout_keeps_a_sufficient_partial_sample(self):
+        response = FakeResponse([b"x" * 512, TimeoutError("read timed out")],
+                                total=1024, status=206)
+        connection = mock.Mock()
+        connection.getresponse.return_value = response
+        with mock.patch.object(self.dc, "_HTTPConnectionIP", return_value=connection):
+            speed, error = self.dc._download_test("1.1.1.1", "video.mp4", 1024)
+        self.assertGreater(speed, 0)
+        self.assertIsNone(error)
+
+    def test_speedtest_read_uses_remaining_total_deadline(self):
+        class TimeoutConnection:
+            def __init__(self, *args, **kwargs):
+                self.args = args
+                self.kwargs = kwargs
+                self.timeout = kwargs["timeout"]
+                self.status = 200
+                self.closed = False
+
+            def request(self, *args, **kwargs):
+                pass
+
+            def getresponse(self):
+                return self
+
+            def getheader(self, name):
+                return None
+
+            def read(self, size=None):
+                time.sleep(self.timeout)
+                raise TimeoutError("read timed out")
+
+            def close(self):
+                self.closed = True
+
+        started = time.monotonic()
+        with mock.patch.object(self.dc, "_HTTPConnectionIP", side_effect=TimeoutConnection) as factory:
+            speed, error = self.dc._download_test("1.1.1.1", "video.mp4", 8 * 1048576, timeout=0.1)
+        elapsed = time.monotonic() - started
+        self.assertIsNone(speed)
+        self.assertIn("timed out", error)
+        self.assertLess(elapsed, 0.6)
+        connection = factory.call_args
+        self.assertEqual(connection.args, ("1.1.1.1", "cdn.pypy.dance", 80))
 
     def test_duplicate_start_requests_are_serialized(self):
         entered, release = threading.Event(), threading.Event()
