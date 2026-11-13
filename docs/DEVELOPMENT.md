@@ -181,6 +181,8 @@ python -m PyInstaller --clean --noconfirm --onedir --windowed --name VRChatDance
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+CI 使用 `python tools/run_isolated_tests.py` 执行同一套完整用例。Qt 集成测试每组最多 10 项并使用新进程，避免已关闭测试窗口及延迟回调在整个套件中累积；逐项检查点会记录实际执行数量。崩溃、超时、失败、错误或跳过都会让验证失败，合并报告仍写入 `build-reports/unit-tests.json` 和 `unit-tests.log`，供打包验证使用。
+
 有价值的检查包括：主题持久化、损坏数据回退、图片范围校验、状态转换、配置校验及演示隔离。涉及服务的测试替换网络、hosts、线程入口和系统操作，不能为验证按钮启动真实服务。
 
 无显示服务的环境可用 `QT_QPA_PLATFORM=offscreen` 做 Qt 渲染检查。这不能代替 Windows 原生对话框、中文字体、125%/150% 缩放、UAC、服务启动/关闭及 VRChat 实际请求测试。

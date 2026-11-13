@@ -45,42 +45,7 @@ jobs:
         env:
           QT_QPA_PLATFORM: offscreen
         run: |
-          @'
-          import io
-          import json
-          from pathlib import Path
-          import sys
-          import unittest
-
-          log = io.StringIO()
-          suite = unittest.defaultTestLoader.discover("tests")
-          result = unittest.TextTestRunner(stream=log, verbosity=2).run(suite)
-          output = log.getvalue()
-          print(output, end="", flush=True)
-          Path("build-reports/unit-tests.log").write_text(output, encoding="utf-8")
-          report = {
-              "status": "passed" if (
-                  result.wasSuccessful() and result.testsRun and not result.skipped
-                  and not result.expectedFailures and not result.unexpectedSuccesses
-              ) else "failed",
-              "platform": sys.platform,
-              "python": sys.version,
-              "qt_platform": "offscreen",
-              "tests_run": result.testsRun,
-              "passed": result.testsRun - len(result.failures) - len(result.errors)
-                        - len(result.skipped) - len(result.expectedFailures)
-                        - len(result.unexpectedSuccesses),
-              "failures": [{"test": str(test), "traceback": detail} for test, detail in result.failures],
-              "errors": [{"test": str(test), "traceback": detail} for test, detail in result.errors],
-              "skipped": [{"test": str(test), "reason": reason} for test, reason in result.skipped],
-              "expected_failures": [str(test) for test, _ in result.expectedFailures],
-              "unexpected_successes": [str(test) for test in result.unexpectedSuccesses],
-          }
-          Path("build-reports/unit-tests.json").write_text(
-              json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-          )
-          raise SystemExit(0 if report["status"] == "passed" else 1)
-          '@ | python -
+          python tools/run_isolated_tests.py
           if ($LASTEXITCODE -ne 0) { throw "The isolated test suite failed." }
 
       - name: Build the complete Windows application
