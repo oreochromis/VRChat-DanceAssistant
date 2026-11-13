@@ -112,6 +112,7 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
     }
     Copy-Item -LiteralPath (Join-Path $projectRoot "docs\DEVELOPMENT.md") -Destination $bundleDocs
     Copy-Item -LiteralPath (Join-Path $projectRoot "docs\WINDOWS_PREVIEW.md") -Destination $bundleDocs
+    Copy-Item -LiteralPath (Join-Path $projectRoot "docs\BUGFIX_TESTING.md") -Destination $bundleDocs
 
     # Preserve the available license/notice files from installed distributions.
     $licenseCollector = @'
