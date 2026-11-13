@@ -331,6 +331,20 @@ class SupervisorTests(unittest.TestCase):
             worker_factory=factory, ready_probe=kw.get("ready_probe", lambda: (True, None)))
         return service, bridge, logs
 
+    def test_notice_is_included_in_pushed_panel_state(self):
+        worker = FakeWorker()
+        service, _, _ = self.make_service([worker])
+        service.start()
+        try:
+            service.show_notice("请先取消当前 CoolDown，再切换触发时机。")
+            self.assertTrue(wait_until(lambda: any(
+                message.get("type") == "state"
+                and message.get("data", {}).get("message") == "请先取消当前 CoolDown，再切换触发时机。"
+                for message in worker.sent
+            )))
+        finally:
+            service.stop()
+
     @staticmethod
     def crash_factory(exit_after, limit):
         """崩溃 worker 在拉起时才创建（deadline 从创建起算），用完后给常驻 worker"""

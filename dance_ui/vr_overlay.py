@@ -586,9 +586,9 @@ class VROverlayService:
     def running(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def _set_notice(self, text, duration=4.0):
+    def show_notice(self, text, duration=4.0):
         """面板上显示一条临时反馈（操作结果/失败原因），到期自动消失"""
-        self._notice = (text, time.time() + duration)
+        self._notice = (str(text), time.time() + duration)
 
     def _current_notice(self):
         if not self._notice:

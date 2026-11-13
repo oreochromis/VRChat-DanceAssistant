@@ -1342,10 +1342,13 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.cooldown_trigger.currentData(), "reload")
         window._on_vr_action("cooldown_mode")
         self.assertEqual(controller.config()["cooldown_trigger"], "next")
+        window._vr_overlay = Mock()
         window._cooldown["phase"] = "armed"
         window._on_vr_action("cooldown_mode")
         self.assertEqual(controller.config()["cooldown_trigger"], "next")
         self.assertIn("取消", window.banner.text())
+        window._vr_overlay.show_notice.assert_called_once()
+        self.assertIn("取消", window._vr_overlay.show_notice.call_args.args[0])
 
     def test_dudu_setup_and_certificate_cleanup_use_controller(self):
         from PySide6.QtWidgets import QMessageBox

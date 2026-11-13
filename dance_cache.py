@@ -4238,7 +4238,7 @@ _wd_current_song = None  # WannaDance 正在播放的歌曲（queue info 不含�
 _wd_last_queue = None    # WannaDance 最近一次排队列表
 _dudu_current_song = None
 _dudu_last_queue = None
-DUDU_STATE_RE = re.compile(r"VideoQueueHandler\.DeserializeVideoSongData\] deserialize video data: (\{.*\})")
+DUDU_STATE_RE = re.compile(r"VideoQueueHandler\.DeserializeVideoSongData\] deserialize video data:\s*(\{.*\})")
 
 
 def _reset_wd_state():

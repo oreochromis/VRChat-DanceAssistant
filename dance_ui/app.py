@@ -672,7 +672,10 @@ class MainWindow(QMainWindow, Pages):
             self.toggle_cooldown()
         elif action == "cooldown_mode":
             if self._cooldown.get("phase") != "idle":
-                self.notify("请先取消当前 CoolDown，再切换触发时机。", error=True)
+                message = "请先取消当前 CoolDown，再切换触发时机。"
+                self.notify(message, error=True)
+                if self._vr_overlay is not None:
+                    self._vr_overlay.show_notice(message)
                 return
             current = self.controller.config().get("cooldown_trigger", "next")
             self.controller.set_cooldown_trigger("reload" if current == "next" else "next")

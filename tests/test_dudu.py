@@ -174,6 +174,36 @@ class DuduTests(unittest.TestCase):
             self.dc.cooldown_disarm()
             self.dc._running = False
 
+    def test_dudu_actual_state_log_drives_reload_cooldown(self):
+        clip = self.root / "relax.mp4"
+        clip.write_bytes(b"relax")
+        self.dc._config["cooldown_file"] = str(clip)
+        self.dc._config["cooldown_trigger"] = "reload"
+        state = (
+            "2026.11.13 22:46:45 Debug      -  <color=#3EFF00>[22:46:45] : "
+            "[VideoQueueHandler.DeserializeVideoSongData] deserialize video data:  "
+            "{\"id\":2346,\"info\":\"2346. Nicole Kidman - ADÉLA \",\"user\":\"Player\","
+            "\"url\":\"https://api.dudufit.dance/api/v1/videos/2346\"}</color>"
+        )
+        items = self.dc.extract_queue_items([state])
+        self.assertEqual(items[0]["songNum"], 2346)
+        watcher = self.dc.LogWatcher()
+        watcher._on_queue(items)
+        self.dc._running = True
+        try:
+            self.assertTrue(self.dc.cooldown_arm())
+            self.assertEqual(self.dc._cooldown_exclude, "dudu_2346.mp4")
+            self.assertFalse(self.dc._cooldown_reload_ready)
+            watcher._on_queue(self.dc.extract_queue_items([state]))
+            self.assertTrue(self.dc._cooldown_reload_ready)
+            self.assertEqual(self.dc.cooldown_check("dudu_2346.mp4"), str(clip))
+            self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
+            self.dc.cooldown_disarm()
+            self.assertIsNone(self.dc.cooldown_check("dudu_2346.mp4"))
+        finally:
+            self.dc.cooldown_disarm()
+            self.dc._running = False
+
     def test_enable_starts_service_even_when_previously_stopped(self):
         with mock.patch.object(self.dc, "is_running", side_effect=[False, True]), \
              mock.patch.object(self.dc, "update_config"), \
