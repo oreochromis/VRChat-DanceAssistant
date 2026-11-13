@@ -151,7 +151,7 @@ _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_so
                   "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
                   "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json", "wanna-favorites.json",
                   "profile.json", "profile-avatar.png", "avatar-index.json",
-                  "cdn-favorites.json", "cdn-pool.json", "wannadance-catalog.json", "dudu-catalog.json")
+                  "cdn-favorites.json", "cdn-favorites-migration.json", "cdn-pool.json", "wannadance-catalog.json", "dudu-catalog.json")
 _STORAGE_DIRS = ("avatars", "record-backups", "dudu-https")
 
 
@@ -247,6 +247,7 @@ DEFAULT_CONFIG = {
 }
 
 _config = {}
+_cdn_selection_revision = 0
 _origin_ips = {}             # host -> [ip, ...]
 _downloads_in_progress = {}  # 目标路径 -> thread
 _downloads_lock = threading.RLock()
@@ -752,7 +753,7 @@ def play_history_stats(start_ts=None, end_ts=None, kind=None, player=None):
 # ---------------- 配置 ----------------
 
 def load_config():
-    global _config
+    global _config, _cdn_selection_revision
     _migrate_legacy_portable_data()
     path = os.path.join(data_dir(), "config.json")
     missing = not os.path.exists(path)
@@ -798,6 +799,7 @@ def load_config():
             warnings.append(f"DuDu 曲库目录不可用，其永久保存暂缓生效: {e}")
     with _config_lock:
         _config = cfg
+        _cdn_selection_revision += 1
     if _same_directory(cfg["cache_dir"], cfg.get("library_dir")):
         warnings.append("缓存目录与永久曲库相同，已禁用服务启动与缓存清理，请在设置中分开保存目录")
     if _same_directory(cfg["cache_dir"], cfg.get("wd_library_dir")):
@@ -916,22 +918,27 @@ def save_config():
         return False
 
 
-def update_config(patch):
+def update_config(patch, *, expected_cdn_revision=None, require_auto_cdn=False):
     """验证整份配置并原子保存；失败时不修改内存或原配置文件。"""
-    global _config
+    global _config, _cdn_selection_revision
     if not isinstance(patch, dict):
         raise ValueError("配置更新必须是对象")
     unknown = set(patch) - set(DEFAULT_CONFIG)
     if unknown:
         raise ValueError("未知配置项: " + ", ".join(sorted(unknown)))
     with _lifecycle_lock, _config_lock, _downloads_lock, _cooldown_lock:
+        if expected_cdn_revision is not None and (
+                _cdn_selection_revision != expected_cdn_revision
+                or (require_auto_cdn and (not _config.get("auto_prefer_cdn", True)
+                                         or _stop_event.is_set()))):
+            return {"restart_required": False, "changed": []}
         previous = get_config()
         cfg = _validated_config({**previous, **copy.deepcopy(patch)})
         changed = [name for name in patch if previous.get(name) != cfg[name]]
         if not changed:
             return {"restart_required": False, "changed": []}
         paths_changed = bool({"cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir"} & set(changed))
-        busy = bool(_downloads_in_progress) or rebuilding() or verifying()
+        busy = bool(_downloads_in_progress) or bool(_preload_dl_active) or rebuilding() or verifying()
         if paths_changed and busy:
             # 目录查找/保存路径每次现读配置，运行中改目录即时生效；
             # 仅在途下载与曲库任务已按旧路径落盘，需等其结束
@@ -950,6 +957,8 @@ def update_config(patch):
                 os.makedirs(cfg[name], exist_ok=True)
         _write_config(cfg)
         _config = cfg
+        if {"preferred_cdn_ip", "auto_prefer_cdn"} & set(changed):
+            _cdn_selection_revision += 1
     if _running:
         # 运行中改配置后立即重算暂缓类警告，状态灯提示保持准确
         _refresh_deferral_warnings()
@@ -1515,7 +1524,7 @@ def download_dudu(song_id):
         total = int(response.getheader("Content-Length") or 0)
         with open(part, "wb") as handle:
             while not _cancelled(run_id):
-                chunk = response.read(256 * 1024)
+                chunk = _read_download_chunk(response)
                 if not chunk:
                     eof = True
                     break
@@ -1553,7 +1562,7 @@ def start_dudu_download(song_id):
     with _downloads_lock:
         if _canonical_path(target) in _downloads_in_progress:
             return
-    threading.Thread(target=download_dudu, args=(song_id,), daemon=True).start()
+    _queue_serial_download("dudu", None, song_id)
 
 
 # ---------------- 曲库浏览（GUI 曲库管理窗口） ----------------
@@ -1635,8 +1644,10 @@ def refresh_wd_favorites():
                 lines = handle.read().splitlines()
         except OSError:
             continue
-        if record_wd_favorites(lines):
-            return True
+        # An unchanged (including empty) latest snapshot is still authoritative.
+        # Do not continue into an older session and restore its stale favorites.
+        if any(WD_FAVORITE_RE.search(line) for line in lines):
+            return record_wd_favorites(lines)
     return False
 
 
@@ -1910,13 +1921,14 @@ def library_missing(kind):
     if scan is None:
         return None
     have = {s["id"] for s in scan["songs"]}
+    favorites = sorted(get_wd_favorites()) if kind == "wd" else []
     names = {}
     dead = []
     if kind == "dudu":
         catalog = _ensure_dudu_catalog()
         if catalog is None:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"]}
+                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = set(catalog)
         source = "DuDu 官方清单"
         for sid in expected - have:
@@ -1930,7 +1942,7 @@ def library_missing(kind):
         catalog = _ensure_wd_catalog()
         if catalog is None:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"]}
+                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = {sid for sid, item in catalog.items() if not item.get("disable_public")}
         source = "WannaDance 官方清单"
         for sid in expected - have:
@@ -1949,7 +1961,7 @@ def library_missing(kind):
                 ids = set(_bundle_ids)
         if not ids:
             return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"]}
+                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = ids
         source = "官方歌单"
         _ensure_dead_loaded()
@@ -1963,7 +1975,7 @@ def library_missing(kind):
                 names[sid] = nm
     return {"source": source, "expected": len(expected),
             "missing": sorted(expected - have), "dead": dead,
-            "names": names, "dir": scan["dir"]}
+            "names": names, "dir": scan["dir"], "kind": kind, "favorites": favorites}
 
 
 def delete_library_songs(kind, ids):
@@ -2781,7 +2793,7 @@ def download_file(filename, song_id=None, stall_timeout=None):
                     error = f"连续 {stall_timeout} 秒没有新数据"
                     log(f"歌单直取下载 {filename} {error}，本次先尝试后续歌曲")
                     break
-                chunk = resp.read(256 * 1024)
+                chunk = _read_download_chunk(resp)
                 if not chunk:
                     eof = True
                     break
@@ -2822,7 +2834,7 @@ def start_background_download(filename, song_id=None):
     with _downloads_lock:
         if _canonical_path(target) in _downloads_in_progress:
             return
-    threading.Thread(target=download_file, args=(filename, song_id), daemon=True).start()
+    _queue_serial_download("cdn", filename, song_id)
 
 
 def download_wd(song_id):
@@ -2849,7 +2861,7 @@ def download_wd(song_id):
         total = int(resp.getheader("Content-Length") or 0)
         with open(part, "wb") as f:
             while not _cancelled(run_id):
-                chunk = resp.read(256 * 1024)
+                chunk = _read_download_chunk(resp)
                 if not chunk:
                     eof = True
                     break
@@ -2887,7 +2899,7 @@ def start_wd_download(song_id):
     with _downloads_lock:
         if _canonical_path(target) in _downloads_in_progress:
             return
-    threading.Thread(target=download_wd, args=(song_id,), daemon=True).start()
+    _queue_serial_download("wd", None, song_id)
 
 
 # ---------------- YouTube 源录流（从 VRChat 日志捕获播放中的直链） ----------------
@@ -2968,7 +2980,7 @@ def start_googlevideo_download(song_id, url):
     with _downloads_lock:
         if _canonical_path(target) in _downloads_in_progress:
             return
-    threading.Thread(target=download_googlevideo, args=(song_id, url), daemon=True).start()
+    _queue_serial_download("youtube", url, song_id)
 
 
 # ---------------- 缓存目录清理 (LRU，曲库目录不清理) ----------------
@@ -3493,7 +3505,7 @@ def _quick_speedtest(candidates, filename):
     return _measure_ips(finalists, filename)
 
 
-def _apply_fastest_result(results):
+def _apply_fastest_result(results, *, selection_revision=None, require_auto=False):
     valid = [item for item in results if not item.get("error") and (item.get("mbps") or 0) > 0]
     if not valid:
         log("CDN 优选：没有可用的测速结果，保持当前设置")
@@ -3509,7 +3521,11 @@ def _apply_fastest_result(results):
             f"{best['ip']}（{best['mbps']:.2f} MB/s），保持不变")
         return False
     try:
-        update_config({"preferred_cdn_ip": best["ip"]})
+        updated = update_config({"preferred_cdn_ip": best["ip"]},
+                                expected_cdn_revision=selection_revision,
+                                require_auto_cdn=require_auto)
+        if not updated["changed"]:
+            return False
     except Exception as error:
         log(f"CDN 优选：最快 {best['ip']}（{best['mbps']:.2f} MB/s）写入配置失败: {error}")
         return False
@@ -3519,7 +3535,7 @@ def _apply_fastest_result(results):
 
 
 SLOW_WINDOW_SECONDS = 10.0
-SLOW_WINDOW_BYTES = 2 * 1048576
+SLOW_WINDOW_BYTES = 64 * 1024
 SLOW_THRESHOLD_MBPS = 0.75
 SLOW_RECHECK_BYTES = 2 * 1048576
 SLOW_RECHECK_COOLDOWN = 300.0
@@ -3529,7 +3545,7 @@ _slow_check_running = False
 _slow_check_after = 0.0
 
 
-def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None):
+def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None, selection_revision=None):
     global _slow_check_running
     if preferred_at_trigger is None:
         preferred_at_trigger = get_config().get("preferred_cdn_ip") or ""
@@ -3572,7 +3588,10 @@ def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None):
         if previous != preferred_at_trigger:
             log("CDN 慢速复测期间用户已更改节点，放弃自动覆盖")
             return
-        update_config({"preferred_cdn_ip": best["ip"]})
+        updated = update_config({"preferred_cdn_ip": best["ip"]},
+                                expected_cdn_revision=selection_revision, require_auto_cdn=True)
+        if not updated["changed"]:
+            return
         log(f"CDN 慢速恢复：后续请求改用 {best['ip']}（{best['mbps']:.2f} MB/s），"
             f"当前连接不中断" + (f"，原节点 {previous}" if previous else ""))
     except Exception as error:
@@ -3591,8 +3610,10 @@ def _maybe_recheck_slow_connection(conn, speed):
         _slow_check_running = True
         _slow_check_after = now + SLOW_RECHECK_COOLDOWN
     try:
-        preferred = get_config().get("preferred_cdn_ip") or ""
-        _spawn_service_thread(_slow_recheck, (conn._selected_ip, speed, preferred))
+        with _config_lock:
+            preferred = _config.get("preferred_cdn_ip") or ""
+            revision = _cdn_selection_revision
+        _spawn_service_thread(_slow_recheck, (conn._selected_ip, speed, preferred, revision))
     except Exception:
         with _slow_check_lock:
             _slow_check_running = False
@@ -3627,6 +3648,13 @@ def _note_upstream_progress(conn, byte_count):
         _maybe_recheck_slow_connection(conn, speed)
 
 
+def _read_download_chunk(response):
+    # read(n) waits for n bytes; read1 returns available data after one socket
+    # read, so a slow connection can be observed without collecting 256 KiB.
+    reader = getattr(response, "read1", None)
+    return reader(64 * 1024) if callable(reader) else response.read(64 * 1024)
+
+
 def _run_tracked_speedtest(function, *args):
     if get_runtime_state().get("phase") != "stopping":
         _speedtest_stop.clear()
@@ -3646,6 +3674,8 @@ def _run_tracked_speedtest(function, *args):
 
 def _speed_test_ips(ips=None):
     """收藏测速直接完整测速；快速扫描合并当前、DNS、收藏、历史与新随机节点。"""
+    with _config_lock:
+        revision = _cdn_selection_revision
     filename = _pick_test_file()
     pref = (get_config().get("preferred_cdn_ip") or "").strip()
     if ips is not None:
@@ -3666,7 +3696,7 @@ def _speed_test_ips(ips=None):
     else:
         results = _measure_ips(candidates, filename)
     if not _speedtest_stop.is_set():
-        _apply_fastest_result(results)
+        _apply_fastest_result(results, selection_revision=revision)
     emit("speedtest_done", results=results)
 
 
@@ -3676,6 +3706,10 @@ def speed_test_ips(ips=None):
 
 def auto_speedtest_apply():
     """服务启动后自动做一次快速测速，只在最快节点优于当前节点时切换。"""
+    with _config_lock:
+        revision = _cdn_selection_revision
+        if not _config.get("auto_prefer_cdn", True):
+            return
     if _stop_event.wait(3):  # 让位给启动解析与首批下载
         return
     log("自动优选 CDN：正在汇总当前、DNS、收藏、历史候选与新节点...")
@@ -3687,7 +3721,7 @@ def auto_speedtest_apply():
     results = _quick_speedtest(candidates, filename)
     if _stop_event.is_set():
         return
-    _apply_fastest_result(results)
+    _apply_fastest_result(results, selection_revision=revision, require_auto=True)
     emit("speedtest_done", results=results)
 
 
@@ -3717,7 +3751,9 @@ def _sample_cf_ips(n):
 
 
 def _full_scan_ips():
-    """全部扫描：从 Cloudflare 全段随机抽样快速探测，筛出最快的一批再做完整下载测速"""
+    """抽样探测 Cloudflare 节点，再对候选做完整测速。"""
+    with _config_lock:
+        revision = _cdn_selection_revision
     filename = _pick_test_file()
     samples = _sample_cf_ips(FULLSCAN_SAMPLES)
     pref = (get_config().get("preferred_cdn_ip") or "").strip()
@@ -3753,7 +3789,7 @@ def _full_scan_ips():
     log(f"初筛完成，对 {len(top)} 个候选做 {_speedtest_sample_bytes() // 1048576}MB 完整测速...")
     results = _measure_ips([item["ip"] for item in top], filename)
     if not _speedtest_stop.is_set():
-        _apply_fastest_result(results)
+        _apply_fastest_result(results, selection_revision=revision)
     emit("speedtest_done", results=results)
 
 
@@ -4066,7 +4102,7 @@ class DanceHandler(BaseHTTPRequestHandler):
                 meta = _begin_download(target, name, dudu_id if dudu_id is not None else wd_id, source)
             if meta is None:
                 while not _cancelled(run_id):
-                    chunk = resp.read(256 * 1024)
+                    chunk = _read_download_chunk(resp)
                     if not chunk:
                         break
                     _note_upstream_progress(conn, len(chunk))
@@ -4078,7 +4114,7 @@ class DanceHandler(BaseHTTPRequestHandler):
             eof = False
             with open(part, "wb") as f:
                 while not _cancelled(run_id):
-                    chunk = resp.read(256 * 1024)
+                    chunk = _read_download_chunk(resp)
                     if not chunk:
                         eof = True
                         break
@@ -4402,6 +4438,7 @@ YOUTUBE_DIRECT_STALL_SECONDS = 30
 
 
 def submit_preload(items):
+    run_id = _run_id
     count = int(_config["preload_count"]) + 1
     tasks = []
     for it in items[:count]:
@@ -4419,28 +4456,32 @@ def submit_preload(items):
             if not wd_local_path(sn):
                 tasks.append(("wd", None, sn, None))
             continue
-        if in_library(sn) or yt_local_path(sn):
+        if in_library(sn):
             continue
         kind, payload = song_route(sn)
+        if kind == "yt" and yt_local_path(sn):
+            continue
         youtube_direct = kind == "yt" and _config.get("bundle_direct", True)
         if kind is None or youtube_direct:
             resolve_video_filename(sn)
             kind, payload = song_route(sn)
         if kind == "cdn" and not is_cached(payload):
             tasks.append(("cdn", payload, sn, YOUTUBE_DIRECT_STALL_SECONDS if youtube_direct else None))
-    if _config.get("preload_sequential", True):
-        # 串行模式：整体替换待下载列表，正在下载的那首继续；优先级永远跟随最新队列
-        with _preload_dl_lock:
-            _preload_dl_items[:] = tasks
-        _preload_dl_wake.set()
-    else:
-        for kind, key, sn, _ in tasks:
-            if kind == "dudu":
-                start_dudu_download(sn)
-            elif kind == "wd":
-                start_wd_download(sn)
-            else:
-                start_background_download(key, sn)
+    # Both modes share a bounded dispatcher. Replace stale queue preloads, while
+    # keeping full-cache jobs requested by the player ahead of upcoming songs.
+    with _preload_dl_lock:
+        if _cancelled(run_id):
+            return
+        pending = [task for task in _preload_dl_items if _preload_task_id(task) in _preload_dl_priority]
+        seen = set(_preload_dl_active)
+        _preload_dl_items[:] = []
+        for task in pending + tasks:
+            identity = _preload_key(task)
+            if identity not in seen:
+                _preload_dl_items.append(task)
+                seen.add(identity)
+        _preload_dl_priority.intersection_update(_preload_task_id(task) for task in _preload_dl_items)
+    _preload_dl_wake.set()
     refresh_queue_state()
 
 
@@ -4449,12 +4490,26 @@ _preload_pending = None
 _preload_wake = threading.Event()
 
 _preload_dl_lock = threading.Lock()
-_preload_dl_items = []       # 串行预载待下载队列，按队列优先级排序
+_preload_dl_items = []       # Ordered pending jobs; only dispatched jobs own threads.
 _preload_dl_wake = threading.Event()
+_preload_dl_active = set()   # Canonical targets reserved before starting a worker.
+_preload_dl_priority = set() # Pending full-cache jobs requested by actual playback.
 
 
 def _preload_target(kind, key, song_id):
+    if kind == "youtube":
+        return yt_target_path(song_id)
     return dudu_target_path(song_id) if kind == "dudu" else wd_target_path(song_id) if kind == "wd" else target_path(key, song_id)
+
+
+def _preload_key(task):
+    return _canonical_path(_preload_target(*task[:3]))
+
+
+def _preload_task_id(task):
+    # Pending jobs follow a new destination when directories change while idle.
+    # Their playback priority must not depend on the old absolute target path.
+    return task[:3]
 
 
 def _wait_for_active_download(target):
@@ -4467,27 +4522,30 @@ def _wait_for_active_download(target):
 
 
 def _queue_serial_download(kind, key, song_id, stall_timeout=None):
+    run_id = _run_id
+    if _stop_event.is_set():
+        return
     target = _preload_target(kind, key, song_id)
+    identity = _canonical_path(target)
     with _downloads_lock:
-        if _canonical_path(target) in _downloads_in_progress:
+        if identity in _downloads_in_progress:
             return
     task = (kind, key, song_id, stall_timeout)
     with _preload_dl_lock:
+        if _cancelled(run_id) or identity in _preload_dl_active:
+            return
+        for item in _preload_dl_items:
+            if _preload_key(item) == identity:
+                _preload_dl_priority.discard(_preload_task_id(item))
         _preload_dl_items[:] = [item for item in _preload_dl_items
-                                if not (item[0] == kind and item[1] == key and item[2] == song_id)]
+                                if _preload_key(item) != identity]
         _preload_dl_items.insert(0, task)
+        _preload_dl_priority.add(_preload_task_id(task))
     _preload_dl_wake.set()
 
 
-def _preload_download_loop():
-    """串行预载包含播放中的完整缓存任务；当前任务未结束时不会并行下载下一首。"""
-    while not _stop_event.is_set():
-        with _preload_dl_lock:
-            task = _preload_dl_items.pop(0) if _preload_dl_items else None
-        if task is None:
-            _preload_dl_wake.wait(1.0)
-            _preload_dl_wake.clear()
-            continue
+def _execute_preload_download(task, identity):
+    try:
         if _stop_event.is_set():
             return
         kind, key, song_id, stall_timeout = task
@@ -4496,11 +4554,49 @@ def _preload_download_loop():
                 download_dudu(song_id)
             elif kind == "wd":
                 download_wd(song_id)
+            elif kind == "youtube":
+                download_googlevideo(song_id, key)
             else:
                 download_file(key, song_id, stall_timeout=stall_timeout)
         except Exception as e:
             log(f"预载下载出错（{key or song_id}）: {e}")
         _wait_for_active_download(_preload_target(kind, key, song_id))
+    finally:
+        with _preload_dl_lock:
+            _preload_dl_active.discard(identity)
+        _preload_dl_wake.set()
+        thread = threading.current_thread()
+        if thread in _service_threads:
+            _service_threads.remove(thread)
+
+
+def _preload_download_loop():
+    """Dispatch only as many background jobs as the current concurrency permits.
+
+    Sequential mode waits for the active full-cache job, including one started
+    by a playback request. Foreground proxy connections are never gated here.
+    """
+    while not _stop_event.is_set():
+        with _config_lock, _preload_dl_lock:
+            limit = 1 if _config.get("preload_sequential", True) else max(1, int(_config["max_parallel"]))
+            task = None
+            if len(_preload_dl_active) < limit and _preload_dl_items:
+                task = _preload_dl_items.pop(0)
+                identity = _preload_key(task)
+                _preload_dl_priority.discard(_preload_task_id(task))
+                if identity in _preload_dl_active:
+                    continue
+                _preload_dl_active.add(identity)
+        if task is not None:
+            try:
+                _spawn_service_thread(_execute_preload_download, (task, identity))
+            except Exception:
+                with _preload_dl_lock:
+                    _preload_dl_active.discard(identity)
+                raise
+            continue
+        _preload_dl_wake.wait(.2)
+        _preload_dl_wake.clear()
 
 
 def _preload_worker_loop():
@@ -4549,10 +4645,12 @@ def _preload_retry_loop():
                 needs_retry = _config.get("dudu_enabled") and not dudu_local_path(sn)
             elif it.get("wd"):
                 needs_retry = not wd_local_path(sn)
-            elif in_library(sn) or yt_local_path(sn):
+            elif in_library(sn):
                 continue
             else:
                 kind, payload = song_route(sn)
+                if kind == "yt" and yt_local_path(sn):
+                    continue
                 needs_retry = (kind is None or (kind == "cdn" and not is_cached(payload))
                                or (kind == "yt" and _config.get("bundle_direct", True)))
             if needs_retry:
@@ -4993,6 +5091,9 @@ def start_services():
             if _tunnel_sock is not None:
                 _spawn_service_thread(_tunnel_loop, (_tunnel_sock, list(_origin_ips[API_HOST])))
             _spawn_service_thread(_mapping_flush_loop)
+            # Passive Range requests also enqueue complete-cache jobs, even if
+            # VRChat has not created its log directory yet.
+            _spawn_service_thread(_preload_download_loop)
             watcher_available = os.path.isdir(VRC_LOG_DIR)
             _set_runtime_state(youtube_available=yt_mode, queue_watcher_available=watcher_available)
             if watcher_available:
@@ -5000,7 +5101,6 @@ def start_services():
                 _service_threads.append(_watcher)
                 _watcher.start()
                 _spawn_service_thread(_preload_worker_loop)
-                _spawn_service_thread(_preload_download_loop)
                 _spawn_service_thread(_preload_retry_loop)
             else:
                 warnings.append("未找到 VRChat 日志目录，当前仅提供被动缓存")
@@ -5114,6 +5214,7 @@ def stop_services():
             _preload_pending = None
         with _preload_dl_lock:
             _preload_dl_items[:] = []
+            _preload_dl_priority.clear()
         _reset_wd_state()
         refresh_queue_state()
         return error

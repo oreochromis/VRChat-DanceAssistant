@@ -1,5 +1,7 @@
 # VRChat 跳舞房助手 · Windows 版
 
+**当前分支为 v4.1.1-bugfix.1 修复测试版。** 实机回归步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。[下载测试包](https://github.com/oreochromis/VRChat-DanceAssistant/releases/tag/v4.1.1-bugfix.1)。
+
 <img src="assets/app-icon.png" width="96" alt="VRChat 跳舞房助手图标">
 
 为 VRChat 的 PyPyDance / WannaDance / DuDu FitDance 跳舞房提供本地视频缓存、队列预加载和永久曲库管理。**本软件仅支持 Windows x64。**
@@ -119,7 +121,8 @@ Cool Down 只影响本机，不控制房间播放或其他玩家的画面。
 | --- | --- |
 | `config.json`、`mapping.json` | 默认在当前用户应用数据目录；切换为便携模式后与 exe 同级 |
 | 临时缓存、永久曲库 | 由业务配置中的目录决定 |
-| 外观、个人背景、CDN 收藏、SteamVR 注册文件 | 当前 Windows 用户的应用数据目录 |
+| CDN 收藏、候选池 | 与 `config.json` 使用相同的数据目录，随数据保存位置迁移 |
+| 外观、个人背景、SteamVR 注册文件 | 当前 Windows 用户的应用数据目录 |
 | 演示外观与收藏 | 默认使用临时目录；显式指定 `--state-dir` 时保存在该目录 |
 
 更换程序目录不会自动搬迁曲库。只备份 exe 也不会包含配置、视频或个人外观数据。
