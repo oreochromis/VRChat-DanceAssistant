@@ -74,8 +74,7 @@ class MainWindow(QMainWindow, Pages):
         install_input_wheel_filter(QApplication.instance())
         self.controller, self.store = controller, store
         self.controller.configure_steamvr(store.root_dir)
-        from .cdn_favorites import CDNFavorites
-        self.cdn_favorites = CDNFavorites(store.root_dir)
+        self._load_cdn_favorites()
         self._syncing = False
         self._dirty = {"storage": False, "settings": False}
         self.apply_buttons, self.apply_hints = {}, {}
@@ -678,6 +677,14 @@ class MainWindow(QMainWindow, Pages):
         if index >= 0:
             self.storage_mode.setCurrentIndex(index)
         self.storage_mode_hint.setText("当前位置：" + info.get("active_dir", "?"))
+
+    def _load_cdn_favorites(self):
+        from .cdn_favorites import CDNFavorites
+        if self.controller.demo:
+            self.cdn_favorites = CDNFavorites(self.store.root_dir)
+        else:
+            self.cdn_favorites = CDNFavorites(self.controller.storage_info()["active_dir"],
+                                              legacy_roots=(self.store.root_dir,))
 
     def sync_vrcx_now(self):
         if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
@@ -1421,6 +1428,8 @@ class MainWindow(QMainWindow, Pages):
             self._write_diagnostics(result)
         elif operation == "storage_mode":
             self.controller.reload_config()
+            self._load_cdn_favorites()
+            self.render_favorites()
             self.load_fields()
             info = result or {}
             self.notify("数据保存位置已切换：" + str(info.get("active_dir", "")))

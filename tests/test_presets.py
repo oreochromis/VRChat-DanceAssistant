@@ -29,7 +29,7 @@ def small_png():
 
 class ThemeUpgradeTests(unittest.TestCase):
     def setUp(self):
-        self.windows_theme_patch = patch("winreg.QueryValueEx", return_value=1)
+        self.windows_theme_patch = patch("dance_ui.theme._windows_dark_mode", return_value=False)
         self.windows_theme_patch.start()
         self.addCleanup(self.windows_theme_patch.stop)
         self.temp = tempfile.TemporaryDirectory()

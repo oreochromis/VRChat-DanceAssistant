@@ -58,7 +58,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.patches = ExitStack()
-        self.patches.enter_context(patch("winreg.QueryValueEx", return_value=1))
+        self.patches.enter_context(patch("dance_ui.theme._windows_dark_mode", return_value=False))
         self.patches.enter_context(patch("dance_ui.app.set_windows_application_identity"))
         self.addCleanup(self.patches.close)
         self.windows = []
@@ -1140,7 +1140,10 @@ class UIIntegrationTests(unittest.TestCase):
             return original_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=blocked_import), \
-                patch("ctypes.windll.user32.MessageBoxW", return_value=1) as dialog:
+                patch.object(dance_cache_gui, "os", SimpleNamespace(name="nt")), \
+                patch("ctypes.windll", create=True) as windows:
+            dialog = windows.user32.MessageBoxW
+            dialog.return_value = 1
             self.assertEqual(dance_cache_gui.main(), 1)
         self.assertIn("DLL load failed", dialog.call_args.args[1])
         self.assertIn("requirements.txt", dialog.call_args.args[1])

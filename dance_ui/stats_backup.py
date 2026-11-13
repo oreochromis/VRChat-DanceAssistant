@@ -64,9 +64,10 @@ def _merge_history(path: Path, incoming_text: str):
     existing_text = path.read_text(encoding="utf-8") if path.is_file() else ""
     existing = _history_entries(existing_text)
     incoming = _history_entries(incoming_text)
-    added = len(incoming.keys() - existing.keys())
+    additions = {key: value for key, value in incoming.items() if key not in existing}
+    added = len(additions)
     if added:
-        existing.update(incoming)
+        existing.update(additions)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:
@@ -101,9 +102,10 @@ def _room_event_entries(text):
 def _merge_room_events(path, incoming_text):
     existing = _room_event_entries(path.read_text(encoding="utf-8") if path.is_file() else "")
     incoming = _room_event_entries(incoming_text)
-    added = len(incoming.keys() - existing.keys())
+    additions = {key: value for key, value in incoming.items() if key not in existing}
+    added = len(additions)
     if added:
-        existing.update(incoming)
+        existing.update(additions)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         with temporary.open("w", encoding="utf-8") as handle:

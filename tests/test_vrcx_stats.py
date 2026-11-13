@@ -178,6 +178,68 @@ class VRCXStatsTests(unittest.TestCase):
         daily = vrcx_stats._daily_play_stats(intervals, entered.timestamp(), left.timestamp() + 1)
         self.assertEqual(daily, [{"day": "2026-08-31", "seconds": 1123}])
 
+    def test_activity_history_is_not_rescanned_for_each_room(self):
+        class CountingActivity(list):
+            visits = 0
+
+            def __iter__(self):
+                for value in super().__iter__():
+                    self.visits += 1
+                    yield value
+
+        world = next(iter(vrcx_stats.DANCE_WORLD_IDS))
+        start = ts(0)
+        rows = [(datetime.fromtimestamp(start + index * 1200, timezone.utc).isoformat(),
+                 f"room-{index}", world) for index in range(1000)]
+        activities = CountingActivity(start + index * 60 for index in range(20000))
+        intervals = vrcx_stats._own_intervals(rows, start + 1200000, activities)
+        self.assertEqual(len(intervals), 1000)
+        self.assertEqual(intervals["room-999"], [(start + 1198800, start + 1200000)])
+        self.assertLessEqual(activities.visits, 2 * len(activities),
+                             "The same activity history was walked again for each room")
+
+    def test_own_leaves_choose_first_matching_or_unspecified_location_after_entrance(self):
+        world = next(iter(vrcx_stats.DANCE_WORLD_IDS))
+        rows = [(iso(9), "room", world), (iso(12), "other", "wrld_other")]
+        activity = [ts(9, minute) for minute in (5, 10)]
+        leaves = [(ts(8), "room"), (ts(9, 6), "unrelated"), (ts(9, 15), ""), (ts(10), "room")]
+        intervals = vrcx_stats._own_intervals(rows, ts(12), activity, leaves)
+        self.assertEqual(intervals, {"room": [(ts(9), ts(9, 15))]})
+
+    def test_daily_stats_use_calendar_midnight_on_dst_transition_days(self):
+        # Model the actual Eastern offsets without requiring Windows tzdata or
+        # changing the process timezone used by other tests and worker threads.
+        for month, day, old_offset, new_offset, transition_hour, expected_hours in (
+                (11, 1, -4, -5, 6, 25), (3, 8, -5, -4, 7, 23)):
+            transition = datetime(2026, month, day, transition_hour, tzinfo=timezone.utc).timestamp()
+            before, after = timezone(timedelta(hours=old_offset)), timezone(timedelta(hours=new_offset))
+
+            class LocalCalendar:
+                reads = 0
+
+                def __new__(cls, year, month_value, day_value):
+                    zone = before if (year, month_value, day_value) <= (2026, month, day) else after
+                    return datetime(year, month_value, day_value, tzinfo=zone)
+
+                @classmethod
+                def fromtimestamp(cls, timestamp):
+                    cls.reads += 1
+                    if cls.reads > 10:
+                        raise AssertionError("Daily statistics did not advance across local midnight")
+                    return datetime.fromtimestamp(timestamp, before if timestamp < transition else after)
+
+            start = datetime(2026, month, day, tzinfo=before).timestamp()
+            end = (datetime(2026, month, day) + timedelta(days=1)).replace(tzinfo=after).timestamp()
+            with self.subTest(day=(month, day)), patch.object(vrcx_stats, "datetime", LocalCalendar):
+                self.assertEqual(vrcx_stats._daily_play_stats({"room": [(start, end)]}, start, end),
+                                 [{"day": f"2026-{month:02d}-{day:02d}", "seconds": expected_hours * 3600}])
+            late_start = datetime(2026, month, day, 22, 55, tzinfo=after).timestamp()
+            late_end = datetime(2026, month, day, 23, 10, tzinfo=after).timestamp()
+            LocalCalendar.reads = 0
+            with patch.object(vrcx_stats, "datetime", LocalCalendar):
+                self.assertEqual(vrcx_stats._daily_play_stats({"room": [(late_start, late_end)]}, start, end),
+                                 [{"day": f"2026-{month:02d}-{day:02d}", "seconds": 900}])
+
     def test_native_room_events_allow_statistics_without_vrcx(self):
         self.path.unlink()
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
@@ -287,14 +349,14 @@ class VRCXStatsTests(unittest.TestCase):
     def test_saved_path_and_standard_location(self):
         with patch.object(vrcx_stats.core, "data_dir", return_value=str(self.root / "settings")):
             vrcx_stats.save_vrcx_path(self.path)
-            self.assertEqual(vrcx_stats.saved_vrcx_path(), self.path)
-            self.assertEqual(vrcx_stats.resolve_vrcx_path(), self.path)
+            self.assertEqual(vrcx_stats.saved_vrcx_path(), self.path.resolve())
+            self.assertEqual(vrcx_stats.resolve_vrcx_path(), self.path.resolve())
             vrcx_stats.save_self_name("本人名称")
             self.assertEqual(vrcx_stats.saved_self_name(), "本人名称")
             vrcx_stats.save_vrcx_path(self.path)
             self.assertEqual(vrcx_stats.saved_self_name(), "本人名称")
             saved = json.loads((self.root / "settings" / vrcx_stats.SETTINGS_FILENAME).read_text(encoding="utf-8"))
-            self.assertEqual(saved["path"], str(self.path))
+            self.assertEqual(saved["path"], str(self.path.resolve()))
         with patch.dict(os.environ, {"APPDATA": str(self.root)}):
             self.assertEqual(vrcx_stats.default_vrcx_path(), self.root / "VRCX" / "VRCX.sqlite3")
 
