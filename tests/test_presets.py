@@ -223,7 +223,9 @@ class ThemeUpgradeTests(unittest.TestCase):
         module_path = package / "theme.py"
         shutil.copyfile(Path(theme_module.__file__), module_path)
         before = module_path.read_bytes()
-        with patch.object(sys, "frozen", True, create=True), patch.object(sys, "_MEIPASS", str(internal), create=True):
+        with (patch.object(sys, "frozen", True, create=True),
+              patch.object(sys, "_MEIPASS", str(internal), create=True),
+              patch("winreg.QueryValueEx", return_value=(1, 0))):
             namespace = runpy.run_path(str(module_path))
             store = namespace["ThemeStore"](self.root / "windows-user-data")
             self.assertEqual(store.active, ensure_theme_contrast(BUILTIN_THEMES["light"], DEFAULT_PREFERENCES))
