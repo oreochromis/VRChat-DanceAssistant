@@ -1141,6 +1141,40 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([event["phase"] for event in self.events_of("cooldown")], ["armed", "serving", "idle"])
         self.dc._running = False
 
+    def test_cancel_stops_active_cooldown_stream_and_restores_original(self):
+        clip = self.root / "relax.mp4"
+        clip.write_bytes(b"R" * (512 * 1024))
+        original = self.cache / "next.mp4"
+        original.write_bytes(b"original video")
+        self.dc._config["cooldown_file"] = str(clip)
+        self.queue_song()
+        self.dc.mark_mapping(2, "next.mp4")
+        self.dc._running = True
+        self.assertTrue(self.dc.cooldown_arm())
+        self.assertEqual(self.dc.cooldown_check("next.mp4"), str(clip))
+
+        writes = []
+        dc = self.dc
+
+        class CancelOnFirstWrite:
+            def write(self, data):
+                writes.append(data)
+                dc.cooldown_disarm()
+
+        handler = self.proxy()
+        handler.path = "/next.mp4"
+        handler.wfile = CancelOnFirstWrite()
+        handler._serve_file(str(clip), cooldown_name="next.mp4")
+        self.assertEqual(len(writes), 1)
+        self.assertTrue(handler.close_connection)
+        self.assertIsNone(self.dc.cooldown_check("next.mp4"))
+
+        restored = self.proxy()
+        restored.path = "/next.mp4"
+        restored._serve_file(str(original))
+        self.assertEqual(restored.wfile.getvalue(), b"original video")
+        self.dc._running = False
+
     def test_cooldown_reload_follows_the_current_song_and_triggers_once(self):
         self.queue_song()
         clip = self.root / "relax.mp4"
@@ -1163,6 +1197,22 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.dc.cooldown_check("three.mp4"), str(clip))
         self.assertIsNone(self.dc.cooldown_check("after.mp4"))
         self.assertEqual(self.dc.get_cooldown_state()["phase"], "idle")
+        self.dc._running = False
+
+    def test_cooldown_reload_works_without_queue_or_current_song(self):
+        clip = self.root / "relax.mp4"
+        clip.write_bytes(b"relax")
+        self.dc._config["cooldown_file"] = str(clip)
+        self.dc._config["cooldown_trigger"] = "reload"
+        self.dc._running = True
+        self.dc._last_queue_items = []
+        self.assertTrue(self.dc.cooldown_arm())
+        self.assertTrue(self.dc._cooldown_reload_ready)
+        self.assertIsNone(self.dc._cooldown_exclude)
+        self.assertEqual(self.dc.cooldown_check("random.mp4"), str(clip))
+        self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
+        self.dc.cooldown_disarm()
+        self.assertIsNone(self.dc.cooldown_check("random.mp4"))
         self.dc._running = False
 
     def test_cooldown_cannot_change_file_while_active(self):

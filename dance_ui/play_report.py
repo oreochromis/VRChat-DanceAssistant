@@ -15,6 +15,9 @@ from .vrcx_stats import format_duration
 from .widgets import label
 
 
+SOURCE_COLORS = {"pypy": "#5865D8", "wd": "#2BAEBB", "dudu": "#D97845"}
+
+
 def _font(size, weight=QFont.Weight.Normal):
     font = QFont()
     font.setPixelSize(size)
@@ -78,6 +81,7 @@ class ReportCanvas(QWidget):
         self.accent = QColor(theme["accent"])
         self.secondary = QColor(theme["secondary_accent"])
         self.highlight = QColor(theme["highlight"])
+        self.source_colors = {key: QColor(value) for key, value in SOURCE_COLORS.items()}
         self.hero_text = QColor(theme["primary_button_text"])
         self.hero_gradient_opacity = theme["hero_gradient_opacity"]
         self.gradient_direction = theme["gradient_direction"]
@@ -530,7 +534,9 @@ class ReportCanvas(QWidget):
         painter.drawEllipse(ring)
         if total:
             start = 90 * 16
-            for count, color in ((pypy, self.accent), (wd, self.secondary), (dudu, self.highlight)):
+            for count, color in ((pypy, self.source_colors["pypy"]),
+                                     (wd, self.source_colors["wd"]),
+                                     (dudu, self.source_colors["dudu"])):
                 if not count:
                     continue
                 span = round(-5760 * count / total)
@@ -541,9 +547,9 @@ class ReportCanvas(QWidget):
               size=25, color=self.text, weight=QFont.Weight.Bold, align=Qt.AlignmentFlag.AlignCenter)
         _text(painter, QRectF(center.x() - 60, center.y() + 10, 120, 20), "次点歌",
               size=11, color=self.muted, align=Qt.AlignmentFlag.AlignCenter)
-        self._draw_legend(painter, rect, ((f"PyPyDance {pypy}", self.accent),
-                                          (f"WannaDance {wd}", self.secondary),
-                                          (f"DuDu {dudu}", self.highlight)),
+        self._draw_legend(painter, rect, ((f"PyPyDance {pypy}", self.source_colors["pypy"]),
+                                          (f"WannaDance {wd}", self.source_colors["wd"]),
+                                          (f"DuDu {dudu}", self.source_colors["dudu"])),
                           rect.bottom() - 55, 10)
 
     def _draw_world_play(self, painter, rect):
@@ -560,7 +566,9 @@ class ReportCanvas(QWidget):
         painter.drawEllipse(ring)
         if total:
             start = 90 * 16
-            for count, color in ((pypy, self.accent), (wd, self.secondary), (dudu, self.highlight)):
+            for count, color in ((pypy, self.source_colors["pypy"]),
+                                     (wd, self.source_colors["wd"]),
+                                     (dudu, self.source_colors["dudu"])):
                 if not count:
                     continue
                 span = round(-5760 * count / total)
@@ -587,9 +595,9 @@ class ReportCanvas(QWidget):
                   size=13, color=self.muted, weight=QFont.Weight.Medium,
                   align=Qt.AlignmentFlag.AlignCenter)
         self._draw_legend(painter, rect,
-                          ((f"PyPyDance · {format_duration(pypy)}", self.accent),
-                           (f"WannaDance · {format_duration(wd)}", self.secondary),
-                           (f"DuDu · {format_duration(dudu)}", self.highlight)),
+                          ((f"PyPyDance · {format_duration(pypy)}", self.source_colors["pypy"]),
+                           (f"WannaDance · {format_duration(wd)}", self.source_colors["wd"]),
+                           (f"DuDu · {format_duration(dudu)}", self.source_colors["dudu"])),
                           rect.bottom() - 46, 11)
 
     def _draw_vrcx_friend(self, painter, rect):

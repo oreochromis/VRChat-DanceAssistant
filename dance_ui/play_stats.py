@@ -265,7 +265,7 @@ class PlayStatsPage(QWidget):
     def _layout_filters(self):
         while self.filters_grid.count():
             self.filters_grid.takeAt(0)
-        columns = 5 if self.width() >= 1250 else 3 if self.width() >= 900 else 2
+        columns = 2
         self.filter_columns = columns
         for index, widget in enumerate(self.filter_widgets):
             self.filters_grid.addWidget(widget, index // columns, index % columns)

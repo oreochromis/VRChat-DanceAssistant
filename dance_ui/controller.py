@@ -574,6 +574,21 @@ class CoreController(QObject):
                 raise RuntimeError("请先在“设置”中选择可用的放松视频并应用更改。")
         self._run("cooldown", toggle)
 
+    def set_cooldown_trigger(self, trigger):
+        if trigger not in ("next", "reload"):
+            raise ValueError("未知 CoolDown 触发时机")
+        if self.demo:
+            self._demo_config["cooldown_trigger"] = trigger
+            self.result.emit("cooldown_trigger", {"trigger": trigger})
+            return
+
+        def apply():
+            core.update_config({"cooldown_trigger": trigger})
+            self._config_cache = core.get_config()
+            return {"trigger": trigger}
+
+        self._run("cooldown_trigger", apply)
+
     def _publish_demo_cooldown(self):
         self.event.emit("cooldown", {"phase": self._demo_cooldown,
                                     "available": core.resolve_cooldown_file(self._demo_config.get("cooldown_file", "")) is not None,

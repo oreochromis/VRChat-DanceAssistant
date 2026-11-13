@@ -42,3 +42,7 @@ tools/wannadance_gui_settings.json
 WannaDance批量下载.bat
 tools/download_wannadance.py
 tools/wannadance_gui.pyw
+PyPyDance批量下载.bat
+tools/download_pypydance.py
+tools/pypydance_gui.pyw
+tools/pypydance_gui_settings.json

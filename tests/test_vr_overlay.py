@@ -115,7 +115,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(len(data), vr_overlay.TEXTURE_W * vr_overlay.TEXTURE_H * 4)
 
     def test_hit_test_matches_calibrated_coordinate_mapping(self):
-        # toggle_service 按钮 rect: (40, H-88, 300, H-32)；激光命中点像素 (100, H-60)
+        # 左侧服务按钮命中点像素 (100, H-60)
         # 校准实测映射：x*W；y 原点在下、按边长=W 的正方形归一化（上下各留 Y_MARGIN 边）
         x_norm = 100 / vr_overlay.TEXTURE_W
         y_norm = 1.0 - vr_overlay.Y_MARGIN - (vr_overlay.TEXTURE_H - 60) / vr_overlay.TEXTURE_W
@@ -123,9 +123,17 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(action, "toggle_service")
         self.assertAlmostEqual(px, 100)
         self.assertAlmostEqual(py, vr_overlay.TEXTURE_H - 60)
-        # 两个按钮之间的空白处不命中
-        action, _, _ = vr_overlay.hit_test(0.5, y_norm)
+        # 服务与 CoolDown 按钮之间的空白处不命中
+        action, _, _ = vr_overlay.hit_test(340 / vr_overlay.TEXTURE_W, y_norm)
         self.assertIsNone(action)
+
+    def test_cooldown_mode_button_render_and_hit_test(self):
+        data = vr_overlay.render_panel({"cooldown_trigger": "reload", "cooldown": {"available": True}})
+        self.assertEqual(len(data), vr_overlay.TEXTURE_W * vr_overlay.TEXTURE_H * 4)
+        y_norm = 1.0 - vr_overlay.Y_MARGIN - (vr_overlay.TEXTURE_H - 60) / vr_overlay.TEXTURE_W
+        action, px, _ = vr_overlay.hit_test(800 / vr_overlay.TEXTURE_W, y_norm)
+        self.assertEqual(action, "cooldown_mode")
+        self.assertAlmostEqual(px, 800)
 
     def test_hit_test_gl_mode_uses_top_origin_y(self):
         # GL 纹理通道下 SteamVR 报的鼠标 y 与 raw 互为镜像（原点在上）
@@ -184,7 +192,7 @@ class PanelSessionTests(unittest.TestCase):
         def to_norm(bx, by):
             return (bx / vr_overlay.TEXTURE_W,
                     1.0 - vr_overlay.Y_MARGIN - by / vr_overlay.TEXTURE_W, 1)
-        bx, by = vr_overlay.TEXTURE_W - 170, vr_overlay.TEXTURE_H - 60
+        bx, by = vr_overlay.TEXTURE_W // 2, vr_overlay.TEXTURE_H - 60
         api = FakeOverlayAPI(events=[(300, to_norm(bx, by)), (301, to_norm(bx, by))])
         session, commands, sent, thread = self.run_session(api)
         self.assertTrue(wait_until(lambda: any(m.get("type") == "action" for m in sent)))

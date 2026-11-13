@@ -110,8 +110,9 @@ def _clip(draw, text, font, max_width):
 # 按钮区域（像素坐标）：动作 id -> rect
 def _button_rects():
     return {
-        "toggle_service": (40, TEXTURE_H - 88, 300, TEXTURE_H - 32),
-        "cooldown": (TEXTURE_W - 300, TEXTURE_H - 88, TEXTURE_W - 40, TEXTURE_H - 32),
+        "toggle_service": (40, TEXTURE_H - 88, 328, TEXTURE_H - 32),
+        "cooldown": (368, TEXTURE_H - 88, 656, TEXTURE_H - 32),
+        "cooldown_mode": (696, TEXTURE_H - 88, TEXTURE_W - 40, TEXTURE_H - 32),
     }
 
 
@@ -203,7 +204,7 @@ def render_panel(state):
         draw.rounded_rectangle(rect, 12, fill=fill)
         if action == "toggle_service":
             label = state.get("service_label") or "启动/停止服务"
-        else:
+        elif action == "cooldown":
             cooldown = state.get("cooldown") or {}
             if not cooldown.get("available"):
                 label = "CoolDown（未设放松视频）"
@@ -211,6 +212,13 @@ def render_panel(state):
                 label = "启用 CoolDown"
             else:
                 label = "取消 CoolDown"
+        else:
+            mode = "重新载入当前歌曲" if state.get("cooldown_trigger") == "reload" else "下一首"
+            for text, offset in (("切换 CoolDown 时机", 7), (f"当前：{mode}", 31)):
+                lw = draw.textlength(text, font=small_font)
+                draw.text(((x0 + x1 - lw) / 2, y0 + offset), text, font=small_font,
+                          fill=(238, 240, 247, 255))
+            continue
         font = body_font
         lw = draw.textlength(label, font=font)
         draw.text(((x0 + x1 - lw) / 2, (y0 + y1) / 2 - 13), label, font=font, fill=(238, 240, 247, 255))
@@ -321,7 +329,7 @@ def collect_state():
 
     state = {"running": False, "current": None, "queue": [], "stats": {},
              "downloading": [], "cooldown": {"phase": "idle", "available": False},
-             "service_label": "启动服务", "message": None}
+             "cooldown_trigger": "next", "service_label": "启动服务", "message": None}
     try:
         runtime = core.get_runtime_state()
     except Exception:
@@ -350,6 +358,7 @@ def collect_state():
         pass
     try:
         state["cooldown"] = core.get_cooldown_state()
+        state["cooldown_trigger"] = core.get_config().get("cooldown_trigger", "next")
     except Exception:
         pass
     try:

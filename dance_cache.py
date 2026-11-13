@@ -3839,7 +3839,7 @@ class DanceHandler(BaseHTTPRequestHandler):
             if not replacement:
                 touch(p)
             _note_session_hit(name, p)
-            self._serve_file(p)
+            self._serve_file(p, cooldown_name=name if replacement else None)
         else:
             log(f"本地未命中 {name}，回源拉取")
             _note_session_miss(name)
@@ -3874,7 +3874,7 @@ class DanceHandler(BaseHTTPRequestHandler):
             if not replacement:
                 touch(path)
             _note_session_hit(name, path)
-            self._serve_file(path)
+            self._serve_file(path, cooldown_name=name if replacement else None)
         else:
             log(f"本地未命中 {name} (DuDu)，回源拉取")
             _note_session_miss(name)
@@ -3911,7 +3911,7 @@ class DanceHandler(BaseHTTPRequestHandler):
             if not replacement:
                 touch(p)
             _note_session_hit(name, p)
-            self._serve_file(p)
+            self._serve_file(p, cooldown_name=name if replacement else None)
         else:
             log(f"本地未命中 {name} (WannaDance)，回源拉取")
             _note_session_miss(name)
@@ -3979,7 +3979,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _serve_file(self, path):
+    def _serve_file(self, path, cooldown_name=None):
         size = os.path.getsize(path)
         range_header = self.headers.get("Range")
         rng = parse_range(range_header, size) if range_header else None
@@ -4000,6 +4000,10 @@ class DanceHandler(BaseHTTPRequestHandler):
                 f.seek(start)
                 remaining = length
                 while remaining > 0:
+                    if cooldown_name is not None and not cooldown_is_serving(cooldown_name):
+                        self.close_connection = True
+                        log(f"CoolDown 已退出，停止发送放松视频: {cooldown_name}")
+                        return
                     chunk = f.read(min(256 * 1024, remaining))
                     if not chunk:
                         break
@@ -4590,6 +4594,11 @@ def get_cooldown_state():
                 "serving_filename": _cooldown_serving}
 
 
+def cooldown_is_serving(filename):
+    with _cooldown_lock:
+        return _cooldown_serving == filename
+
+
 def _emit_cooldown():
     emit("cooldown", **get_cooldown_state())
     refresh_queue_state()
@@ -4621,14 +4630,15 @@ def cooldown_arm():
         if not _running or _stop_event.is_set() or not cooldown_available():
             return False
         _cooldown_exclude = _current_song_filename()
-        if _config.get("cooldown_trigger", "next") == "reload" and not _cooldown_exclude:
-            log("Cool Down 刷新模式需要已识别当前歌曲，请等待队列出现后重试")
-            return False
+        random_reload = _config.get("cooldown_trigger", "next") == "reload" and not _cooldown_exclude
         _cooldown_armed = True
         _cooldown_serving = None
-        _cooldown_reload_ready = False
-    log("Cool Down 已待命：" + ("下次重新载入当前歌曲时" if _config.get("cooldown_trigger") == "reload"
-                              else "下一首在本机") + "替换为放松视频（可点击取消）")
+        _cooldown_reload_ready = random_reload
+    if random_reload:
+        log("Cool Down 已待命：未识别当前歌曲，将在下一次视频请求时替换（适用于随机播放，可点击取消）")
+    else:
+        log("Cool Down 已待命：" + ("下次重新载入当前歌曲时" if _config.get("cooldown_trigger") == "reload"
+                                  else "下一首在本机") + "替换为放松视频（可点击取消）")
     _emit_cooldown()
     return True
 
@@ -4651,7 +4661,8 @@ def cooldown_active():
 
 
 def cooldown_check(filename, consume=True):
-    """下一首模式排除当前歌曲；刷新模式只在同一队列重新载入后允许当前歌曲触发。"""
+    """下一首模式排除当前歌曲；刷新模式在已知当前歌曲重新载入时触发，
+    无队列或未识别当前歌曲时允许下一次视频请求触发。"""
     global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     changed = False
     message = None
@@ -4679,7 +4690,7 @@ def cooldown_check(filename, consume=True):
                 message = "已切换到其他歌曲，Cool Down 本次替换结束"
         reload_mode = _config.get("cooldown_trigger", "next") == "reload"
         eligible = _cooldown_armed and (
-            (_cooldown_reload_ready and _cooldown_exclude is not None and filename == _cooldown_exclude)
+            (_cooldown_reload_ready and (_cooldown_exclude is None or filename == _cooldown_exclude))
             if reload_mode else filename != _cooldown_exclude)
         if not consume:
             return cooldown_file() if eligible else None

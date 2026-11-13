@@ -715,14 +715,18 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(stats.report_button.isEnabled())
         self.assertIn(stats.report_button.parentWidget(), stats.filter_widgets)
         self.assertFalse(stats.loading.isVisible())
-        self.assertEqual(stats.filter_columns, 3)
+        self.assertEqual(stats.filter_columns, 2)
+        positions = [stats.filters_grid.getItemPosition(index)
+                     for index in range(stats.filters_grid.count())]
         window.resize(850, 720)
         QApplication.processEvents()
         self.assertEqual(stats.filter_columns, 2)
         self.assertTrue(window.nav_buttons[0].property("compact"))
         window.resize(1100, 850)
         QApplication.processEvents()
-        self.assertEqual(stats.filter_columns, 3)
+        self.assertEqual(stats.filter_columns, 2)
+        self.assertEqual([stats.filters_grid.getItemPosition(index)
+                          for index in range(stats.filters_grid.count())], positions)
         stats.player_filter.setCurrentIndex(stats.player_filter.findData("Momo"))
         self.assertEqual(stats.table.rowCount(), 6)
         self.assertEqual(stats.table.item(0, 3).text(), "1837")
@@ -744,6 +748,18 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(stats.empty_state.isVisible())
         self.assertFalse(stats.export_button.isEnabled())
         self.assertFalse(stats.report_button.isEnabled())
+
+    def test_report_source_colors_stay_fixed_and_distinct(self):
+        window, _, store = self.make_window()
+        window.navigate(2)
+        stats = window.play_stats_page
+        stats.open_report()
+        report = stats._report
+        colors = {key: color.name().upper() for key, color in report.canvas.source_colors.items()}
+        self.assertEqual(colors, {"pypy": "#5865D8", "wd": "#2BAEBB", "dudu": "#D97845"})
+        self.assertEqual(len(set(colors.values())), 3)
+        self.assertFalse(report.canvas.grab().isNull())
+        report.close()
 
     def test_play_report_renders_and_exports_high_resolution_png(self):
         window, _, store = self.make_window()
@@ -1314,6 +1330,19 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("刷新", window.cooldown_hint.text())
         window.set_ui_mode("simple")
         self.assertFalse(window.cooldown_trigger_row.isHidden())
+
+    def test_vr_cooldown_mode_button_toggles_and_blocks_while_active(self):
+        window, controller, _ = self.make_window()
+        self.assertEqual(controller.config()["cooldown_trigger"], "next")
+        window._on_vr_action("cooldown_mode")
+        self.assertEqual(controller.config()["cooldown_trigger"], "reload")
+        self.assertEqual(window.cooldown_trigger.currentData(), "reload")
+        window._on_vr_action("cooldown_mode")
+        self.assertEqual(controller.config()["cooldown_trigger"], "next")
+        window._cooldown["phase"] = "armed"
+        window._on_vr_action("cooldown_mode")
+        self.assertEqual(controller.config()["cooldown_trigger"], "next")
+        self.assertIn("取消", window.banner.text())
 
     def test_dudu_setup_and_certificate_cleanup_use_controller(self):
         from PySide6.QtWidgets import QMessageBox

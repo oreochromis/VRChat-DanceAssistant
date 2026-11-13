@@ -559,7 +559,7 @@ class MainWindow(QMainWindow, Pages):
         self.cooldown_file_label.setToolTip(filename)
         if phase == "armed":
             set_status(self.cooldown_badge, "等待替换", "warning")
-            self.cooldown_hint.setText("已经就绪，将在下次重新载入当前歌曲时使用放松视频。" if reload_mode
+            self.cooldown_hint.setText("已经就绪，将在下次刷新当前歌曲时使用放松视频；随机播放未识别当前歌曲时，下一次视频请求也会触发。" if reload_mode
                                        else "已经就绪，将在下一首歌曲播放时使用放松视频。")
             self.cooldown_button.setText("取消等待")
         elif phase == "serving":
@@ -671,6 +671,12 @@ class MainWindow(QMainWindow, Pages):
             self.toggle_service()
         elif action == "cooldown":
             self.toggle_cooldown()
+        elif action == "cooldown_mode":
+            if self._cooldown.get("phase") != "idle":
+                self.notify("请先取消当前 CoolDown，再切换触发时机。", error=True)
+                return
+            current = self.controller.config().get("cooldown_trigger", "next")
+            self.controller.set_cooldown_trigger("reload" if current == "next" else "next")
 
     def refresh_storage_location(self):
         info = self.controller.storage_info()
@@ -1359,6 +1365,16 @@ class MainWindow(QMainWindow, Pages):
             self.controller.refresh_stats()
             self.notify("DuDu FitDance 缓存已启用。" if self.controller.config().get("dudu_enabled")
                         else "DuDu FitDance 已禁用，本机证书已清理。")
+        elif operation == "cooldown_trigger":
+            trigger = (result or {}).get("trigger", "next")
+            self._syncing = True
+            try:
+                self.cooldown_trigger.setCurrentIndex(self.cooldown_trigger.findData(trigger))
+            finally:
+                self._syncing = False
+            self.render_cooldown()
+            self.notify("CoolDown 触发时机已切换为：重新载入当前歌曲。" if trigger == "reload"
+                        else "CoolDown 触发时机已切换为：播放至下一首歌曲。")
         elif operation == "reset_settings":
             self.reset_settings_button.setEnabled(True)
             self.load_fields()
