@@ -235,8 +235,11 @@ class CoreController(QObject):
         patch = dict(patch)
         operation = f"apply_{section}"
         if self.demo:
-            # Validate only the numeric/IP fields relevant to a safe preview.
+            # Validate form values without creating or inspecting directories.
             try:
+                if "cache_dir" in patch and (not isinstance(patch["cache_dir"], str)
+                                             or not patch["cache_dir"].strip()):
+                    raise ValueError("缓存目录不能为空。")
                 if "max_cache_mb" in patch and int(patch["max_cache_mb"]) < 100:
                     raise ValueError("缓存上限至少为 100 MB。")
                 if "preferred_cdn_ip" in patch and patch["preferred_cdn_ip"]:
