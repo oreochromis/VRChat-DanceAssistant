@@ -486,6 +486,20 @@ class CoreTests(unittest.TestCase):
             self.dc.update_config({"enable_youtube_cache": False})
         self.dc._running = False
 
+    def test_cache_directory_change_persists_without_moving_existing_videos(self):
+        old_video = self.cache / "keep.mp4"
+        old_video.write_bytes(b"existing cache")
+        new = self.root / "视频缓存 new"
+        self.dc.update_config({"cache_dir": str(new)})
+        self.assertTrue(new.is_dir())
+        self.assertEqual(old_video.read_bytes(), b"existing cache")
+        self.assertFalse((new / "keep.mp4").exists())
+        self.dc.load_config()
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(new))
+        with self.assertRaises(ValueError):
+            self.dc.update_config({"cache_dir": str(self.library)})
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(new))
+
     def test_favorite_speedtest_skips_dns_and_uses_configured_concurrency(self):
         self.dc._config["speedtest_threads"] = 3
         favorites = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "8.8.8.8"]

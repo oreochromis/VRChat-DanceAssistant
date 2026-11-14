@@ -729,7 +729,8 @@ class MainWindow(QMainWindow, Pages):
 
     def apply_settings(self, section):
         if section == "storage":
-            patch = {"max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
+            patch = {"cache_dir": self.cache_path.text().strip(),
+                     "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
                      "wd_library_dir": self.wd_library_path.text().strip(),
                      "dudu_library_dir": self.dudu_library_path.text().strip(),
                      "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
@@ -814,6 +815,11 @@ class MainWindow(QMainWindow, Pages):
             message += " 启动设置有未应用的更改。"
         self.steamvr_hint.setText(message)
         self.render_steamvr_controls()
+
+    def browse_cache(self):
+        path = QFileDialog.getExistingDirectory(self, "选择临时缓存目录", self.cache_path.text())
+        if path:
+            self.cache_path.setText(path)
 
     def browse_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择永久曲库目录", self.library_path.text())
