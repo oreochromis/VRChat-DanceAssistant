@@ -1,6 +1,6 @@
 # VRChat 跳舞房助手 · Windows 版
 
-**当前分支为 v4.1.1-bugfix.2 修复测试版。** 实机回归步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。[下载测试包](https://github.com/oreochromis/VRChat-DanceAssistant/releases/tag/v4.1.1-bugfix.2)。
+**当前分支为 v4.1.1-bugfix.3 修复测试版。** 实机回归步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。[下载测试包](https://github.com/oreochromis/VRChat-DanceAssistant/releases/tag/v4.1.1-bugfix.3)。
 
 <img src="assets/app-icon.png" width="96" alt="VRChat 跳舞房助手图标">
 
