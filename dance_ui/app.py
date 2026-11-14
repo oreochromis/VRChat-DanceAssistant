@@ -887,7 +887,8 @@ class MainWindow(QMainWindow, Pages):
         self._library_browser.activateWindow()
 
     def clear_cache(self):
-        if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",
+        directory = self.controller.config()["cache_dir"]
+        if QMessageBox.question(self, "清理临时缓存", f"清理当前已应用的缓存目录中的 MP4 文件？\n{directory}\n正在使用的文件会保留，永久曲库不会清理。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.controller.clear_cache()

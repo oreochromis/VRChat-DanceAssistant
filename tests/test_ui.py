@@ -1055,6 +1055,19 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("缓存目录不能为空", window.banner.text())
         self.core_mocks["update_config"].assert_not_called()
 
+    def test_clear_cache_confirmation_identifies_applied_directory_instead_of_draft(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window()
+        applied = controller.config()["cache_dir"]
+        draft = str(self.root / "unsaved cache")
+        window.cache_path.setText(draft)
+        with patch("dance_ui.app.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as confirm, \
+             patch.object(controller, "clear_cache") as clear:
+            window.clear_cache()
+        self.assertIn(applied, confirm.call_args.args[2])
+        self.assertNotIn(draft, confirm.call_args.args[2])
+        clear.assert_not_called()
+
     def test_steamvr_demo_applies_independently_and_refresh_preserves_a_draft(self):
         window, controller, _ = self.make_window()
         self.wait_until(lambda: window._steamvr_saved is not None)
