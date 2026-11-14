@@ -4869,6 +4869,9 @@ def _cooldown_selection(filename, consume=True):
             _cooldown_reload_ready = False
             changed = True
             if path:
+                # A preview HEAD for a different candidate must not stay valid
+                # after this GET binds the cycle to the actual next song.
+                expired.extend(_invalidate_cooldown_streams_locked())
                 _cooldown_serving = filename
                 message = f"Cool Down 触发：{filename} -> 放松视频 {os.path.basename(path)}"
             else:

@@ -266,3 +266,16 @@ class CooldownRestoreTests(unittest.TestCase):
         delayed._serve_file(path, cooldown_generation=generation)
         self.assertEqual(delayed.wfile.getvalue(), b'')
         delayed.send_response.assert_not_called()
+
+    def test_armed_preview_is_invalid_after_get_binds_a_different_next_song(self):
+        name = self.prepare('next')
+        path, preview = self.dc._cooldown_selection(name, consume=False)
+        active_path, active = self.dc._cooldown_selection('other.mp4')
+        self.assertNotEqual(preview, active)
+        stale = self.handler()
+        stale._serve_file(path, cooldown_generation=preview, head_only=True)
+        stale.send_response.assert_not_called()
+        self.assertTrue(stale.close_connection)
+        current = self.handler(sid=3)
+        current._serve_file(active_path, cooldown_generation=active)
+        self.assertEqual(current.wfile.getvalue(), self.replacement)
