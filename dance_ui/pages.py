@@ -483,6 +483,7 @@ class Pages:
         controls_box.addWidget(self.cache_limit)
         controls_box.addStretch()
         self.clear_cache_button = button("清理临时缓存", self.clear_cache)
+        self.clear_cache_button.setToolTip("清理当前已应用的缓存目录")
         self.clear_cache_button.setProperty("danger", True)
         controls_box.addWidget(self.clear_cache_button)
         cache.box.addWidget(controls)
