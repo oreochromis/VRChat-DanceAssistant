@@ -231,7 +231,7 @@ class CoreController(QObject):
         if state.get("phase") == "failed" and state.get("error"):
             raise RuntimeError(state["error"])
 
-    def apply_config(self, patch: dict, section: str):
+    def apply_config(self, patch: dict, section: str, directory_actions=None):
         patch = dict(patch)
         operation = f"apply_{section}"
         if self.demo:
@@ -251,7 +251,10 @@ class CoreController(QObject):
                 self.error.emit(operation, str(exc))
             return
         def apply():
-            result = core.update_config(patch)
+            if directory_actions:
+                result = core.update_config(patch, directory_actions=directory_actions)
+            else:
+                result = core.update_config(patch)
             self._config_cache = core.get_config()
             self.event.emit("cooldown", core.get_cooldown_state())
             return result

@@ -459,6 +459,9 @@ class Pages:
     def build_storage_page(self):
         area, body, box = page()
         box.addWidget(section_title("存储", "管理临时缓存与永久曲库"))
+        self.directory_pending_hint = label("", muted=True, wrap=True)
+        self.directory_pending_hint.hide()
+        box.addWidget(self.directory_pending_hint)
         cache = Card()
         cache.box.addWidget(label("临时缓存", subheading=True))
         self.cache_summary = label("等待统计")

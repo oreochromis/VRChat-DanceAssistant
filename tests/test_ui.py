@@ -1028,6 +1028,122 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(received[0]["cache_dir"], str(selected))
         self.assertEqual(self.config["cache_dir"], str(selected))
 
+    def test_clear_cache_confirmation_identifies_applied_directory_instead_of_draft(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window()
+        applied = controller.config()["cache_dir"]
+        draft = str(self.root / "unsaved cache")
+        window.cache_path.setText(draft)
+        with patch("dance_ui.app.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as confirm, \
+                patch.object(controller, "clear_cache") as clear:
+            window.clear_cache()
+        self.assertIn(applied, confirm.call_args.args[2])
+        self.assertNotIn(draft, confirm.call_args.args[2])
+        clear.assert_not_called()
+
+    def test_pending_banner_lists_changes_and_clears_after_apply(self):
+        window, controller, _ = self.make_window(demo=False)
+        self.assertTrue(window.pending_banner.isHidden())
+        window.cache_limit.setValue(4096)
+        self.assertFalse(window.pending_banner.isHidden())
+        self.assertIn("缓存上限", window.pending_banner.toolTip())
+        (self.root / "cache").mkdir(exist_ok=True)
+        (self.root / "cache" / "Abcd1234efg.mp4").write_bytes(b"cache")
+        window.cache_path.setText(str(self.root / "new-cache"))
+        with patch.object(window, "_choose_directory_action", return_value="migrate"):
+            window.cache_path.editingFinished.emit()
+        self.assertIn("迁移原文件", window.pending_banner.toolTip())
+        self.assertIn("临时缓存", window.pending_banner.toolTip())
+
+        def update(values, directory_actions=None):
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        window.apply_settings("storage")
+        self.wait_until(lambda: not controller.busy("apply_storage") and not window._dirty["storage"])
+        self.assertTrue(window.pending_banner.isHidden())
+
+    def test_storage_change_passes_confirmed_directory_actions(self):
+        window, controller, _ = self.make_window(demo=False)
+        (self.root / "cache").mkdir(exist_ok=True)
+        (self.root / "library").mkdir(exist_ok=True)
+        (self.root / "cache" / "Abcd1234efg.mp4").write_bytes(b"cache")
+        (self.root / "library" / "123.mp4").write_bytes(b"library")
+        window.cache_path.setText(str(self.root / "new-cache"))
+        window.library_path.setText(str(self.root / "new-library"))
+        received = []
+
+        def update(values, directory_actions=None):
+            received.append((dict(values), directory_actions))
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        with patch.object(window, "_choose_directory_action", side_effect=["migrate", "delete"]) as choose:
+            window.cache_path.editingFinished.emit()
+            window.library_path.editingFinished.emit()
+            self.assertEqual(choose.call_count, 2)
+            self.assertIn("应用更改", window.directory_pending_hint.text())
+            self.assertIn("尚未迁移或删除", window.directory_pending_hint.text())
+            self.core_mocks["update_config"].assert_not_called()
+            window.apply_settings("storage")
+        self.wait_until(lambda: not controller.busy("apply_storage") and not window._dirty["storage"])
+        self.assertEqual(received[0][1], {"cache_dir": "migrate", "library_dir": "delete"})
+        self.assertEqual([call.args[3] for call in choose.call_args_list], [False, True])
+        self.assertTrue(window.directory_pending_hint.isHidden())
+
+    def test_unconfirmed_second_directory_blocks_apply(self):
+        window, _, _ = self.make_window(demo=False)
+        (self.root / "cache").mkdir(exist_ok=True)
+        (self.root / "library").mkdir(exist_ok=True)
+        (self.root / "cache" / "Abcd1234efg.mp4").write_bytes(b"cache")
+        (self.root / "library" / "123.mp4").write_bytes(b"library")
+        window.cache_path.setText(str(self.root / "new-cache"))
+        window.library_path.setText(str(self.root / "new-library"))
+        with patch.object(window, "_choose_directory_action", return_value="migrate"):
+            window._prepare_directory_action("cache_dir")
+        window.apply_settings("storage")
+        self.assertIn("尚未重新确认", window.banner.text())
+        self.core_mocks["update_config"].assert_not_called()
+
+    def test_permanent_directory_delete_requires_second_confirmation(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, _, _ = self.make_window()
+
+        class FakeDialog(QMessageBox):
+            def __init__(self, *args):
+                super().__init__(*args)
+                self.buttons = {}
+                self.clicked = None
+
+            def addButton(self, text, role):
+                button = SimpleNamespace(text=text)
+                self.buttons[text] = button
+                return button
+
+            def setDefaultButton(self, button):
+                pass
+
+            def setEscapeButton(self, button):
+                pass
+
+            def exec(self):
+                self.clicked = self.buttons["不迁移" if "是否把" in self.text() else "全部删除"]
+
+            def clickedButton(self):
+                return self.clicked
+
+        with patch("dance_ui.app.QMessageBox", FakeDialog), \
+                patch.object(FakeDialog, "question", return_value=QMessageBox.StandardButton.No):
+            action = window._choose_directory_action("永久曲库", "D:/old", "D:/new", True)
+        self.assertEqual(action, "cancel")
+        with patch("dance_ui.app.QMessageBox", FakeDialog), \
+                patch.object(FakeDialog, "question", return_value=QMessageBox.StandardButton.Yes) as confirm:
+            action = window._choose_directory_action("永久曲库", "D:/old", "D:/new", True)
+        self.assertEqual(action, "delete")
+        confirm.assert_called_once()
+
     def test_parallel_download_setting_is_available_and_applied(self):
         window, controller, _ = self.make_window(demo=False)
         window.set_ui_mode("advanced")

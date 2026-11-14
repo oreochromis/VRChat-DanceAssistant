@@ -34,6 +34,30 @@ STATES = {
     "cooldown": ("放松视频", "warning"),
 }
 SOURCE_NAMES = {"cdn": "CDN", "youtube": "YouTube", "wannadance": "WannaDance", "dudu": "DuDu FitDance", "external": "外部源"}
+DIRECTORY_FIELDS = {
+    "cache_dir": ("临时缓存", "cache", False),
+    "library_dir": ("PyPyDance 永久曲库", "pypy", True),
+    "wd_library_dir": ("WannaDance 永久曲库", "wd", True),
+    "dudu_library_dir": ("DuDu FitDance 永久曲库", "dudu", True),
+}
+DIRECTORY_WIDGETS = {
+    "cache_dir": "cache_path", "library_dir": "library_path",
+    "wd_library_dir": "wd_library_path", "dudu_library_dir": "dudu_library_path",
+}
+CONFIG_LABELS = {
+    "cache_dir": "临时缓存目录", "library_dir": "PyPyDance 曲库目录",
+    "wd_library_dir": "WannaDance 曲库目录", "dudu_library_dir": "DuDu 曲库目录",
+    "max_cache_mb": "缓存上限", "preload_count": "预缓存后续歌曲",
+    "preload_sequential": "逐首预载", "max_parallel": "预载并发下载数",
+    "preferred_cdn_ip": "优选 CDN IP", "auto_prefer_cdn": "自动优选 CDN",
+    "speedtest_threads": "测速并发线程数", "speedtest_candidates": "测速候选数量",
+    "speedtest_sample_mb": "测速样本大小", "enable_youtube_cache": "YouTube 缓存",
+    "youtube_permanent": "永久保存 YouTube 视频", "cdn_permanent": "永久保存 CDN 视频",
+    "wd_permanent": "永久保存 WannaDance 视频", "dudu_permanent": "永久保存 DuDu 视频",
+    "cooldown_file": "CoolDown 放松视频", "cooldown_trigger": "CoolDown 触发时机",
+    "bundle_direct": "歌单直取模式", "vr_overlay": "SteamVR 面板页",
+    "close_to_tray": "关闭时最小化到托盘", "auto_start_service": "打开软件时自动启动服务",
+}
 
 
 def friendly_message(message):
@@ -77,6 +101,7 @@ class MainWindow(QMainWindow, Pages):
         self._load_cdn_favorites()
         self._syncing = False
         self._dirty = {"storage": False, "settings": False}
+        self._pending_directory_actions = {}
         self.apply_buttons, self.apply_hints = {}, {}
         self._runtime = {"running": False, "phase": "stopped", "warnings": []}
         self._cooldown = {"phase": "idle", "available": False}
@@ -130,6 +155,10 @@ class MainWindow(QMainWindow, Pages):
         self.banner.action_requested.connect(self._on_banner_action)
         self.banner.hide()
         outer.addWidget(self.banner)
+        self.pending_banner = NoticeBanner()
+        self.pending_banner.close_button.hide()
+        self.pending_banner.hide()
+        outer.addWidget(self.pending_banner)
         self.stack = QStackedWidget()
         self.stack.setStyleSheet("QStackedWidget {background: transparent;}")
         self._last_ui_mode = None
@@ -138,6 +167,9 @@ class MainWindow(QMainWindow, Pages):
         self._return_mode = "simple"
         self.stack.addWidget(self.build_run_page())
         self.stack.addWidget(self.build_storage_page())
+        for name in DIRECTORY_FIELDS:
+            getattr(self, DIRECTORY_WIDGETS[name]).editingFinished.connect(
+                lambda checked=False, field=name: self._prepare_directory_action(field))
         self.play_stats_page = PlayStatsPage(self)
         self.stack.addWidget(self.play_stats_page)
         self.stack.addWidget(self.build_settings_page())
@@ -654,6 +686,7 @@ class MainWindow(QMainWindow, Pages):
         self.render_cooldown()
         self.render_dudu()
         self._sync_vr_overlay()
+        self._refresh_pending_banner()
 
     def _sync_vr_overlay(self):
         """按当前配置启停 SteamVR 面板页（应用设置后热生效）"""
@@ -736,29 +769,166 @@ class MainWindow(QMainWindow, Pages):
         self._dirty[section] = True
         self.apply_buttons[section].setEnabled(not self.controller.busy("apply_" + section))
         self.apply_hints[section].setText("有未应用的更改")
+        self._refresh_pending_banner()
+
+    def _choose_directory_action(self, title, old_dir, new_dir, permanent):
+        if new_dir:
+            dialog = QMessageBox(self)
+            dialog.setIcon(QMessageBox.Icon.Question)
+            dialog.setWindowTitle("迁移" + title)
+            dialog.setText(f"{title}目录已更改：\n\n原目录：{old_dir}\n新目录：{new_dir}\n\n是否把原目录中的软件视频迁移到新目录？")
+            migrate = dialog.addButton("迁移原文件", QMessageBox.ButtonRole.AcceptRole)
+            skip = dialog.addButton("不迁移", QMessageBox.ButtonRole.NoRole)
+            cancel = dialog.addButton("取消更改", QMessageBox.ButtonRole.RejectRole)
+            dialog.setDefaultButton(migrate)
+            dialog.setEscapeButton(cancel)
+            dialog.exec()
+            clicked = dialog.clickedButton()
+            if clicked == migrate:
+                return "migrate"
+            if clicked != skip:
+                return "cancel"
+
+        choice = QMessageBox(self)
+        choice.setIcon(QMessageBox.Icon.Warning)
+        choice.setWindowTitle("处理原" + title)
+        choice.setText("不迁移时，原目录中的软件视频如何处理？\n\n只会处理本软件使用的视频及 .part 文件，其他文件和子目录不会改动。")
+        keep = choice.addButton("保留不动", QMessageBox.ButtonRole.AcceptRole)
+        delete = choice.addButton("全部删除", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = choice.addButton("取消更改", QMessageBox.ButtonRole.RejectRole)
+        choice.setDefaultButton(keep)
+        choice.setEscapeButton(cancel)
+        choice.exec()
+        clicked = choice.clickedButton()
+        if clicked == keep:
+            return "leave"
+        if clicked != delete:
+            return "cancel"
+        if permanent:
+            answer = QMessageBox.question(
+                self, "再次确认永久删除",
+                f"即将永久删除原{title}目录中的全部软件视频，且无法恢复。\n\n原目录：{old_dir}\n\n确定删除吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if answer != QMessageBox.StandardButton.Yes:
+                return "cancel"
+        return "delete"
+
+    def _refresh_directory_pending_hint(self):
+        labels = {"migrate": "迁移原文件", "delete": "删除原文件", "leave": "保留原文件"}
+        operations = [f"{DIRECTORY_FIELDS[name][0]}：{labels[operation['action']]}"
+                      for name, operation in self._pending_directory_actions.items()]
+        self.directory_pending_hint.setText(
+            "待执行：" + "；".join(operations) + "。点击“应用更改”后才会统一执行，当前尚未迁移或删除任何文件。"
+            if operations else "")
+        self.directory_pending_hint.setVisible(bool(operations))
+        self._refresh_pending_banner()
+
+    def _prepare_directory_action(self, name):
+        import dance_cache as core
+        if self._syncing or self.controller.demo:
+            return
+        title, kind, permanent = DIRECTORY_FIELDS[name]
+        field = getattr(self, DIRECTORY_WIDGETS[name])
+        old_dir = self.controller.config().get(name) or ""
+        new_dir = field.text().strip()
+        self._pending_directory_actions.pop(name, None)
+        if not old_dir or core._same_directory(old_dir, new_dir) or (name == "cache_dir" and not new_dir):
+            self._refresh_directory_pending_hint()
+            return
+        try:
+            has_files = core.directory_has_files(old_dir, kind)
+        except OSError as exc:
+            self.notify("读取原缓存目录失败：" + str(exc), error=True)
+            self._refresh_directory_pending_hint()
+            return
+        if has_files:
+            action = self._choose_directory_action(title, old_dir, new_dir, permanent)
+            if action == "cancel":
+                self._syncing = True
+                try:
+                    field.setText(old_dir)
+                finally:
+                    self._syncing = False
+            else:
+                self._pending_directory_actions[name] = {
+                    "action": action, "source": old_dir, "destination": new_dir}
+        self._refresh_directory_pending_hint()
+
+    def _confirmed_directory_actions(self, patch):
+        import dance_cache as core
+        if self.controller.demo:
+            return {}
+        current = self.controller.config()
+        actions = {}
+        for name, (title, kind, _) in DIRECTORY_FIELDS.items():
+            old_dir = current.get(name) or ""
+            new_dir = patch.get(name) or ""
+            if not old_dir or core._same_directory(old_dir, new_dir):
+                continue
+            if not core.directory_has_files(old_dir, kind):
+                continue
+            operation = self._pending_directory_actions.get(name)
+            if (operation is None or operation["source"] != old_dir
+                    or operation["destination"] != new_dir):
+                raise ValueError(f"{title}尚未重新确认。请完成目录编辑并确认操作后，再点击“应用更改”。")
+            if operation["action"] != "leave":
+                actions[name] = operation["action"]
+        return actions
+
+    def _settings_draft(self, section):
+        if section == "storage":
+            return {"cache_dir": self.cache_path.text().strip(),
+                    "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
+                    "wd_library_dir": self.wd_library_path.text().strip(),
+                    "dudu_library_dir": self.dudu_library_path.text().strip(),
+                    "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
+                    "dudu_permanent": self.dudu_permanent.isChecked(),
+                    "youtube_permanent": self.youtube_permanent.isChecked()}
+        return {"preload_count": self.preload_count.value(), "preload_sequential": self.preload_sequential.isChecked(),
+                "max_parallel": self.max_parallel.value(),
+                "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
+                "vr_overlay": self.vr_overlay.isChecked(), "close_to_tray": self.close_to_tray.isChecked(),
+                "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip(),
+                "cooldown_trigger": self.cooldown_trigger.currentData(),
+                "auto_prefer_cdn": self.auto_prefer_cdn.isChecked(),
+                "speedtest_threads": self.speedtest_threads.value(),
+                "speedtest_candidates": self.speedtest_candidates.value(),
+                "speedtest_sample_mb": self.speedtest_sample_mb.value(),
+                "auto_start_service": self.auto_start_service.isChecked()}
+
+    def _refresh_pending_banner(self):
+        if not hasattr(self, "pending_banner"):
+            return
+        details = []
+        current = self.controller.config()
+        for section in ("storage", "settings"):
+            if not self._dirty.get(section):
+                continue
+            patch = self._settings_draft(section)
+            changed = [CONFIG_LABELS.get(name, name) for name, value in patch.items()
+                       if current.get(name) != value]
+            details.extend(changed or ["存储设置" if section == "storage" else "下载、网络或启动设置"])
+        if self._steamvr_dirty:
+            details.append("SteamVR 启动设置")
+        action_labels = {"migrate": "迁移原文件", "delete": "删除原文件", "leave": "保留原文件"}
+        for name, operation in self._pending_directory_actions.items():
+            details.append(f"{DIRECTORY_FIELDS[name][0]}：{action_labels[operation['action']]}")
+        details = list(dict.fromkeys(details))
+        tooltip = "未应用内容：\n" + "\n".join("• " + item for item in details) if details else ""
+        self.pending_banner.setToolTip(tooltip)
+        self.pending_banner.message.setToolTip(tooltip)
+        self.pending_banner.set_notice("有未应用的更改，点击“应用更改”后才会生效。鼠标悬停查看详情。", busy=True)
+        self.pending_banner.setVisible(bool(details))
 
     def apply_settings(self, section):
-        if section == "storage":
-            patch = {"cache_dir": self.cache_path.text().strip(),
-                     "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
-                     "wd_library_dir": self.wd_library_path.text().strip(),
-                     "dudu_library_dir": self.dudu_library_path.text().strip(),
-                     "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
-                     "dudu_permanent": self.dudu_permanent.isChecked(),
-                     "youtube_permanent": self.youtube_permanent.isChecked()}
-        else:
-            patch = {"preload_count": self.preload_count.value(), "preload_sequential": self.preload_sequential.isChecked(),
-                     "max_parallel": self.max_parallel.value(),
-                     "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
-                     "vr_overlay": self.vr_overlay.isChecked(), "close_to_tray": self.close_to_tray.isChecked(),
-                     "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip(),
-                     "cooldown_trigger": self.cooldown_trigger.currentData(),
-                     "auto_prefer_cdn": self.auto_prefer_cdn.isChecked(),
-                     "speedtest_threads": self.speedtest_threads.value(),
-                     "speedtest_candidates": self.speedtest_candidates.value(),
-                     "speedtest_sample_mb": self.speedtest_sample_mb.value(),
-                     "auto_start_service": self.auto_start_service.isChecked()}
-        self.controller.apply_config(patch, section)
+        patch = self._settings_draft(section)
+        try:
+            directory_actions = self._confirmed_directory_actions(patch) if section == "storage" else {}
+        except (OSError, ValueError) as exc:
+            self.notify(str(exc), error=True)
+            return
+        self.controller.apply_config(patch, section, directory_actions=directory_actions)
 
     def reset_all_settings(self):
         if self._runtime.get("running") or self._runtime.get("hosts_restore_pending"):
@@ -788,6 +958,7 @@ class MainWindow(QMainWindow, Pages):
         self.steamvr_hint.setText("启动设置有未应用的更改。" if self._steamvr_dirty else (
             "已启用跟随 SteamVR 启动。" if self._steamvr_saved else "未启用跟随 SteamVR 启动。"))
         self.render_steamvr_controls()
+        self._refresh_pending_banner()
 
     def refresh_steamvr_startup(self):
         if self._closing or self._can_close or self._steamvr_busy:
@@ -826,26 +997,31 @@ class MainWindow(QMainWindow, Pages):
             message += " 启动设置有未应用的更改。"
         self.steamvr_hint.setText(message)
         self.render_steamvr_controls()
+        self._refresh_pending_banner()
 
     def browse_cache(self):
         path = QFileDialog.getExistingDirectory(self, "选择临时缓存目录", self.cache_path.text())
         if path:
             self.cache_path.setText(path)
+            self._prepare_directory_action("cache_dir")
 
     def browse_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择永久曲库目录", self.library_path.text())
         if path:
             self.library_path.setText(path)
+            self._prepare_directory_action("library_dir")
 
     def browse_wd_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择 WannaDance 曲库目录", self.wd_library_path.text())
         if path:
             self.wd_library_path.setText(path)
+            self._prepare_directory_action("wd_library_dir")
 
     def browse_dudu_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择 DuDu FitDance 曲库目录", self.dudu_library_path.text())
         if path:
             self.dudu_library_path.setText(path)
+            self._prepare_directory_action("dudu_library_dir")
 
     def render_dudu(self):
         if not hasattr(self, "dudu_setup_button"):
@@ -898,7 +1074,8 @@ class MainWindow(QMainWindow, Pages):
         self._library_browser.activateWindow()
 
     def clear_cache(self):
-        if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",
+        directory = self.controller.config()["cache_dir"]
+        if QMessageBox.question(self, "清理临时缓存", f"清理当前已应用的缓存目录中的 MP4 文件？\n{directory}\n正在使用的文件会保留，永久曲库不会清理。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.controller.clear_cache()
@@ -1395,12 +1572,17 @@ class MainWindow(QMainWindow, Pages):
                         else "CoolDown 触发时机已切换为：播放至下一首歌曲。")
         elif operation == "reset_settings":
             self.reset_settings_button.setEnabled(True)
+            self._pending_directory_actions.clear()
+            self._refresh_directory_pending_hint()
             self.load_fields()
             self.controller.check_index_maintenance()
             self.controller.refresh_stats()
             self.notify("全部软件设置已恢复默认，歌曲、收藏、历史和外观均保留。")
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
+            if section == "storage":
+                self._pending_directory_actions.clear()
+                self._refresh_directory_pending_hint()
             self.load_fields(section)
             if section == "storage":
                 self.controller.check_index_maintenance()

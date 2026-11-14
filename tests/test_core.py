@@ -756,6 +756,85 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["removed_count"], 0)
         self.assertEqual(result["errors"][0]["filename"], "locked.mp4")
 
+    def test_directory_migration_preserves_unrelated_files_and_name_collisions(self):
+        (self.cache / "Abcd1234efg.mp4").write_bytes(b"source")
+        (self.cache / "Abcd1234efg.mp4.part").write_bytes(b"partial")
+        (self.cache / "notes.txt").write_text("keep", encoding="utf-8")
+        (self.cache / "personal.mp4.txt").write_text("keep", encoding="utf-8")
+        (self.cache / "subdir").mkdir()
+        (self.cache / "subdir" / "other.mp4").write_bytes(b"keep")
+        destination = self.root / "new-cache"
+        destination.mkdir()
+        (destination / "Abcd1234efg.mp4").write_bytes(b"destination")
+
+        result = self.dc.update_config(
+            {"cache_dir": str(destination)}, directory_actions={"cache_dir": "migrate"})
+
+        self.assertEqual(self.dc._config["cache_dir"], str(destination))
+        self.assertEqual(result["directory_results"]["cache_dir"]["moved"], 1)
+        self.assertEqual(result["directory_results"]["cache_dir"]["skipped"], 1)
+        self.assertEqual((destination / "Abcd1234efg.mp4").read_bytes(), b"destination")
+        self.assertEqual((self.cache / "Abcd1234efg.mp4").read_bytes(), b"source")
+        self.assertEqual((destination / "Abcd1234efg.mp4.part").read_bytes(), b"partial")
+        self.assertFalse((self.cache / "Abcd1234efg.mp4.part").exists())
+        self.assertTrue((self.cache / "notes.txt").is_file())
+        self.assertTrue((self.cache / "personal.mp4.txt").is_file())
+        self.assertTrue((self.cache / "subdir" / "other.mp4").is_file())
+
+    def test_permanent_directory_delete_only_removes_matching_song_files(self):
+        (self.library / "123.mp4").write_bytes(b"delete")
+        (self.library / "123.mp4.part").write_bytes(b"delete")
+        (self.library / "wd_123.mp4").write_bytes(b"keep")
+        (self.library / "personal.mp4").write_bytes(b"keep")
+        (self.library / "notes.txt").write_text("keep", encoding="utf-8")
+        destination = self.root / "new-library"
+
+        self.dc.update_config(
+            {"library_dir": str(destination)}, directory_actions={"library_dir": "delete"})
+
+        self.assertFalse((self.library / "123.mp4").exists())
+        self.assertFalse((self.library / "123.mp4.part").exists())
+        self.assertTrue((self.library / "wd_123.mp4").is_file())
+        self.assertTrue((self.library / "personal.mp4").is_file())
+        self.assertTrue((self.library / "notes.txt").is_file())
+
+    def test_directory_delete_is_rejected_when_source_is_reused_by_new_config(self):
+        original = self.library / "123.mp4"
+        original.write_bytes(b"keep")
+        previous_cache = self.dc._config["cache_dir"]
+        with self.assertRaises(ValueError):
+            self.dc.update_config(
+                {"library_dir": str(self.root / "new-library"), "cache_dir": str(self.library)},
+                directory_actions={"library_dir": "delete"})
+        self.assertTrue(original.is_file())
+        self.assertEqual(self.dc._config["cache_dir"], previous_cache)
+
+    def test_temporary_cache_delete_preserves_personal_or_unknown_videos(self):
+        owned = self.cache / "Abcd1234efg.mp4"
+        owned.write_bytes(b"delete")
+        personal = self.cache / "personal.mp4"
+        personal.write_bytes(b"keep")
+        unknown_part = self.cache / "personal.mp4.part"
+        unknown_part.write_bytes(b"keep")
+        self.dc.update_config(
+            {"cache_dir": str(self.root / "new-cache")},
+            directory_actions={"cache_dir": "delete"})
+        self.assertFalse(owned.exists())
+        self.assertTrue(personal.is_file())
+        self.assertTrue(unknown_part.is_file())
+
+    def test_all_directory_actions_are_validated_before_any_file_is_changed(self):
+        cached = self.cache / "Abcd1234efg.mp4"
+        cached.write_bytes(b"keep")
+        permanent = self.library / "123.mp4"
+        permanent.write_bytes(b"keep")
+        with self.assertRaises(ValueError):
+            self.dc.update_config(
+                {"cache_dir": str(self.library), "library_dir": str(self.root / "new-library")},
+                directory_actions={"cache_dir": "delete", "library_dir": "delete"})
+        self.assertTrue(cached.is_file())
+        self.assertTrue(permanent.is_file())
+
     def test_queue_snapshot_does_not_resolve_or_invent_download(self):
         self.queue_song()
         row = self.dc.get_queue_snapshot()[0]
@@ -1164,7 +1243,8 @@ class CoreTests(unittest.TestCase):
         handler = self.proxy()
         handler.path = "/next.mp4"
         handler.wfile = CancelOnFirstWrite()
-        handler._serve_file(str(clip), cooldown_name="next.mp4")
+        _, generation = self.dc._cooldown_selection("next.mp4")
+        handler._serve_file(str(clip), cooldown_generation=generation)
         self.assertEqual(len(writes), 1)
         self.assertTrue(handler.close_connection)
         self.assertIsNone(self.dc.cooldown_check("next.mp4"))
@@ -1192,7 +1272,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(replaced.wfile.getvalue(), b"relax video")
             headers = {call.args[0].lower(): call.args[1]
                        for call in replaced.send_header.call_args_list}
-            self.assertEqual(headers.get("cache-control"), "no-store")
+            self.assertEqual(headers.get("cache-control"), "no-store, no-cache, must-revalidate")
             self.assertEqual(headers.get("connection"), "close")
 
             self.dc.cooldown_disarm()
@@ -1202,7 +1282,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(refreshed.wfile.getvalue(), b"original video")
             refreshed_headers = {call.args[0].lower(): call.args[1]
                                  for call in refreshed.send_header.call_args_list}
-            self.assertNotEqual(refreshed_headers.get("cache-control"), "no-store")
+            self.assertEqual(refreshed_headers.get("cache-control"), "no-store, no-cache, must-revalidate")
         finally:
             self.dc.cooldown_disarm()
             self.dc._running = False
