@@ -469,7 +469,9 @@ class UIIntegrationTests(unittest.TestCase):
         from dance_ui.record_editor import describe_location, describe_world
         from dance_ui import vrcx_stats
         pypy = next(key for key, value in vrcx_stats.WORLD_KEYS.items() if value == "pypy")
-        self.assertEqual(describe_world(pypy), "PyPyDance")
+        expected = {"pypy": "PyPyDance", "wd": "WannaDance", "dudu": "DuDu FitDance"}
+        for world_id, kind in vrcx_stats.WORLD_KEYS.items():
+            self.assertEqual(describe_world(world_id), expected[kind])
         self.assertEqual(describe_world("wrld_custom", {"wrld_custom": "测试地图"}), "测试地图")
         self.assertIn("其他地图", describe_world("wrld_4432ea9b-729c-46e3-8eaf-846aa0a37fdd"))
         self.assertEqual(describe_location(pypy + ":83642~region(jp)"), "房间 83642 · 公开房 · 日本")
@@ -1003,6 +1005,46 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.cooldown_path.text(), str(self.root / "unsaved-draft.mp4"))
         self.assertTrue(window._dirty["settings"])
         self.assertTrue(window.apply_buttons["settings"].isEnabled())
+
+    def test_cache_directory_selection_is_applied_with_storage_settings(self):
+        window, controller, _ = self.make_window(demo=False)
+        selected = self.root / "new-cache"
+        with patch("dance_ui.app.QFileDialog.getExistingDirectory", return_value=str(selected)) as choose:
+            window.cache_browse_button.click()
+        choose.assert_called_once()
+        self.assertEqual(window.cache_path.text(), str(selected))
+        self.assertTrue(window._dirty["storage"])
+
+        received = []
+
+        def update(values):
+            received.append(dict(values))
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        window.apply_settings("storage")
+        self.wait_until(lambda: not controller.busy("apply_storage") and not window._dirty["storage"])
+        self.assertEqual(received[0]["cache_dir"], str(selected))
+        self.assertEqual(self.config["cache_dir"], str(selected))
+
+    def test_parallel_download_setting_is_available_and_applied(self):
+        window, controller, _ = self.make_window(demo=False)
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.max_parallel_row.isHidden())
+        self.assertEqual(window.max_parallel.value(), 2)
+        window.preload_sequential.setChecked(False)
+        window.max_parallel.setValue(4)
+
+        def update(values):
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        window.apply_settings("settings")
+        self.wait_until(lambda: not controller.busy("apply_settings") and not window._dirty["settings"])
+        self.assertEqual(self.config["max_parallel"], 4)
+        self.assertFalse(self.config["preload_sequential"])
 
     def test_steamvr_demo_applies_independently_and_refresh_preserves_a_draft(self):
         window, controller, _ = self.make_window()

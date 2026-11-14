@@ -195,6 +195,10 @@ class DuduTests(unittest.TestCase):
             self.assertEqual(self.dc._cooldown_exclude, "dudu_2346.mp4")
             self.assertFalse(self.dc._cooldown_reload_ready)
             watcher._on_queue(self.dc.extract_queue_items([state]))
+            self.assertFalse(self.dc._cooldown_reload_ready)
+            self.dc.extract_queue_items([
+                "[Video Playback] Attempting to resolve URL 'https://api.dudufit.dance/api/v1/videos/2346?cdn=jpn'"
+            ])
             self.assertTrue(self.dc._cooldown_reload_ready)
             self.assertEqual(self.dc.cooldown_check("dudu_2346.mp4"), str(clip))
             self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
@@ -203,6 +207,28 @@ class DuduTests(unittest.TestCase):
         finally:
             self.dc.cooldown_disarm()
             self.dc._running = False
+
+    def test_room_change_clears_previous_dudu_current_and_empty_queue_source(self):
+        state = (
+            "[VideoQueueHandler.DeserializeVideoSongData] deserialize video data:  "
+            "{\"id\":2346,\"info\":\"Old DuDu song\",\"user\":\"Player\"}"
+        )
+        current = self.dc.extract_queue_items([state])
+        self.assertEqual(current[0]["songNum"], 2346)
+        items = self.dc.extract_queue_items([
+            "[Behaviour] Entering Room: WannaDance",
+            "[VideoQueueHandler.OnPreSerialization] Queue info serialized: []",
+        ])
+        self.assertEqual(items, [])
+        self.assertIsNone(self.dc._dudu_current_song)
+        self.assertEqual(self.dc._queue_room, "wd")
+        items = self.dc.extract_queue_items([
+            "[VideoQueueHandler.OnPreSerialization] Queue info serialized: []"
+        ])
+        self.assertEqual(items, [])
+        items = self.dc.extract_queue_items(["[Behaviour] Entering Room: DuDu FitDance"])
+        self.assertEqual(items, [])
+        self.assertEqual(self.dc._queue_room, "dudu")
 
     def test_enable_starts_service_even_when_previously_stopped(self):
         with mock.patch.object(self.dc, "is_running", side_effect=[False, True]), \

@@ -136,7 +136,7 @@ class PanelSession:
                     self._force_render = False
                     state = dict(self._state)
                     state["hover"] = self._hover
-                    state["message"] = self._current_notice()
+                    state["message"] = self._state.get("message") or self._current_notice()
                     pixels = render_panel(state)
                     # 像素没变就跳过上传，空闲时完全不打扰合成器
                     if pixels != last_pixels:

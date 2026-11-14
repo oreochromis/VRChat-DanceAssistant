@@ -676,7 +676,7 @@ def self_played_count(start_ts, end_ts, self_names):
 
 def play_history_stats(start_ts=None, end_ts=None, kind=None, player=None):
     """聚合实际开始播放的点歌；player 为显示名称时只统计该玩家。
-    start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"。
+    start_ts/end_ts 为本地时间戳（end 不含），kind 限 "pypy"/"wd"/"dudu"。
     available_players 包含当前日期和来源内的全部点歌人，不受 player 筛选影响。"""
     selected_player = str(player or "").strip()
     counts = {}
@@ -4031,6 +4031,11 @@ class DanceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(length))
             self.send_header("Accept-Ranges", "bytes")
+            if cooldown_name is not None:
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Pragma", "no-cache")
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
             with open(path, "rb") as f:
                 f.seek(start)
@@ -4238,26 +4243,46 @@ _wd_current_song = None  # WannaDance 正在播放的歌曲（queue info 不含�
 _wd_last_queue = None    # WannaDance 最近一次排队列表
 _dudu_current_song = None
 _dudu_last_queue = None
+_queue_room = None
 DUDU_STATE_RE = re.compile(r"VideoQueueHandler\.DeserializeVideoSongData\] deserialize video data:\s*(\{.*\})")
+ROOM_ENTER_RE = re.compile(r"\[Behaviour\] (?:Entering|Joining or Creating) Room: (.+)", re.IGNORECASE)
+VIDEO_RELOAD_RE = re.compile(r"\[Video Playback\] Attempting to resolve URL '")
+
+
+def _room_kind(name):
+    normalized = name.strip().casefold().replace(" ", "")
+    return {"pypydance": "pypy", "wannadance": "wd", "dudufitdance": "dudu"}.get(normalized, "other")
 
 
 def _reset_wd_state():
     """服务停止时清空当前歌曲与实际播放去重状态，避免残留到下次启动"""
-    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue, _last_playing_key
+    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue, _last_playing_key, _queue_room
     _wd_current_song = None
     _wd_last_queue = None
     _dudu_current_song = None
     _dudu_last_queue = None
     _last_playing_key = None
+    _queue_room = None
 
 
 def extract_queue_items(lines):
     """取最后一条 PyPyDance / WannaDance / DuDu 队列，后出现的来源生效。"""
-    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue
+    global _wd_current_song, _wd_last_queue, _dudu_current_song, _dudu_last_queue, _queue_room
+    _cooldown_video_reloading(lines)
     items = None
     source = None
     for line in lines:
         content = line.split("  -  ", 1)[-1].strip()
+        room = ROOM_ENTER_RE.search(content)
+        if room:
+            kind = _room_kind(room.group(1))
+            if kind != _queue_room:
+                _queue_room = kind
+                _wd_current_song = _wd_last_queue = None
+                _dudu_current_song = _dudu_last_queue = None
+                items = []
+                source = kind
+            continue
         match = QUEUE_RE.match(content)
         if match:
             try:
@@ -4270,7 +4295,9 @@ def extract_queue_items(lines):
         if match:
             try:
                 raw = json.loads(match.group(1))
-                is_dudu = (bool(raw) and all("playerNames" not in item for item in raw if isinstance(item, dict)) or (_dudu_current_song is not None and not raw))
+                is_dudu = (_queue_room == "dudu" or (_queue_room != "wd" and (
+                    bool(raw) and all("playerNames" not in item for item in raw if isinstance(item, dict))
+                    or (_dudu_current_song is not None and not raw))))
                 if is_dudu:
                     _dudu_last_queue = [_normalize_dudu_item(item) for item in raw if isinstance(item, dict)]
                     source = "dudu"
@@ -4298,6 +4325,8 @@ def extract_queue_items(lines):
                 source = "dudu"
             except Exception:
                 pass
+    if source == "other":
+        return []
     if source == "wd":
         queue = list(_wd_last_queue or [])
         current = _wd_current_song
@@ -4811,28 +4840,35 @@ def cooldown_check(filename, consume=True):
     return path
 
 
-def _cooldown_queue_reloaded(items):
+def _cooldown_video_reloading(lines):
+    global _cooldown_reload_ready
+    if not any(VIDEO_RELOAD_RE.search(line) for line in lines):
+        return
+    with _cooldown_lock:
+        if (not _cooldown_armed or _cooldown_reload_ready
+                or _config.get("cooldown_trigger", "next") != "reload"):
+            return
+        _cooldown_reload_ready = True
+        filename = _cooldown_exclude
+    log(f"检测到视频重新载入，Cool Down 将在本次请求中替换" + (f": {filename}" if filename else ""))
+
+
+def _cooldown_queue_changed(items):
     global _cooldown_reload_ready, _cooldown_exclude
     if not items:
         return
     with _queue_lock:
         previous = copy.deepcopy(_last_queue_items)
+    previous_filename = _queue_item_filename(previous[0]) if previous else None
     filename = _queue_item_filename(items[0])
     with _cooldown_lock:
         if not _cooldown_armed or _config.get("cooldown_trigger", "next") != "reload":
             return
-        if previous != items:
+        if previous_filename and filename and previous_filename != filename:
             _cooldown_exclude = filename
             _cooldown_reload_ready = False
-            return
-        if _cooldown_exclude is None:
+        elif _cooldown_exclude is None:
             _cooldown_exclude = filename
-            return
-        ready = not _cooldown_reload_ready and filename == _cooldown_exclude
-        if ready:
-            _cooldown_reload_ready = True
-    if ready:
-        log(f"检测到当前歌曲 {filename} 重新载入，Cool Down 将在本次请求中替换")
 
 
 class LogWatcher(threading.Thread):
@@ -4911,7 +4947,7 @@ class LogWatcher(threading.Thread):
 
     def _on_queue(self, items):
         global _last_queue_items
-        _cooldown_queue_reloaded(items)
+        _cooldown_queue_changed(items)
         record_queue_snapshot(items)
         record_playing_snapshot(items)
         with _queue_lock:

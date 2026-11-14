@@ -1175,6 +1175,38 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(restored.wfile.getvalue(), b"original video")
         self.dc._running = False
 
+    def test_next_mode_cancel_then_refresh_returns_uncached_original(self):
+        clip = self.root / "relax.mp4"
+        clip.write_bytes(b"relax video")
+        original = self.cache / "next.mp4"
+        original.write_bytes(b"original video")
+        self.dc._config["cooldown_file"] = str(clip)
+        self.queue_song()
+        self.dc.mark_mapping(2, "next.mp4")
+        self.dc._running = True
+        try:
+            self.assertTrue(self.dc.cooldown_arm())
+            replaced = self.proxy()
+            replaced.path = "/next.mp4"
+            replaced.do_GET()
+            self.assertEqual(replaced.wfile.getvalue(), b"relax video")
+            headers = {call.args[0].lower(): call.args[1]
+                       for call in replaced.send_header.call_args_list}
+            self.assertEqual(headers.get("cache-control"), "no-store")
+            self.assertEqual(headers.get("connection"), "close")
+
+            self.dc.cooldown_disarm()
+            refreshed = self.proxy()
+            refreshed.path = "/next.mp4"
+            refreshed.do_GET()
+            self.assertEqual(refreshed.wfile.getvalue(), b"original video")
+            refreshed_headers = {call.args[0].lower(): call.args[1]
+                                 for call in refreshed.send_header.call_args_list}
+            self.assertNotEqual(refreshed_headers.get("cache-control"), "no-store")
+        finally:
+            self.dc.cooldown_disarm()
+            self.dc._running = False
+
     def test_cooldown_reload_follows_the_current_song_and_triggers_once(self):
         self.queue_song()
         clip = self.root / "relax.mp4"
@@ -1192,6 +1224,11 @@ class CoreTests(unittest.TestCase):
         watcher._on_queue(third)
         self.assertIsNone(self.dc.cooldown_check("three.mp4"))
         watcher._on_queue(third)
+        self.assertFalse(self.dc._cooldown_reload_ready)
+        self.dc.extract_queue_items(["[Video Playback] Attempting to resolve URL 'http://cdn.pypy.dance/three.mp4'"])
+        self.assertTrue(self.dc._cooldown_reload_ready)
+        watcher._on_queue(third + [{"songNum": 4, "videoName": "Fourth", "playerName": "Player"}])
+        self.assertTrue(self.dc._cooldown_reload_ready)
         self.assertEqual(self.dc.cooldown_check("three.mp4"), str(clip))
         self.assertEqual(self.dc.get_cooldown_state()["phase"], "serving")
         self.assertEqual(self.dc.cooldown_check("three.mp4"), str(clip))

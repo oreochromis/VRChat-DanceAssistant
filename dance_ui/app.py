@@ -625,6 +625,7 @@ class MainWindow(QMainWindow, Pages):
                 self.preload_count.setMaximum(max(10, config["preload_count"]))
                 self.preload_count.setValue(config["preload_count"])
                 self.preload_sequential.setChecked(config.get("preload_sequential", True))
+                self.max_parallel.setValue(config.get("max_parallel", 2))
                 self.bundle_direct.setChecked(config.get("bundle_direct", True))
                 self.youtube_enabled.setChecked(config["enable_youtube_cache"])
                 self.cooldown_path.setText(config["cooldown_file"])
@@ -738,7 +739,8 @@ class MainWindow(QMainWindow, Pages):
 
     def apply_settings(self, section):
         if section == "storage":
-            patch = {"max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
+            patch = {"cache_dir": self.cache_path.text().strip(),
+                     "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
                      "wd_library_dir": self.wd_library_path.text().strip(),
                      "dudu_library_dir": self.dudu_library_path.text().strip(),
                      "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
@@ -746,6 +748,7 @@ class MainWindow(QMainWindow, Pages):
                      "youtube_permanent": self.youtube_permanent.isChecked()}
         else:
             patch = {"preload_count": self.preload_count.value(), "preload_sequential": self.preload_sequential.isChecked(),
+                     "max_parallel": self.max_parallel.value(),
                      "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
                      "vr_overlay": self.vr_overlay.isChecked(), "close_to_tray": self.close_to_tray.isChecked(),
                      "cooldown_file": self.cooldown_path.text().strip(), "preferred_cdn_ip": self.preferred_ip.text().strip(),
@@ -823,6 +826,11 @@ class MainWindow(QMainWindow, Pages):
             message += " 启动设置有未应用的更改。"
         self.steamvr_hint.setText(message)
         self.render_steamvr_controls()
+
+    def browse_cache(self):
+        path = QFileDialog.getExistingDirectory(self, "选择临时缓存目录", self.cache_path.text())
+        if path:
+            self.cache_path.setText(path)
 
     def browse_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择永久曲库目录", self.library_path.text())
@@ -1264,7 +1272,7 @@ class MainWindow(QMainWindow, Pages):
             set_status(self.song_state, name, state)
         else:
             self.song_title.setText("等待进入跳舞房")
-            self.song_meta.setText("进入 PyPyDance / WannaDance 房间后，这里会显示当前歌曲、点歌人和缓存位置。")
+            self.song_meta.setText("进入 PyPyDance / WannaDance / DuDu FitDance 房间后，这里会显示当前歌曲、点歌人和缓存位置。")
             set_status(self.song_state, "等待检测")
         self.minimal_song_title.setText(self.song_title.text())
         self.minimal_song_meta.setText(self.song_meta.text())

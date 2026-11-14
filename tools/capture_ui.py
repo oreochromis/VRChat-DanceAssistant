@@ -61,7 +61,8 @@ def main():
 
         store.select("light")
         window.apply_appearance()
-        for index, name in enumerate(("run-light", "storage", "settings", "appearance")):
+        for index, name in ((0, "run-light"), (1, "storage"), (2, "stats"),
+                            (3, "settings"), (4, "appearance")):
             window.navigate(index)
             capture(name)
         window.navigate(1)

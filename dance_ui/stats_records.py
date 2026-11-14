@@ -252,7 +252,7 @@ def _clean_history(values):
         raise ValueError("播放时间或歌曲编号无效。")
     source = values.get("kind")
     if source not in ("pypy", "wd", "dudu"):
-        raise ValueError("歌曲来源必须是 pypy 或 wd。")
+        raise ValueError("歌曲来源必须是 pypy、wd 或 dudu。")
     return {"ts": timestamp, "kind": source, "id": song_id,
             "name": str(values.get("name") or "").strip(),
             "player": str(values.get("player") or "").strip()}

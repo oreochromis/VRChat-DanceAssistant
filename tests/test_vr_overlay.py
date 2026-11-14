@@ -207,6 +207,27 @@ class PanelSessionTests(unittest.TestCase):
         self.assertTrue(any(m.get("type") == "log" and "VR 点击" in m.get("message", "")
                             for m in sent))
 
+    def test_parent_notice_overrides_click_feedback_at_message_position(self):
+        api = FakeOverlayAPI()
+        session, commands, _, thread = self.run_session(api)
+        state = sample_state()
+        state["message"] = "请先取消当前 CoolDown，再切换触发时机。"
+        seen = []
+        original = vr_panel_worker.render_panel
+
+        def capture(panel_state):
+            seen.append(panel_state.get("message"))
+            return original(panel_state)
+
+        with patch.object(vr_panel_worker, "render_panel", side_effect=capture):
+            commands.put({"type": "state", "data": state})
+            session._set_notice("已发送操作指令")
+            self.assertTrue(wait_until(lambda: state["message"] in seen))
+        commands.put({"type": "stop"})
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("已发送操作指令", seen)
+
     def test_focus_leave_clears_hover_highlight(self):
         def to_norm(bx, by):
             return (bx / vr_overlay.TEXTURE_W,

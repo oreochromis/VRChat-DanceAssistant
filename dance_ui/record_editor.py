@@ -33,7 +33,7 @@ def _time_text(value, vrcx=False):
 
 def describe_world(world_id, cached_names=None):
     world_id = str(world_id or "")
-    known = {"pypy": "PyPyDance", "wd": "WannaDance"}
+    known = {"pypy": "PyPyDance", "wd": "WannaDance", "dudu": "DuDu FitDance"}
     if world_id in vrcx_stats.WORLD_KEYS:
         return known[vrcx_stats.WORLD_KEYS[world_id]]
     cached = (cached_names or {}).get(world_id)
