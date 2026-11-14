@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
@@ -43,7 +43,12 @@ class LibraryBrowser(QDialog):
         self._parts = 0
         self._missing = {}  # id -> {"name": str|None, "dead": bool}
         self._pending = set()
+        self._closed = False
+        self._needs_scan = False
+        self._needs_missing = False
 
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.finished.connect(self._detach)
         self.setWindowTitle("曲库浏览")
         self.setWindowFlag(Qt.WindowType.Window, True)
         self.resize(820, 560)
@@ -56,7 +61,7 @@ class LibraryBrowser(QDialog):
         self.source = QComboBox()
         for value, text in _KINDS:
             self.source.addItem(text, value)
-        self.source.setCurrentIndex(0 if self._kind == "pypy" else 1)
+        self.source.setCurrentIndex(self.source.findData(self._kind))
         self.source.currentIndexChanged.connect(self._source_changed)
         top.addWidget(self.source)
         self.search = QLineEdit()
@@ -132,6 +137,14 @@ class LibraryBrowser(QDialog):
             self.refresh()
 
     def refresh(self):
+        if self._closed:
+            return
+        # A previous browser may still have an in-flight scan. The controller
+        # serializes scans, so request ours after it finishes instead of losing it.
+        if self.controller.busy("library_scan"):
+            self._needs_scan = True
+            self._on_busy("library_scan", True)
+            return
         self._missing = {}
         self.missing_label.hide()
         self.summary.setText("正在扫描…")
@@ -139,11 +152,22 @@ class LibraryBrowser(QDialog):
         self.controller.library_scan(self._kind)
 
     def find_missing(self):
+        if self._closed:
+            return
         self.missing_label.setText("正在对照清单检查缺失…")
         self.missing_label.show()
+        if self.controller.busy("library_missing"):
+            self._needs_missing = True
+            self._on_busy("library_missing", True)
+            return
         self.controller.library_missing(self._kind)
 
     def _on_result(self, operation, result):
+        if self._closed or (operation == "library_scan" and self._needs_scan) or (
+                operation == "library_missing" and self._needs_missing):
+            return
+        if isinstance(result, dict) and result.get("kind", self._kind) != self._kind:
+            return
         if operation == "library_scan":
             if result is None:
                 self._show_no_dir()
@@ -159,7 +183,7 @@ class LibraryBrowser(QDialog):
             self._show_deleted(result or {})
 
     def _on_error(self, operation, message):
-        if operation not in _OPS:
+        if self._closed or operation not in _OPS:
             return
         self.summary.setText("操作失败：" + message)
         if operation in ("library_missing", "library_delete"):
@@ -167,7 +191,7 @@ class LibraryBrowser(QDialog):
             self.missing_label.show()
 
     def _on_busy(self, operation, busy):
-        if operation not in _OPS:
+        if self._closed or operation not in _OPS:
             return
         if busy:
             self._pending.add(operation)
@@ -178,6 +202,12 @@ class LibraryBrowser(QDialog):
         for widget in (self.refresh_button, self.missing_button,
                        self.delete_button, self.source):
             widget.setEnabled(not blocked)
+        if operation == "library_scan" and not busy and self._needs_scan:
+            self._needs_scan = False
+            QTimer.singleShot(0, self.refresh)
+        if operation == "library_missing" and not busy and self._needs_missing:
+            self._needs_missing = False
+            QTimer.singleShot(0, self.find_missing)
 
     # ---------------- 展示 ----------------
 
@@ -186,7 +216,8 @@ class LibraryBrowser(QDialog):
         self._songs = []
         self.summary.setText("未设置曲库目录或目录不存在，请先在「存储」页配置并应用更改。")
 
-    def _row_items(self, sid, name, size_text, size_key, time_text, time_key, flag=None, favorite=False):
+    def _row_items(self, sid, name, size_text, size_key, time_text, time_key, flag=None, favorite=False,
+                   missing_color=None):
         item_id = _SortItem(str(sid))
         item_id.setData(Qt.ItemDataRole.UserRole, sid)
         item_id.setData(_FLAG_ROLE, flag)
@@ -198,8 +229,9 @@ class LibraryBrowser(QDialog):
         item_time.setData(Qt.ItemDataRole.UserRole, time_key)
         items = [item_id, item_name, item_size, item_time]
         if flag:
+            color = missing_color if missing_color is not None else QColor(self._window.store.active["text_secondary"])
             for item in items:
-                item.setForeground(QColor(self._window.store.active["text_secondary"]))
+                item.setForeground(color)
                 item.setToolTip("已确认下架（服务器无此文件）" if flag == "dead"
                                 else "缺失：本地没有该文件")
         return items
@@ -219,6 +251,7 @@ class LibraryBrowser(QDialog):
             text += f" — {self._dir}"
         self.summary.setText(text)
 
+        missing_color = QColor(self._window.store.active["text_secondary"])
         rows = []
         for song in self._songs:
             mtime = song.get("mtime") or 0
@@ -231,7 +264,8 @@ class LibraryBrowser(QDialog):
             rows.append(self._row_items(
                 sid, info.get("name"),
                 "已下架" if info.get("dead") else "缺失", -2 if info.get("dead") else -1,
-                "—", 0, "dead" if info.get("dead") else "missing"))
+                "—", 0, "dead" if info.get("dead") else "missing",
+                favorite=info.get("favorite", False), missing_color=missing_color))
         rows.sort(key=lambda items: items[0].data(Qt.ItemDataRole.UserRole))
 
         self.table.setSortingEnabled(False)
@@ -246,7 +280,7 @@ class LibraryBrowser(QDialog):
         self._apply_filter()
         self.missing_label.setText("正在自动对照完整清单，缺失歌曲会以灰色显示…")
         self.missing_label.show()
-        self.controller.library_missing(self._kind)
+        self.find_missing()
 
     def _apply_filter(self):
         needle = self.search.text().strip().lower()
@@ -269,6 +303,7 @@ class LibraryBrowser(QDialog):
         source = result.get("source")
         missing = result.get("missing") or []
         dead = set(result.get("dead") or [])
+        favorites = set(result.get("favorites") or []) if self._kind == "wd" else set()
         names = result.get("names") or {}
         expected = result.get("expected", 0)
         if not source:
@@ -282,7 +317,7 @@ class LibraryBrowser(QDialog):
             self.missing_label.show()
             return
         self._missing = {int(sid): {"name": names.get(str(sid)) or names.get(sid),
-                                    "dead": sid in dead}
+                                    "dead": sid in dead, "favorite": sid in favorites}
                          for sid in missing}
         fillable = len(missing) - len(dead)
         if not missing:
@@ -309,12 +344,14 @@ class LibraryBrowser(QDialog):
                 self.table.removeRow(row)
         start = self.table.rowCount()
         self.table.setRowCount(start + len(self._missing))
+        missing_color = QColor(self._window.store.active["text_secondary"])
         for offset, (sid, info) in enumerate(sorted(self._missing.items())):
             items = self._row_items(
                 sid, info.get("name"),
                 "已下架" if info.get("dead") else "缺失",
                 -2 if info.get("dead") else -1, "—", 0,
-                "dead" if info.get("dead") else "missing")
+                "dead" if info.get("dead") else "missing",
+                favorite=info.get("favorite", False), missing_color=missing_color)
             for column, item in enumerate(items):
                 self.table.setItem(start + offset, column, item)
         self.table.setUpdatesEnabled(True)
@@ -442,7 +479,10 @@ class LibraryBrowser(QDialog):
         if answer == QMessageBox.StandardButton.Yes:
             self.controller.library_delete(self._kind, ids)
 
-    def closeEvent(self, event):
+    def _detach(self):
+        if self._closed:
+            return
+        self._closed = True
         for signal, slot in ((self.controller.result, self._on_result),
                              (self.controller.error, self._on_error),
                              (self.controller.busy_changed, self._on_busy),
@@ -451,5 +491,9 @@ class LibraryBrowser(QDialog):
                 signal.disconnect(slot)
             except (RuntimeError, TypeError):
                 pass
-        self._window._library_browser = None
+        if self._window._library_browser is self:
+            self._window._library_browser = None
+
+    def closeEvent(self, event):
+        self._detach()
         super().closeEvent(event)

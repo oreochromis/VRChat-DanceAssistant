@@ -11,6 +11,44 @@ from dance_ui import stats_backup
 
 
 class StatsBackupTests(unittest.TestCase):
+    def test_incremental_import_keeps_local_edits_when_backup_also_adds_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, destination = root / "source", root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            old = {"ts": 1000, "kind": "pypy", "id": 1, "name": "Old name", "player": "Alice"}
+            new = {"ts": 2000, "kind": "wd", "id": 2, "name": "New song", "player": "Bob"}
+            edited = {**old, "name": "Locally corrected name"}
+            old_room = {"ts": 1000, "kind": "location", "location": "room", "world_id": "old-world"}
+            new_room = {"ts": 2000, "kind": "leave", "location": "room", "user_id": "Alice"}
+            edited_room = {**old_room, "world_id": "corrected-world"}
+            for name in stats_backup.HISTORY_FILES:
+                (source / name).write_text("\n".join(map(json.dumps, (old, new))) + "\n", encoding="utf-8")
+                (destination / name).write_text(json.dumps(edited) + "\n", encoding="utf-8")
+            (source / stats_backup.ROOM_EVENTS_FILENAME).write_text(
+                "\n".join(map(json.dumps, (old_room, new_room))) + "\n", encoding="utf-8")
+            (destination / stats_backup.ROOM_EVENTS_FILENAME).write_text(
+                json.dumps(edited_room) + "\n", encoding="utf-8")
+            backup = root / "old-backup.zip"
+            with patch.object(stats_backup.core, "data_dir", return_value=str(source)):
+                stats_backup.export_stats_backup(backup)
+            with patch.object(stats_backup.core, "data_dir", return_value=str(destination)):
+                preview = stats_backup.inspect_stats_backup(backup)
+                imported = stats_backup.import_stats_backup(backup)
+                for key in ("play_history_added", "played_history_added", "room_events_added"):
+                    self.assertEqual(preview[key], 1)
+                    self.assertEqual(imported[key], preview[key])
+                for name in stats_backup.HISTORY_FILES:
+                    rows = list(map(json.loads, (destination / name).read_text(encoding="utf-8").splitlines()))
+                    self.assertEqual(rows, [edited, new])
+                room_rows = list(map(json.loads, (destination / stats_backup.ROOM_EVENTS_FILENAME)
+                                     .read_text(encoding="utf-8").splitlines()))
+                self.assertEqual(room_rows, [edited_room, new_room])
+                again = stats_backup.import_stats_backup(backup)
+                self.assertEqual(again["played_history_added"], 0)
+                self.assertEqual(again["room_events_added"], 0)
+
     def test_export_and_incremental_import_preserve_existing_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

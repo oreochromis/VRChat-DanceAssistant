@@ -7,6 +7,7 @@ import os
 import sqlite3
 import threading
 import time
+from bisect import bisect_right
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -254,6 +255,12 @@ def _activity_timestamps(vrcx_timestamps=()):
 
 def _own_intervals(rows, observed_end, activity_timestamps=(), own_leaves=()):
     intervals = {}
+    activity_timestamps = sorted(activity_timestamps)
+    leaves_by_location = {}
+    for timestamp, location in own_leaves:
+        leaves_by_location.setdefault(location, []).append(timestamp)
+    for leaves in leaves_by_location.values():
+        leaves.sort()
     events = []
     for created_at, location, world_id in rows:
         try:
@@ -263,21 +270,20 @@ def _own_intervals(rows, observed_end, activity_timestamps=(), own_leaves=()):
     events.sort(key=lambda item: item[0])
     for index, (start, location, world_id) in enumerate(events):
         end = events[index + 1][0] if index + 1 < len(events) else observed_end
-        for leave, leave_location in own_leaves:
-            if leave <= start:
-                continue
-            if not leave_location or leave_location == location:
-                end = min(end, leave)
-                break
+        # Only the first matching leave after this entrance can shorten it.
+        # Both lists are indexed once instead of rescanning years of history.
+        for leave_location in (location, "") if location else ("",):
+            leaves = leaves_by_location.get(leave_location, ())
+            next_leave = bisect_right(leaves, start)
+            if next_leave < len(leaves):
+                end = min(end, leaves[next_leave])
         if not location or world_id not in DANCE_WORLD_IDS or end <= start:
             continue
         segment_start = start
         last_activity = start
-        for timestamp in activity_timestamps:
-            if timestamp <= start:
-                continue
-            if timestamp > end:
-                break
+        first = bisect_right(activity_timestamps, start)
+        last = bisect_right(activity_timestamps, end)
+        for timestamp in activity_timestamps[first:last]:
             if timestamp - last_activity > PLAY_INACTIVITY_SECONDS:
                 if last_activity > segment_start:
                     intervals.setdefault(location, []).append((segment_start, last_activity))
@@ -297,8 +303,9 @@ def _daily_play_stats(own_intervals, start_ts, end_ts):
             end = min(end, end_ts)
             while cursor < end:
                 current = datetime.fromtimestamp(cursor)
-                day_start = datetime(current.year, current.month, current.day).timestamp()
-                segment_end = min(end, day_start + 86400)
+                next_day = current.date() + timedelta(days=1)
+                next_midnight = datetime(next_day.year, next_day.month, next_day.day).timestamp()
+                segment_end = min(end, next_midnight)
                 day = current.strftime("%Y-%m-%d")
                 days[day] = days.get(day, 0) + max(0, segment_end - cursor)
                 cursor = segment_end

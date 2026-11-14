@@ -74,8 +74,7 @@ class MainWindow(QMainWindow, Pages):
         install_input_wheel_filter(QApplication.instance())
         self.controller, self.store = controller, store
         self.controller.configure_steamvr(store.root_dir)
-        from .cdn_favorites import CDNFavorites
-        self.cdn_favorites = CDNFavorites(store.root_dir)
+        self._load_cdn_favorites()
         self._syncing = False
         self._dirty = {"storage": False, "settings": False}
         self.apply_buttons, self.apply_hints = {}, {}
@@ -679,6 +678,14 @@ class MainWindow(QMainWindow, Pages):
             self.storage_mode.setCurrentIndex(index)
         self.storage_mode_hint.setText("当前位置：" + info.get("active_dir", "?"))
 
+    def _load_cdn_favorites(self):
+        from .cdn_favorites import CDNFavorites
+        if self.controller.demo:
+            self.cdn_favorites = CDNFavorites(self.store.root_dir)
+        else:
+            self.cdn_favorites = CDNFavorites(self.controller.storage_info()["active_dir"],
+                                              legacy_roots=(self.store.root_dir,))
+
     def sync_vrcx_now(self):
         if self.controller.busy("vrcx_stats") or self.controller.busy("vrcx_stats_auto"):
             self.vrcx_sync_status.setText("VRCX 数据正在同步，请稍候。")
@@ -722,7 +729,8 @@ class MainWindow(QMainWindow, Pages):
 
     def apply_settings(self, section):
         if section == "storage":
-            patch = {"max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
+            patch = {"cache_dir": self.cache_path.text().strip(),
+                     "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
                      "wd_library_dir": self.wd_library_path.text().strip(),
                      "dudu_library_dir": self.dudu_library_path.text().strip(),
                      "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
@@ -808,6 +816,11 @@ class MainWindow(QMainWindow, Pages):
         self.steamvr_hint.setText(message)
         self.render_steamvr_controls()
 
+    def browse_cache(self):
+        path = QFileDialog.getExistingDirectory(self, "选择临时缓存目录", self.cache_path.text())
+        if path:
+            self.cache_path.setText(path)
+
     def browse_library(self):
         path = QFileDialog.getExistingDirectory(self, "选择永久曲库目录", self.library_path.text())
         if path:
@@ -874,7 +887,8 @@ class MainWindow(QMainWindow, Pages):
         self._library_browser.activateWindow()
 
     def clear_cache(self):
-        if QMessageBox.question(self, "清理临时缓存", "清理临时缓存目录中的 MP4 文件？\n正在使用的文件会保留，永久曲库不会清理。",
+        directory = self.controller.config()["cache_dir"]
+        if QMessageBox.question(self, "清理临时缓存", f"清理当前已应用的缓存目录中的 MP4 文件？\n{directory}\n正在使用的文件会保留，永久曲库不会清理。",
                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                 QMessageBox.StandardButton.No) == QMessageBox.StandardButton.Yes:
             self.controller.clear_cache()
@@ -1421,6 +1435,8 @@ class MainWindow(QMainWindow, Pages):
             self._write_diagnostics(result)
         elif operation == "storage_mode":
             self.controller.reload_config()
+            self._load_cdn_favorites()
+            self.render_favorites()
             self.load_fields()
             info = result or {}
             self.notify("数据保存位置已切换：" + str(info.get("active_dir", "")))

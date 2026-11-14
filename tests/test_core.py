@@ -486,6 +486,20 @@ class CoreTests(unittest.TestCase):
             self.dc.update_config({"enable_youtube_cache": False})
         self.dc._running = False
 
+    def test_cache_directory_change_persists_without_moving_existing_videos(self):
+        old_video = self.cache / "keep.mp4"
+        old_video.write_bytes(b"existing cache")
+        new = self.root / "视频缓存 new"
+        self.dc.update_config({"cache_dir": str(new)})
+        self.assertTrue(new.is_dir())
+        self.assertEqual(old_video.read_bytes(), b"existing cache")
+        self.assertFalse((new / "keep.mp4").exists())
+        self.dc.load_config()
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(new))
+        with self.assertRaises(ValueError):
+            self.dc.update_config({"cache_dir": str(self.library)})
+        self.assertEqual(self.dc.get_config()["cache_dir"], str(new))
+
     def test_favorite_speedtest_skips_dns_and_uses_configured_concurrency(self):
         self.dc._config["speedtest_threads"] = 3
         favorites = ["1.1.1.1", "2.2.2.2", "3.3.3.3", "4.4.4.4", "8.8.8.8"]
@@ -637,7 +651,7 @@ class CoreTests(unittest.TestCase):
                 self.dc._note_upstream_progress(connection, self.dc.SLOW_WINDOW_BYTES)
         recheck.assert_called_once()
         self.assertIs(recheck.call_args.args[0], connection)
-        self.assertAlmostEqual(recheck.call_args.args[1], 6 / 11)
+        self.assertAlmostEqual(recheck.call_args.args[1], 3 * self.dc.SLOW_WINDOW_BYTES / 1048576 / 11)
 
     def test_slow_recheck_switches_only_a_clearly_faster_alternative(self):
         self.dc._config["preferred_cdn_ip"] = "1.1.1.1"
@@ -2042,6 +2056,205 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(results, [None, None])
             self.assertEqual(factory.call_count, 1)
             self.assertEqual(hijack.call_count, 1)
+
+    def test_wd_latest_unchanged_and_empty_favorites_never_restore_old_log(self):
+        logs = self.root / "logs"
+        logs.mkdir()
+        self.dc.VRC_LOG_DIR = str(logs)
+        older, newer = logs / "output_log_old.txt", logs / "output_log_new.txt"
+        older.write_text("[VideoListManager] WannaFavorite:11\n", encoding="utf-8")
+        os.utime(older, (1000, 1000))
+        for snapshot, expected in (("22", {22}), ("", set())):
+            newer.write_text("[VideoListManager] WannaFavorite:" + snapshot + "\n", encoding="utf-8")
+            os.utime(newer, (2000, 2000))
+            self.dc.refresh_wd_favorites()
+            for _ in range(3):
+                self.assertFalse(self.dc.refresh_wd_favorites())
+                self.assertEqual(self.dc.get_wd_favorites(), expected)
+
+    def test_missing_wd_catalog_marks_favorites_without_local_file(self):
+        directory = self.root / "wd"
+        directory.mkdir()
+        self.dc._config["wd_library_dir"] = str(directory)
+        self.dc.record_wd_favorites(["[VideoListManager] WannaFavorite:7"])
+        catalog = {7: {"name": "Favorite"}, 8: {"name": "Other"}}
+        with mock.patch.object(self.dc, "_wd_catalog", return_value=catalog), \
+             mock.patch.object(self.dc, "_ensure_wd_catalog", return_value=catalog):
+            result = self.dc.library_missing("wd")
+        self.assertEqual(result["kind"], "wd")
+        self.assertEqual(result["missing"], [7, 8])
+        self.assertEqual(result["favorites"], [7])
+
+    def test_stale_youtube_file_does_not_block_cdn_preload_or_retry(self):
+        self.dc._mapping[7] = "current.mp4"
+        (self.cache / "yt_7.mp4").write_bytes(b"old YouTube copy")
+        item = {"songNum": 7}
+        self.dc.submit_preload([item])
+        self.assertEqual(self.dc._preload_dl_items, [("cdn", "current.mp4", 7, None)])
+        self.dc._last_queue_items = [item]
+        with mock.patch.object(self.dc._stop_event, "wait", side_effect=[False, True]), \
+             mock.patch.object(self.dc, "submit_preload_async") as submit:
+            self.dc._preload_retry_loop()
+        submit.assert_called_once_with([item])
+        (self.cache / "current.mp4").write_bytes(b"current CDN copy")
+        with mock.patch.object(self.dc._stop_event, "wait", side_effect=[False, True]), \
+             mock.patch.object(self.dc, "submit_preload_async") as submit:
+            self.dc._preload_retry_loop()
+        submit.assert_not_called()
+
+    def test_background_dispatcher_limits_all_sources_and_observes_runtime_limit(self):
+        self.dc._config.update(preload_sequential=False, max_parallel=1, dudu_enabled=True)
+        release = threading.Event()
+        entered = threading.Condition()
+        calls, active = [], set()
+        peak = [0]
+
+        def download(source):
+            def run(*args, **kwargs):
+                with entered:
+                    calls.append(source)
+                    active.add(source)
+                    peak[0] = max(peak[0], len(active))
+                    entered.notify_all()
+                release.wait(3)
+                with entered:
+                    active.discard(source)
+                return True
+            return run
+
+        with mock.patch.object(self.dc, "download_file", side_effect=download("cdn")), \
+             mock.patch.object(self.dc, "download_wd", side_effect=download("wd")), \
+             mock.patch.object(self.dc, "download_dudu", side_effect=download("dudu")), \
+             mock.patch.object(self.dc, "download_googlevideo", side_effect=download("youtube")):
+            self.dc._preload_dl_items[:] = [
+                ("cdn", "one.mp4", 1, None), ("wd", None, 2, None),
+                ("dudu", None, 3, None), ("youtube", "https://example.invalid/video", 4, None),
+            ]
+            worker = threading.Thread(target=self.dc._preload_download_loop, daemon=True)
+            worker.start()
+            try:
+                with entered:
+                    self.assertTrue(entered.wait_for(lambda: len(calls) == 1, timeout=2))
+                    self.assertFalse(entered.wait_for(lambda: len(calls) > 1, timeout=.1))
+                # Raising the configured cap takes effect without a service restart.
+                self.dc._config["max_parallel"] = 2
+                with entered:
+                    self.assertTrue(entered.wait_for(lambda: len(calls) == 2, timeout=2))
+                    self.assertFalse(entered.wait_for(lambda: len(calls) > 2, timeout=.1))
+                # Repeated requests for an active target reserve no extra thread.
+                for _ in range(20):
+                    self.dc.start_background_download("one.mp4", 1)
+                self.assertEqual(len(self.dc._preload_dl_active), 2)
+                self.assertEqual(len(self.dc._preload_dl_items), 2)
+                release.set()
+                with entered:
+                    self.assertTrue(entered.wait_for(lambda: len(calls) == 4, timeout=2))
+                self.assertEqual(sorted(calls), ["cdn", "dudu", "wd", "youtube"])
+                self.assertLessEqual(peak[0], 2)
+            finally:
+                release.set()
+                self.dc._stop_event.set()
+                worker.join(2)
+
+    def test_playback_jobs_survive_queue_refresh_and_stop_discards_pending(self):
+        self.dc._config["preload_sequential"] = False
+        self.dc._mapping[2] = "two.mp4"
+        self.dc.start_background_download("playing.mp4")
+        self.dc.submit_preload([{"songNum": 2}, {"songNum": 2}])
+        self.assertEqual(self.dc._preload_dl_items, [
+            ("cdn", "playing.mp4", None, None), ("cdn", "two.mp4", 2, None),
+        ])
+        self.assertIsNone(self.dc.stop_services())
+        self.assertEqual(self.dc._preload_dl_items, [])
+        self.assertEqual(self.dc._preload_dl_priority, set())
+        self.dc.start_background_download("after-stop.mp4")
+        self.assertEqual(self.dc._preload_dl_items, [])
+
+    def test_pending_playback_priority_follows_idle_directory_changes(self):
+        self.dc.start_background_download("playing.mp4")
+        new_cache = self.root / "new-cache"
+        new_cache.mkdir()
+        self.dc.update_config({"cache_dir": str(new_cache)})
+        self.dc.submit_preload([])
+        self.assertEqual(self.dc._preload_dl_items, [("cdn", "playing.mp4", None, None)])
+        self.assertEqual(self.dc._preload_dl_priority, {("cdn", "playing.mp4", None)})
+
+    def test_delayed_playback_enqueue_cannot_survive_stop_or_restart(self):
+        target = self.dc.target_path("old.mp4")
+        for restarted in (False, True):
+            with self.subTest(restarted=restarted):
+                self.dc._stop_event.clear()
+
+                def stop_before_reservation(*args):
+                    self.assertIsNone(self.dc.stop_services())
+                    if restarted:
+                        self.dc._stop_event.clear()  # The following session is starting.
+                    return target
+
+                with mock.patch.object(self.dc, "_preload_target", side_effect=stop_before_reservation):
+                    self.dc._queue_serial_download("cdn", "old.mp4", None)
+                self.assertEqual(self.dc._preload_dl_items, [])
+                self.assertEqual(self.dc._preload_dl_priority, set())
+
+    def test_preload_resolution_cannot_commit_an_old_session_queue(self):
+        def resolve_after_stop(song_id):
+            self.assertIsNone(self.dc.stop_services())
+            self.dc._stop_event.clear()
+            self.dc._mapping[song_id] = "resolved-after-stop.mp4"
+
+        with mock.patch.object(self.dc, "resolve_video_filename", side_effect=resolve_after_stop):
+            self.dc.submit_preload([{"songNum": 7}])
+        self.assertEqual(self.dc._preload_dl_items, [])
+
+    def test_stopping_preload_does_not_launch_remaining_jobs(self):
+        self.dc._config.update(preload_sequential=False, max_parallel=1)
+        first = threading.Event()
+        calls = []
+
+        def download(filename, *args, **kwargs):
+            calls.append(filename)
+            first.set()
+            self.dc._stop_event.wait(2)
+
+        self.dc._preload_dl_items[:] = [
+            ("cdn", "one.mp4", 1, None), ("cdn", "two.mp4", 2, None),
+        ]
+        with mock.patch.object(self.dc, "download_file", side_effect=download):
+            worker = threading.Thread(target=self.dc._preload_download_loop, daemon=True)
+            worker.start()
+            try:
+                self.assertTrue(first.wait(2))
+                new_cache = self.root / "new-cache"
+                new_cache.mkdir()
+                # Worker reservation protects the directory even before the
+                # downloader has registered its open file in _begin_download.
+                with self.assertRaisesRegex(ValueError, "下载|任务"):
+                    self.dc.update_config({"cache_dir": str(new_cache)})
+                self.assertIsNone(self.dc.stop_services())
+                worker.join(2)
+                self.assertEqual(calls, ["one.mp4"])
+                self.assertEqual(self.dc._preload_dl_items, [])
+                self.assertEqual(self.dc._preload_dl_active, set())
+            finally:
+                self.dc._stop_event.set()
+                worker.join(2)
+
+    def test_passive_range_cache_download_runs_without_vrchat_log_directory(self):
+        self.dc._config.update(bundle_direct=False, auto_prefer_cdn=False, enable_youtube_cache=False)
+        completed = threading.Event()
+        self.dc.add_listener(lambda kind, data: completed.set() if kind == "download_done" else None)
+        responses = [FakeResponse([b"abc"], total=3, status=206),
+                     FakeResponse([b"abcdef"], total=6)]
+        with self.service_environment(), \
+             mock.patch.object(self.dc, "open_upstream", side_effect=lambda *args, **kwargs: (FakeConnection(), responses.pop(0))):
+            self.assertIsNone(self.dc.start_services())
+            self.assertFalse(self.dc.get_runtime_state()["queue_watcher_available"])
+            handler = self.proxy()
+            handler.headers = {"Range": "bytes=0-2"}
+            handler._proxy()
+            self.assertEqual(handler.wfile.getvalue(), b"abc")
+            self.assertTrue(completed.wait(2))
+            self.assertEqual(Path(self.dc.target_path("video.mp4")).read_bytes(), b"abcdef")
 
     def test_stop_during_start_cancels_before_hosts_are_changed(self):
         entered, release = threading.Event(), threading.Event()

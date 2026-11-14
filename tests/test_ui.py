@@ -58,7 +58,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
         self.patches = ExitStack()
-        self.patches.enter_context(patch("winreg.QueryValueEx", return_value=1))
+        self.patches.enter_context(patch("dance_ui.theme._windows_dark_mode", return_value=False))
         self.patches.enter_context(patch("dance_ui.app.set_windows_application_identity"))
         self.addCleanup(self.patches.close)
         self.windows = []
@@ -968,6 +968,7 @@ class UIIntegrationTests(unittest.TestCase):
         window.preferred_ip.setText("104.16.0.2")
         window.cooldown_path.setText(str(self.root / "unsaved-draft.mp4"))
         window.cache_limit.setValue(4096)
+        window.cache_path.setText(str(self.root / "new cache"))
         received = []
 
         def update(values):
@@ -980,6 +981,8 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.apply_buttons["storage"], Qt.MouseButton.LeftButton)
         self.wait_until(lambda: not controller.busy("apply_storage") and not window._dirty["storage"])
         self.assertEqual(self.config["max_cache_mb"], 4096)
+        self.assertEqual(received[0]["cache_dir"], str(self.root / "new cache"))
+        self.assertEqual(window.cache_path.text(), str(self.root / "new cache"))
         self.assertNotIn("preload_count", received[0])
         self.assertEqual(self.config["preload_count"], original_settings["preload_count"])
         self.assertEqual(window.preload_count.value(), 7)
@@ -987,6 +990,83 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(window.cooldown_path.text(), str(self.root / "unsaved-draft.mp4"))
         self.assertTrue(window._dirty["settings"])
         self.assertTrue(window.apply_buttons["settings"].isEnabled())
+
+    def test_cache_directory_picker_keeps_a_draft_and_opens_only_the_applied_path(self):
+        window, controller, _ = self.make_window(demo=False)
+        window.set_ui_mode("simple")
+        QTest.mouseClick(window.nav_buttons[1], Qt.MouseButton.LeftButton)
+        self.assertTrue(window.cache_browse_button.isVisible())
+        self.assertFalse(window.cache_path.isReadOnly())
+        old = self.config["cache_dir"]
+        chosen = str(self.root / "视频缓存 new")
+        opened = Mock()
+        controller.open_directory = opened
+        with patch("dance_ui.app.QFileDialog.getExistingDirectory", return_value=chosen) as picker:
+            QTest.mouseClick(window.cache_browse_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(picker.call_args.args[2], old)
+        self.assertEqual(window.cache_path.text(), chosen)
+        self.assertTrue(window._dirty["storage"])
+        self.assertFalse(window._dirty["settings"])
+        self.assertEqual(self.config["cache_dir"], old)
+        self.core_mocks["update_config"].assert_not_called()
+        with patch("dance_ui.app.QFileDialog.getExistingDirectory", return_value=""):
+            QTest.mouseClick(window.cache_browse_button, Qt.MouseButton.LeftButton)
+        self.assertEqual(window.cache_path.text(), chosen)
+        QTest.mouseClick(window.cache_open_button, Qt.MouseButton.LeftButton)
+        opened.assert_called_with(old)
+
+        def apply(values):
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", apply)
+        QTest.mouseClick(window.apply_buttons["storage"], Qt.MouseButton.LeftButton)
+        self.wait_until(lambda: not controller.busy("apply_storage") and not window._dirty["storage"])
+        window.load_fields("storage")
+        self.assertEqual(window.cache_path.text(), chosen)
+        QTest.mouseClick(window.cache_open_button, Qt.MouseButton.LeftButton)
+        opened.assert_called_with(chosen)
+
+    def test_rejected_cache_directory_change_preserves_saved_path_and_draft(self):
+        window, controller, _ = self.make_window(demo=False)
+        original = self.config["cache_dir"]
+        draft = str(self.root / "blocked cache")
+        window.cache_path.setText(draft)
+
+        def reject(values):
+            raise ValueError("有下载或曲库任务正在进行，请等待结束后再修改保存目录")
+
+        self.allow_core("update_config", reject)
+        QTest.mouseClick(window.nav_buttons[1], Qt.MouseButton.LeftButton)
+        QTest.mouseClick(window.apply_buttons["storage"], Qt.MouseButton.LeftButton)
+        self.wait_until(lambda: not controller.busy("apply_storage") and "任务正在进行" in window.banner.text())
+        self.assertEqual(self.config["cache_dir"], original)
+        self.assertEqual(window.cache_path.text(), draft)
+        self.assertTrue(window._dirty["storage"])
+        self.assertTrue(window.apply_buttons["storage"].isEnabled())
+
+    def test_demo_rejects_empty_cache_directory_without_touching_real_configuration(self):
+        window, controller, _ = self.make_window()
+        old = controller.config()["cache_dir"]
+        window.cache_path.clear()
+        window.apply_settings("storage")
+        self.assertEqual(controller.config()["cache_dir"], old)
+        self.assertTrue(window._dirty["storage"])
+        self.assertIn("缓存目录不能为空", window.banner.text())
+        self.core_mocks["update_config"].assert_not_called()
+
+    def test_clear_cache_confirmation_identifies_applied_directory_instead_of_draft(self):
+        from PySide6.QtWidgets import QMessageBox
+        window, controller, _ = self.make_window()
+        applied = controller.config()["cache_dir"]
+        draft = str(self.root / "unsaved cache")
+        window.cache_path.setText(draft)
+        with patch("dance_ui.app.QMessageBox.question", return_value=QMessageBox.StandardButton.No) as confirm, \
+             patch.object(controller, "clear_cache") as clear:
+            window.clear_cache()
+        self.assertIn(applied, confirm.call_args.args[2])
+        self.assertNotIn(draft, confirm.call_args.args[2])
+        clear.assert_not_called()
 
     def test_steamvr_demo_applies_independently_and_refresh_preserves_a_draft(self):
         window, controller, _ = self.make_window()
@@ -1140,7 +1220,10 @@ class UIIntegrationTests(unittest.TestCase):
             return original_import(name, *args, **kwargs)
 
         with patch("builtins.__import__", side_effect=blocked_import), \
-                patch("ctypes.windll.user32.MessageBoxW", return_value=1) as dialog:
+                patch.object(dance_cache_gui, "os", SimpleNamespace(name="nt")), \
+                patch("ctypes.windll", create=True) as windows:
+            dialog = windows.user32.MessageBoxW
+            dialog.return_value = 1
             self.assertEqual(dance_cache_gui.main(), 1)
         self.assertIn("DLL load failed", dialog.call_args.args[1])
         self.assertIn("requirements.txt", dialog.call_args.args[1])
