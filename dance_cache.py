@@ -3847,13 +3847,10 @@ class DanceHandler(BaseHTTPRequestHandler):
         if not name:
             self.send_error(404)
             return
-        p = cooldown_check(name, consume=False) or local_path_for(name)
+        replacement, generation = _cooldown_selection(name, consume=False)
+        p = replacement or local_path_for(name)
         if p:
-            self.send_response(200)
-            self.send_header("Content-Type", "video/mp4")
-            self.send_header("Content-Length", str(os.path.getsize(p)))
-            self.send_header("Accept-Ranges", "bytes")
-            self.end_headers()
+            self._serve_file(p, cooldown_generation=generation, head_only=True)
         else:
             self._proxy(head_only=True)
 
@@ -3868,14 +3865,14 @@ class DanceHandler(BaseHTTPRequestHandler):
         if not name:
             self.send_error(404)
             return
-        replacement = cooldown_check(name)
+        replacement, generation = _cooldown_selection(name)
         p = replacement or local_path_for(name)
         if p:
             log(f"本地命中 {name} -> {os.path.basename(p)}")
             if not replacement:
                 touch(p)
             _note_session_hit(name, p)
-            self._serve_file(p)
+            self._serve_file(p, cooldown_generation=generation)
         else:
             log(f"本地未命中 {name}，回源拉取")
             _note_session_miss(name)
@@ -3892,25 +3889,22 @@ class DanceHandler(BaseHTTPRequestHandler):
         sid = int(match.group(1))
         name = dudu_cache_name(sid)
         if head_only:
-            path = cooldown_check(name, consume=False) or dudu_local_path(sid)
+            replacement, generation = _cooldown_selection(name, consume=False)
+            path = replacement or dudu_local_path(sid)
             if path:
-                self.send_response(200)
-                self.send_header("Content-Type", "video/mp4")
-                self.send_header("Content-Length", str(os.path.getsize(path)))
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
+                self._serve_file(path, cooldown_generation=generation, head_only=True)
             else:
                 self._proxy(head_only=True, upstream_host=DUDU_PLAY_HOST,
                             upstream_path=self.path, name=name, dudu_id=sid)
             return
-        replacement = cooldown_check(name)
+        replacement, generation = _cooldown_selection(name)
         path = replacement or dudu_local_path(sid)
         if path:
             log(f"本地命中 {name} (DuDu) -> {os.path.basename(path)}")
             if not replacement:
                 touch(path)
             _note_session_hit(name, path)
-            self._serve_file(path)
+            self._serve_file(path, cooldown_generation=generation)
         else:
             log(f"本地未命中 {name} (DuDu)，回源拉取")
             _note_session_miss(name)
@@ -3929,25 +3923,22 @@ class DanceHandler(BaseHTTPRequestHandler):
         sid = int(m.group(1))
         name = wd_cache_name(sid)
         if head_only:
-            p = cooldown_check(name, consume=False) or wd_local_path(sid)
+            replacement, generation = _cooldown_selection(name, consume=False)
+            p = replacement or wd_local_path(sid)
             if p:
-                self.send_response(200)
-                self.send_header("Content-Type", "video/mp4")
-                self.send_header("Content-Length", str(os.path.getsize(p)))
-                self.send_header("Accept-Ranges", "bytes")
-                self.end_headers()
+                self._serve_file(p, cooldown_generation=generation, head_only=True)
             else:
                 self._proxy(head_only=True, upstream_host=UDON_PLAY_HOST,
                             upstream_path=self.path, name=name, wd_id=sid)
             return
-        replacement = cooldown_check(name)
+        replacement, generation = _cooldown_selection(name)
         p = replacement or wd_local_path(sid)
         if p:
             log(f"本地命中 {name} (WannaDance) -> {os.path.basename(p)}")
             if not replacement:
                 touch(p)
             _note_session_hit(name, p)
-            self._serve_file(p)
+            self._serve_file(p, cooldown_generation=generation)
         else:
             log(f"本地未命中 {name} (WannaDance)，回源拉取")
             _note_session_miss(name)
@@ -3960,6 +3951,7 @@ class DanceHandler(BaseHTTPRequestHandler):
         self.send_response(302)
         self.send_header("Location", location)
         self.send_header("Content-Length", "0")
+        self._video_cache_headers()
         self.end_headers()
 
     def _handle_api(self, head_only=False):
@@ -4005,21 +3997,61 @@ class DanceHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(status)
             skip = {"transfer-encoding", "connection", "keep-alive", "server", "date", "content-length"}
+            if sid is not None:
+                skip.update({"cache-control", "pragma", "expires", "etag", "last-modified"})
             for k, v in hdrs.items():
                 if k not in skip:
                     self.send_header(k, v)
             self.send_header("Content-Length", str(len(body)))
+            if sid is not None:
+                self._video_cache_headers()
             self.end_headers()
             if not head_only and body:
                 self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _serve_file(self, path):
-        size = os.path.getsize(path)
-        range_header = self.headers.get("Range")
-        rng = parse_range(range_header, size) if range_header else None
+    def _video_cache_headers(self):
+        # A song URL can serve either the original or Cool Down representation.
+        # Keep the application's disk cache, but never cache that substitution
+        # in the player/HTTP layer across a cancel and reload.
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+
+    def _abort_cooldown_stream(self):
+        self.close_connection = True
+        connection = getattr(self, "connection", None)
+        shutdown = getattr(connection, "shutdown", None)
+        if callable(shutdown):
+            try:
+                shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def _serve_file(self, path, *, cooldown_generation=None, head_only=False):
+        if cooldown_generation is not None:
+            with _cooldown_lock:
+                valid = cooldown_generation == _cooldown_generation
+                if valid:
+                    _cooldown_streams[self] = cooldown_generation
+            if not valid:
+                self._abort_cooldown_stream()
+                return
+
+        def still_current():
+            if cooldown_generation is None:
+                return True
+            with _cooldown_lock:
+                return cooldown_generation == _cooldown_generation
+
         try:
+            if not still_current():
+                self._abort_cooldown_stream()
+                return
+            size = os.path.getsize(path)
+            range_header = None if head_only else self.headers.get("Range")
+            rng = parse_range(range_header, size) if range_header else None
             if rng:
                 start, end = rng
                 length = end - start + 1
@@ -4031,18 +4063,37 @@ class DanceHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp4")
             self.send_header("Content-Length", str(length))
             self.send_header("Accept-Ranges", "bytes")
+            self._video_cache_headers()
+            if cooldown_generation is not None:
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
+            if head_only:
+                return
             with open(path, "rb") as f:
                 f.seek(start)
                 remaining = length
                 while remaining > 0:
+                    if not still_current():
+                        self._abort_cooldown_stream()
+                        break
                     chunk = f.read(min(256 * 1024, remaining))
                     if not chunk:
                         break
+                    if not still_current():
+                        self._abort_cooldown_stream()
+                        break
                     self.wfile.write(chunk)
                     remaining -= len(chunk)
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            pass
+        except OSError:
+            # A failed/truncated file response must not leave a reusable HTTP
+            # connection waiting for the remainder of its advertised body.
+            self.close_connection = True
+        finally:
+            if cooldown_generation is not None:
+                with _cooldown_lock:
+                    if _cooldown_streams.get(self) == cooldown_generation:
+                        _cooldown_streams.pop(self, None)
 
     def _proxy(self, head_only=False, upstream_host="cdn.pypy.dance", upstream_path=None, name=None, wd_id=None, dudu_id=None):
         if name is None:
@@ -4068,12 +4119,13 @@ class DanceHandler(BaseHTTPRequestHandler):
             if _cancelled(run_id):
                 return
             self.send_response(resp.status)
-            for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"):
+            for header in ("Content-Type", "Content-Length", "Content-Range", "Accept-Ranges"):
                 value = resp.getheader(header)
                 if value is not None:
                     self.send_header(header, value)
             if resp.getheader("Accept-Ranges") is None:
                 self.send_header("Accept-Ranges", "bytes")
+            self._video_cache_headers()
             self.end_headers()
             if head_only:
                 return
@@ -4661,6 +4713,23 @@ _cooldown_armed = False      # 待命状态
 _cooldown_serving = None     # 正在用放松视频服务的文件名（该文件的后续 Range 请求都用放松视频）
 _cooldown_exclude = None     # 当前歌曲文件名；下一首模式排除它，刷新模式等待它重新载入
 _cooldown_reload_ready = False
+_cooldown_generation = 0
+_cooldown_streams = {}  # Active replacement handlers only; originals are untouched.
+
+
+def _invalidate_cooldown_streams_locked():
+    global _cooldown_generation
+    _cooldown_generation += 1
+    streams = list(_cooldown_streams)
+    _cooldown_streams.clear()
+    return streams
+
+
+def _close_cooldown_streams(streams):
+    # A socket shutdown can wake a writer that needs the state lock to finish.
+    # Never do network I/O while holding _cooldown_lock.
+    for stream in streams:
+        stream._abort_cooldown_stream()
 
 
 def resolve_cooldown_file(configured_path=""):
@@ -4722,9 +4791,11 @@ def cooldown_arm():
         if _config.get("cooldown_trigger", "next") == "reload" and not _cooldown_exclude:
             log("Cool Down 刷新模式需要已识别当前歌曲，请等待队列出现后重试")
             return False
+        expired = _invalidate_cooldown_streams_locked()
         _cooldown_armed = True
         _cooldown_serving = None
         _cooldown_reload_ready = False
+    _close_cooldown_streams(expired)
     log("Cool Down 已待命：" + ("下次重新载入当前歌曲时" if _config.get("cooldown_trigger") == "reload"
                               else "下一首在本机") + "替换为放松视频（可点击取消）")
     _emit_cooldown()
@@ -4735,10 +4806,12 @@ def cooldown_disarm(silent=False):
     global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     with _cooldown_lock:
         was_serving = _cooldown_serving is not None
+        expired = _invalidate_cooldown_streams_locked()
         _cooldown_armed = False
         _cooldown_serving = None
         _cooldown_exclude = None
         _cooldown_reload_ready = False
+    _close_cooldown_streams(expired)
     if not silent:
         log("Cool Down 已取消" + ("；在房间里重新加载当前歌曲即可恢复正常播放" if was_serving else ""))
     _emit_cooldown()
@@ -4749,19 +4822,26 @@ def cooldown_active():
 
 
 def cooldown_check(filename, consume=True):
+    """Return a replacement path; HTTP handlers also bind its session token."""
+    return _cooldown_selection(filename, consume=consume)[0]
+
+
+def _cooldown_selection(filename, consume=True):
     """下一首模式排除当前歌曲；刷新模式只在同一队列重新载入后允许当前歌曲触发。"""
     global _cooldown_armed, _cooldown_serving, _cooldown_exclude, _cooldown_reload_ready
     changed = False
     message = None
     path = None
+    expired = []
     with _cooldown_lock:
         if _cooldown_serving is not None:
             if filename == _cooldown_serving:
                 path = cooldown_file()
                 if path:
-                    return path
+                    return path, _cooldown_generation
                 if not consume:
-                    return None
+                    return None, None
+                expired.extend(_invalidate_cooldown_streams_locked())
                 _cooldown_serving = None
                 _cooldown_exclude = None
                 _cooldown_reload_ready = False
@@ -4769,7 +4849,8 @@ def cooldown_check(filename, consume=True):
                 message = "Cool Down 视频已不可用，已恢复正常请求"
             else:
                 if not consume:
-                    return None
+                    return None, None
+                expired.extend(_invalidate_cooldown_streams_locked())
                 _cooldown_serving = None
                 _cooldown_exclude = None
                 _cooldown_reload_ready = False
@@ -4780,7 +4861,8 @@ def cooldown_check(filename, consume=True):
             (_cooldown_reload_ready and _cooldown_exclude is not None and filename == _cooldown_exclude)
             if reload_mode else filename != _cooldown_exclude)
         if not consume:
-            return cooldown_file() if eligible else None
+            preview = cooldown_file() if eligible else None
+            return preview, _cooldown_generation if preview else None
         if eligible:
             path = cooldown_file()
             _cooldown_armed = False
@@ -4790,14 +4872,17 @@ def cooldown_check(filename, consume=True):
                 _cooldown_serving = filename
                 message = f"Cool Down 触发：{filename} -> 放松视频 {os.path.basename(path)}"
             else:
+                expired.extend(_invalidate_cooldown_streams_locked())
                 _cooldown_serving = None
                 _cooldown_exclude = None
                 message = "Cool Down 视频不可用，已自动取消，请重新选择文件"
+        generation = _cooldown_generation if path else None
+    _close_cooldown_streams(expired)
     if message:
         log(message)
     if changed:
         _emit_cooldown()
-    return path
+    return path, generation
 
 
 def _cooldown_queue_reloaded(items):
