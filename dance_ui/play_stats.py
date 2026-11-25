@@ -12,11 +12,12 @@ from pathlib import Path
 from PySide6.QtCore import QDate, Qt, QSignalBlocker, QTimer, QSize
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout, QMessageBox,
+    QAbstractItemView, QAbstractSpinBox, QComboBox, QDateEdit, QFileDialog, QGridLayout, QHBoxLayout,
     QProgressBar, QSizePolicy, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 import dance_cache as core
+from .i18n import MessageBox as QMessageBox
 from . import stats_backup
 from .pages import button, field
 from .vrcx_profile import friend_avatar_path

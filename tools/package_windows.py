@@ -66,6 +66,8 @@ def main() -> int:
         "_internal/" + COOLDOWN_RELATIVE_PATH,
         "_internal/" + APP_ICON_PNG_RELATIVE_PATH,
         "_internal/" + APP_ICON_ICO_RELATIVE_PATH,
+        "_internal/ffmpeg/ffmpeg.exe",
+        "_internal/ffmpeg/ffprobe.exe",
     )
     for relative in required:
         if not (bundle / relative).is_file():
@@ -121,6 +123,7 @@ def main() -> int:
         raise SystemExit("A passing frozen-demo smoke report using native Windows Qt is required.")
 
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], text=True).strip())
     expected_commit = os.environ.get("GITHUB_SHA")
     if expected_commit and commit != expected_commit:
         raise SystemExit("The checkout commit differs from the GitHub Actions commit.")
@@ -130,6 +133,7 @@ def main() -> int:
         "application_version": __version__,
         "asset": f"VRChatDanceAssistant-windows-{__version__}_x64.zip",
         "git_sha": commit,
+        "git_dirty": dirty,
         "git_ref": os.environ.get("GITHUB_REF"),
         "repository": os.environ.get("GITHUB_REPOSITORY"),
         "built_at_utc": datetime.now(timezone.utc).isoformat(),

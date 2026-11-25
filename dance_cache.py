@@ -14,9 +14,11 @@ YouTube 源：歌单直取开启时优先按 ytid 探测 CDN 同名文件并纳�
 
 import ctypes
 import copy
+from collections import Counter
 import http.client
 import ipaddress
 import json
+import hashlib
 import math
 import os
 import random
@@ -34,8 +36,9 @@ import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     try:
@@ -151,7 +154,8 @@ _STORAGE_FILES = ("config.json", MAPPING_FILENAME, "bundle_songs.json", "dead_so
                   "play_history.jsonl", "played_history.jsonl", "room_events.jsonl", "vrcx-settings.json", "vrcx-stats.json",
                   "vrcx-source.sqlite3", "vrcx-edited.sqlite3", "play-stats-cache.json", "wanna-favorites.json",
                   "profile.json", "profile-avatar.png", "avatar-index.json",
-                  "cdn-favorites.json", "cdn-favorites-migration.json", "cdn-pool.json", "wannadance-catalog.json", "dudu-catalog.json")
+                  "cdn-favorites.json", "cdn-favorites-migration.json", "cdn-pool.json", "wannadance-catalog.json", "dudu-catalog.json",
+                  "quark-share-cache.json", "quark-cookie.bin", "compression-queue.json", "dudu-event-state.json")
 _STORAGE_DIRS = ("avatars", "record-backups", "dudu-https")
 
 
@@ -212,7 +216,7 @@ WD_STATE_RE = re.compile(r"UpdateState: version = [^,]+, songId = (\d+), player 
 FILENAME_RE = re.compile(r"^[\w.\-]+\.mp4$")
 YT_FILENAME_RE = re.compile(r"^yt_(\d+)\.mp4$")
 WD_FILE_RE = re.compile(r"^(\d+)-[0-9a-z]+\.mp4$", re.IGNORECASE)  # play.udon.dance 的文件名 5283-667d628852a98.mp4
-WD_CACHE_RE = re.compile(r"^wd_(\d+)\.mp4$")  # WannaDance 本地缓存命名
+WD_CACHE_RE = re.compile(r"^wd_(\d+)(?:_compressed)?\.mp4$")  # WannaDance 本地缓存命名，支持已压缩标记
 
 
 def hijack_host_list(include_api):
@@ -222,6 +226,7 @@ DEFAULT_CONFIG = {
     "cache_dir": "cache",
     "library_dir": "",
     "wd_library_dir": "",
+    "library_structure": "flat",
     "max_cache_mb": 2048,
     "preload_count": 3,
     "preload_sequential": True,
@@ -238,12 +243,23 @@ DEFAULT_CONFIG = {
     "dudu_enabled": False,
     "dudu_library_dir": "",
     "dudu_permanent": False,
+    "dudu_event_mode": "ask",
+    "dudu_event_allow_over_limit": False,
+    "dudu_event_api_url": "https://api.dudufit.dance/api/v1/managed-playlists/ddfd",
     "cooldown_file": "",
     "cooldown_trigger": "next",
     "bundle_direct": True,
     "vr_overlay": True,
     "close_to_tray": False,
     "auto_start_service": True,
+    "compression_encoder": "cpu",
+    "compression_auto_game": True,
+    "compression_crf": "volume",
+    "compression_parallel": 1,
+    "compression_full_encoders": ["cpu", "nvenc", "amf", "qsv"],
+    "quark_share_url": "https://pan.quark.cn/s/b02ea276bc31",
+    "language": "",
+    "legacy_library_notice_acknowledged": False,
 }
 
 _config = {}
@@ -253,6 +269,7 @@ _downloads_in_progress = {}  # 目标路径 -> thread
 _downloads_lock = threading.RLock()
 _download_meta = {}          # 规范化目标路径 -> GUI 可读任务元信息
 _download_results = {}       # 最近一次下载结果（仅内存，供队列状态使用）
+_dudu_event_reservations = {}
 _config_lock = threading.RLock()
 _lifecycle_lock = threading.RLock()
 _hosts_lock = threading.RLock()
@@ -828,12 +845,23 @@ def _same_directory(left, right):
         return _canonical_path(left) == _canonical_path(right)
 
 
+def _path_in_directory(path, directory):
+    if not path or not directory:
+        return False
+    path = _canonical_path(path)
+    directory = _canonical_path(directory)
+    return path == directory or path.startswith(directory.rstrip(os.sep) + os.sep)
+
+
 def _validated_config(config, *, allow_shared_storage=False):
     cfg = copy.deepcopy(config)
-    for name, minimum in (("preload_count", 0), ("max_cache_mb", 100), ("max_parallel", 1)):
+    for name, minimum in (("preload_count", 0), ("max_cache_mb", 100), ("max_parallel", 1),
+                          ("compression_parallel", 1)):
         value = cfg.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{name} 必须是大于等于 {minimum} 的整数")
+    if isinstance(cfg.get("compression_parallel"), bool) or not 1 <= cfg["compression_parallel"] <= 8:
+        raise ValueError("compression_parallel 必须是 1 到 8 的整数")
     threads = cfg.get("speedtest_threads")
     if isinstance(threads, bool) or not isinstance(threads, int) or not 1 <= threads <= 8:
         raise ValueError("speedtest_threads 必须是 1 到 8 的整数")
@@ -843,15 +871,39 @@ def _validated_config(config, *, allow_shared_storage=False):
         value = cfg.get(name)
         if isinstance(value, bool) or not isinstance(value, int) or not minimum <= value <= maximum:
             raise ValueError(f"{title}必须是 {minimum} 到 {maximum} 的整数")
+    if cfg.get("library_structure", "flat") not in ("flat", "classified"):
+        raise ValueError("library_structure 必须是 flat 或 classified")
     if cfg.get("cooldown_trigger") not in ("next", "reload"):
         raise ValueError("cooldown_trigger 必须是 next 或 reload")
-    for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent", "wd_permanent", "dudu_enabled", "dudu_permanent", "preload_sequential", "auto_prefer_cdn", "bundle_direct", "vr_overlay", "close_to_tray", "auto_start_service"):
+    if cfg.get("dudu_event_mode") not in ("off", "ask", "auto"):
+        raise ValueError("dudu_event_mode 必须是 off、ask 或 auto")
+    full_encoders = cfg.get("compression_full_encoders")
+    if (not isinstance(full_encoders, list)
+            or any(encoder not in ("cpu", "nvenc", "qsv", "amf") for encoder in full_encoders)
+            or len(set(full_encoders)) != len(full_encoders)):
+        raise ValueError("compression_full_encoders 必须是压缩引擎列表")
+    if cfg.get("compression_encoder") not in ("cpu", "auto", "full", "nvenc", "qsv", "amf"):
+        raise ValueError("compression_encoder 必须是 cpu、auto、full、nvenc、qsv 或 amf")
+    crf = cfg.get("compression_crf")
+    if crf not in ("quality", "volume", "auto") and (isinstance(crf, bool) or not isinstance(crf, int) or crf not in (24, 26, 28, 30)):
+        raise ValueError("compression_crf 必须是 quality、volume 或兼容的旧数值")
+    if cfg.get("language") not in ("", "zh", "zh_TW", "en", "ja", "ko"):
+        raise ValueError("language 必须是 auto、zh、zh_TW、en、ja 或 ko")
+    for name in ("enable_youtube_cache", "youtube_permanent", "cdn_permanent", "wd_permanent", "dudu_enabled", "dudu_permanent", "dudu_event_allow_over_limit", "preload_sequential", "auto_prefer_cdn", "bundle_direct", "vr_overlay", "close_to_tray", "auto_start_service", "compression_auto_game", "legacy_library_notice_acknowledged"):
         if not isinstance(cfg.get(name), bool):
             raise ValueError(f"{name} 必须是布尔值")
-    for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir", "preferred_cdn_ip", "cooldown_file"):
+    for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir", "preferred_cdn_ip", "cooldown_file", "quark_share_url", "language", "dudu_event_api_url"):
         if not isinstance(cfg.get(name), str):
             raise ValueError(f"{name} 必须是文本")
         cfg[name] = cfg[name].strip()
+    try:
+        event_api = urllib.parse.urlparse(cfg["dudu_event_api_url"])
+        _ = event_api.port
+    except ValueError as error:
+        raise ValueError("DuDu 活动接口地址无效") from error
+    if (event_api.scheme != "https" or not event_api.hostname or event_api.username or event_api.password
+            or len(cfg["dudu_event_api_url"]) > 2048):
+        raise ValueError("DuDu 活动接口必须是有效的 HTTPS 地址，且不能包含账号密码")
     if not cfg["cache_dir"]:
         raise ValueError("缓存目录不能为空")
     for name in ("cache_dir", "library_dir", "wd_library_dir", "dudu_library_dir", "cooldown_file"):
@@ -918,7 +970,8 @@ def save_config():
         return False
 
 
-def update_config(patch, *, expected_cdn_revision=None, require_auto_cdn=False, directory_actions=None):
+def update_config(patch, *, expected_cdn_revision=None, require_auto_cdn=False, directory_actions=None,
+                  allow_cooldown_relocation=False):
     """验证整份配置并原子保存；失败时不修改内存或原配置文件。"""
     global _config, _cdn_selection_revision
     if not isinstance(patch, dict):
@@ -929,6 +982,20 @@ def update_config(patch, *, expected_cdn_revision=None, require_auto_cdn=False, 
     actions = directory_actions or {}
     if not isinstance(actions, dict):
         raise ValueError("目录操作必须是对象")
+    compression_keys = {"compression_encoder", "compression_full_encoders", "compression_crf",
+                        "compression_parallel", "compression_auto_game"}
+    if not actions and expected_cdn_revision is None:
+        with _config_lock:
+            previous = get_config()
+            cfg = _validated_config({**previous, **copy.deepcopy(patch)})
+            changed = [name for name in patch if previous.get(name) != cfg[name]]
+            compression_only = bool(changed) and set(changed).issubset(compression_keys)
+            if compression_only:
+                _write_config(cfg)
+                _config = cfg
+        if compression_only:
+            emit("config", changed=changed, restart_required=False)
+            return {"restart_required": False, "changed": changed}
     with _lifecycle_lock, _config_lock, _downloads_lock, _cooldown_lock:
         if expected_cdn_revision is not None and (
                 _cdn_selection_revision != expected_cdn_revision
@@ -948,7 +1015,7 @@ def update_config(patch, *, expected_cdn_revision=None, require_auto_cdn=False, 
             raise ValueError("有下载或曲库任务正在进行，请等待结束后再修改保存目录（无需停止服务）")
         if "enable_youtube_cache" in changed and (_running or busy):
             raise ValueError("请先停止服务并等待后台任务结束，再修改 YouTube 缓存开关")
-        if "cooldown_file" in changed and cooldown_active():
+        if "cooldown_file" in changed and cooldown_active() and not allow_cooldown_relocation:
             raise ValueError("请先取消 Cool Down，再更换放松视频")
         if "cooldown_trigger" in changed and cooldown_active():
             raise ValueError("请先取消 Cool Down，再修改触发时机")
@@ -1127,6 +1194,8 @@ YT_ID_RE = re.compile(r"(?:v=|youtu\.be/)([\w-]{11})")
 
 _bundle_ytid = {}            # song_id -> YouTube ID（仅用于歌单直取）
 _bundle_names = {}           # song_id -> 歌名（官方歌单 n 字段，供曲库浏览显示）
+_bundle_categories = {}      # song_id -> 官方 category 标签
+_bundle_genres = {}          # song_id -> 官方 genre 标签列表
 _bundle_ids = set()          # 官方歌单全部编号，包括没有 YouTube ID 的歌曲
 _bundle_lock = threading.Lock()
 _bundle_miss = set()         # 已确认 CDN 上无对应文件的歌曲（持久化到 dead_songs.json）
@@ -1175,10 +1244,12 @@ def _extract_ytid(urls):
 
 
 def _load_bundle_data(data):
-    """从 bundle JSON 建完整编号表、ytid 直取表和歌名表，返回歌单条数。"""
+    """从 bundle JSON 建完整编号表、ytid 直取表、歌名和官方分类表，返回歌单条数。"""
     ids = set()
     table = {}
     names = {}
+    categories = {}
+    genres = {}
     for song in data.get("songs") or []:
         sid = song.get("i")
         urls = song.get("o") or []
@@ -1190,6 +1261,16 @@ def _load_bundle_data(data):
             name = str(song.get("n") or "").strip()
             if name:
                 names[sid] = name
+            tags = song.get("t") or []
+            if isinstance(tags, list):
+                category = next((tag.removeprefix("category:") for tag in tags
+                                 if isinstance(tag, str) and tag.startswith("category:")), "")
+                genre_list = [tag.removeprefix("genre:") for tag in tags
+                              if isinstance(tag, str) and tag.startswith("genre:")]
+                if category:
+                    categories[sid] = category
+                if genre_list:
+                    genres[sid] = genre_list
     if ids:
         with _bundle_lock:
             _bundle_ids.clear()
@@ -1198,6 +1279,10 @@ def _load_bundle_data(data):
             _bundle_ytid.update(table)
             _bundle_names.clear()
             _bundle_names.update(names)
+            _bundle_categories.clear()
+            _bundle_categories.update(categories)
+            _bundle_genres.clear()
+            _bundle_genres.update(genres)
     return len(ids)
 
 
@@ -1210,6 +1295,13 @@ def bundle_song_names():
         with _bundle_lock:
             names = dict(_bundle_names)
     return names
+
+
+def bundle_song_classification():
+    """返回官方 category 与 genre；保留同首歌的多个流派标签。"""
+    bundle_song_names()
+    with _bundle_lock:
+        return dict(_bundle_categories), {sid: list(values) for sid, values in _bundle_genres.items()}
 
 
 def load_bundle_cache():
@@ -1317,13 +1409,180 @@ def invalidate_mapping(song_id, filename):
 
 # ---------------- 曲库 ----------------
 
+_LIBRARY_INDEXES = {}
+_LIBRARY_INDEX_LOCK = threading.RLock()
+_LIBRARY_REFRESH_LOCKS = {}
+_LIBRARY_REFRESHED_AT = {}
+_LIBRARY_INDEX_REVISIONS = {}
+
+
+def _library_root(kind):
+    return _config.get({"pypy": "library_dir", "wd": "wd_library_dir", "dudu": "dudu_library_dir"}[kind]) or ""
+
+
+COMPRESSED_SUFFIX = "_compressed"
+
+
+def _library_filename(kind, song_id, compressed=False):
+    suffix = COMPRESSED_SUFFIX if compressed else ""
+    if kind == "wd":
+        return f"wd_{int(song_id)}{suffix}.mp4"
+    if kind == "dudu":
+        return f"dudu_{int(song_id)}{suffix}.mp4"
+    return f"{int(song_id)}{suffix}.mp4"
+
+
+def compressed_filename(path):
+    name = os.path.basename(path)
+    stem, extension = os.path.splitext(name)
+    if extension.lower() != ".mp4" or stem.endswith(COMPRESSED_SUFFIX):
+        return name
+    return stem + COMPRESSED_SUFFIX + extension
+
+
+def _walk_library_files(directory, kind):
+    if not directory or not os.path.isdir(directory):
+        return []
+    result = []
+    try:
+        for root, dirs, files in os.walk(directory, followlinks=False):
+            dirs[:] = [name for name in dirs if not os.path.islink(os.path.join(root, name))]
+            for name in files:
+                if _owned_directory_file(name, kind):
+                    result.append(os.path.join(root, name))
+    except OSError:
+        pass
+    return result
+
+
+def _library_index(kind, refresh=False, wait=True):
+    root = _library_root(kind)
+    canonical = _canonical_path(root)
+    requested_at = time.monotonic()
+    with _LIBRARY_INDEX_LOCK:
+        cached = _LIBRARY_INDEXES.get(kind)
+        if cached and cached[0] == canonical and not refresh:
+            return cached[1]
+        refresh_lock = _LIBRARY_REFRESH_LOCKS.setdefault(kind, threading.Lock())
+        refreshed_at = _LIBRARY_REFRESHED_AT.get(kind, 0)
+        if not wait and (not refresh or refresh_lock.locked()):
+            return cached[1] if cached and cached[0] == canonical else {}
+    with refresh_lock:
+        while True:
+            with _LIBRARY_INDEX_LOCK:
+                cached = _LIBRARY_INDEXES.get(kind)
+                if cached and cached[0] == canonical and (
+                        not refresh or _LIBRARY_REFRESHED_AT.get(kind, refreshed_at) >= requested_at):
+                    return cached[1]
+                revision = _LIBRARY_INDEX_REVISIONS.get(kind, 0)
+            files = {}
+            for path in _walk_library_files(root, kind):
+                files.setdefault(os.path.basename(path), []).append(path)
+            for name in files:
+                files[name].sort(key=lambda path: (len(Path(path).parts), len(path), path))
+            with _LIBRARY_INDEX_LOCK:
+                if (revision != _LIBRARY_INDEX_REVISIONS.get(kind, 0)
+                        or canonical != _canonical_path(_library_root(kind))):
+                    continue
+                _LIBRARY_INDEXES[kind] = (canonical, files)
+                _LIBRARY_REFRESHED_AT[kind] = time.monotonic()
+                return files
+
+
+def _cooldown_path_in_use(path):
+    configured = _config.get("cooldown_file", "")
+    return bool(configured and _canonical_path(path) == _canonical_path(configured) and cooldown_active())
+
+
+def _sync_cooldown_path(source, destination):
+    configured = _config.get("cooldown_file", "")
+    if configured and _canonical_path(source) == _canonical_path(configured):
+        update_config({"cooldown_file": os.path.abspath(destination)}, allow_cooldown_relocation=True)
+
+
+def _library_index_renamed(kind, source, destination):
+    source_key = _canonical_path(source)
+    destination_key = _canonical_path(destination)
+    with _LIBRARY_INDEX_LOCK:
+        _LIBRARY_INDEX_REVISIONS[kind] = _LIBRARY_INDEX_REVISIONS.get(kind, 0) + 1
+        cached = _LIBRARY_INDEXES.get(kind)
+        if cached:
+            files = cached[1]
+            old_name = os.path.basename(source)
+            new_name = os.path.basename(destination)
+            for name in {old_name, new_name}:
+                paths = [path for path in files.get(name, [])
+                         if _canonical_path(path) not in (source_key, destination_key)]
+                if paths:
+                    files[name] = paths
+                else:
+                    files.pop(name, None)
+            files.setdefault(new_name, []).append(destination)
+            files[new_name].sort(key=lambda path: (len(Path(path).parts), len(path), path))
+    _sync_cooldown_path(source, destination)
+
+
+def _existing_library_path(kind, song_id):
+    root = _library_root(kind)
+    names = (_library_filename(kind, song_id), _library_filename(kind, song_id, compressed=True))
+    for name in names:
+        flat = os.path.join(root, name)
+        if _nonempty_file(flat):
+            return flat
+    had_index = kind in _LIBRARY_INDEXES
+    for refresh in (False, True):
+        files = _library_index(kind, refresh)
+        found = False
+        for name in names:
+            paths = files.get(name) or []
+            found = found or bool(paths)
+            for path in paths:
+                if _nonempty_file(path):
+                    return path
+        if not found and not refresh and not had_index:
+            return None
+    return None
+
+
+def _safe_group_folder(group):
+    group = str(group or "").strip() or "_未分类"
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', " ", group)
+    safe = re.sub(r"\s+", " ", safe).strip().rstrip(".")
+    if not safe:
+        safe = "_未分类"
+    if safe.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)),
+                        *(f"LPT{i}" for i in range(1, 10))}:
+        safe = "_" + safe
+    if len(safe) > 80:
+        safe = safe[:80].rstrip() + "-" + hashlib.sha1(group.encode("utf-8")).hexdigest()[:8]
+    return safe
+
+
+def library_group_name(kind, song_id):
+    sid = int(song_id)
+    if kind == "pypy":
+        return bundle_song_classification()[0].get(sid) or "_未分类"
+    if kind == "wd":
+        item = (_wd_catalog() or {}).get(sid) or {}
+        return str(item.get("group") or "").strip() or "_未分类"
+    return dudu_song_groups().get(sid) or "_未分类"
+
+
+def classified_library_path(kind, song_id, group=None):
+    root = _library_root(kind)
+    if _config.get("library_structure", "flat") == "flat":
+        return os.path.join(root, _library_filename(kind, song_id))
+    group = group if group is not None else library_group_name(kind, song_id)
+    return os.path.join(root, _safe_group_folder(group), _library_filename(kind, song_id))
+
+
 def library_enabled():
     d = _config.get("library_dir") or ""
     return bool(d) and os.path.isdir(d)
 
 
 def library_path(song_id):
-    return os.path.join(_config["library_dir"], f"{song_id}.mp4")
+    return _existing_library_path("pypy", song_id) or classified_library_path("pypy", song_id)
 
 
 def _nonempty_file(path):
@@ -1369,7 +1628,12 @@ def target_path(filename, song_id=None):
         with _mapping_lock:
             song_id = _reverse_mapping.get(filename)
     if song_id is not None and library_enabled() and _config.get("cdn_permanent", False):
-        return library_path(song_id)
+        target = library_path(song_id)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            return target
+        except OSError:
+            pass
     return cache_path(filename)
 
 
@@ -1405,7 +1669,12 @@ def yt_local_path(song_id):
 def yt_target_path(song_id):
     """录流保存位置：曲库模式且"YouTube永久保存"开启 -> 曲库 {id}.mp4；否则进普通缓存（会被清理）"""
     if library_enabled() and _config.get("youtube_permanent", False):
-        return library_path(song_id)
+        target = library_path(song_id)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            return target
+        except OSError:
+            pass
     return cache_path(f"yt_{song_id}.mp4")
 
 
@@ -1421,8 +1690,8 @@ def wd_library_enabled():
 
 
 def wd_library_path(song_id):
-    """WannaDance 永久曲库独立目录，与 PyPyDance 曲库分开配置"""
-    return os.path.join(_config.get("wd_library_dir") or "", wd_cache_name(song_id))
+    """返回已存在的平铺/分类文件，或新下载应使用的官方分组路径。"""
+    return _existing_library_path("wd", song_id) or classified_library_path("wd", song_id)
 
 
 def wd_local_path(song_id):
@@ -1451,7 +1720,7 @@ def wd_target_path(song_id):
 
 # ---------------- DuDu FitDance 源支持（HTTPS API -> global-cdn 签名视频） ----------------
 
-DUDU_CACHE_RE = re.compile(r"^dudu_(\d+)\.mp4$")
+DUDU_CACHE_RE = re.compile(r"^dudu_(\d+)(?:_compressed)?\.mp4$")
 DUDU_FILE_RE = re.compile(r"^(\d+)-[0-9a-f]+\.mp4$", re.IGNORECASE)
 
 
@@ -1465,7 +1734,7 @@ def dudu_library_enabled():
 
 
 def dudu_library_path(song_id):
-    return os.path.join(_config.get("dudu_library_dir") or "", dudu_cache_name(song_id))
+    return _existing_library_path("dudu", song_id) or classified_library_path("dudu", song_id)
 
 
 def dudu_local_path(song_id):
@@ -1477,9 +1746,38 @@ def dudu_local_path(song_id):
     return path if _nonempty_file(path) else None
 
 
+def legacy_library_status():
+    with _config_lock:
+        acknowledged = bool(_config.get("legacy_library_notice_acknowledged", False))
+        directories = {kind: _config.get(name) or "" for kind, name in (
+            ("pypy", "library_dir"), ("wd", "wd_library_dir"), ("dudu", "dudu_library_dir"))}
+    rooms = []
+    for kind, directory in directories.items():
+        if not directory or not os.path.isdir(directory):
+            continue
+        pattern = {"pypy": NUMERIC_MP4_RE, "wd": WD_CACHE_RE, "dudu": DUDU_CACHE_RE}[kind]
+        try:
+            with os.scandir(directory) as entries:
+                if any(pattern.fullmatch(entry.name) and entry.is_file() for entry in entries):
+                    rooms.append(kind)
+        except OSError:
+            continue
+    return {"rooms": rooms, "acknowledged": acknowledged}
+
+
+def legacy_library_notice_status():
+    status = legacy_library_status()
+    return {"rooms": [] if status["acknowledged"] else status["rooms"]}
+
+
 def dudu_target_path(song_id):
     if _config.get("dudu_permanent") and dudu_library_enabled():
-        return dudu_library_path(song_id)
+        target = dudu_library_path(song_id)
+        try:
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            return target
+        except OSError:
+            pass
     return cache_path(dudu_cache_name(song_id))
 
 
@@ -1518,8 +1816,13 @@ def dudu_video_path(song_id):
     return (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
 
 
-def download_dudu(song_id):
-    target = dudu_target_path(song_id)
+class DuduEventCapacityError(RuntimeError):
+    pass
+
+
+def download_dudu(song_id, destination=None, event_key=None):
+    target = destination or dudu_target_path(song_id)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
     if _nonempty_file(target):
         return True
     name = dudu_cache_name(song_id)
@@ -1533,11 +1836,13 @@ def download_dudu(song_id):
     done = total = 0
     conn = None
     eof = False
+    reserved = False
     try:
         conn, response = open_upstream(DUDU_PLAY_HOST, dudu_video_path(song_id))
         if response.status != 200:
             raise RuntimeError(f"HTTP {response.status}")
         total = int(response.getheader("Content-Length") or 0)
+        reserved = _reserve_dudu_event_download(target, total, event_key)
         with open(part, "wb") as handle:
             while not _cancelled(run_id):
                 chunk = _read_download_chunk(response)
@@ -1556,6 +1861,7 @@ def download_dudu(song_id):
             error = f"下载不完整 ({done}/{total})"
             log(f"{name}: {error}")
     except Exception as exc:
+        threading.current_thread()._dance_download_error = exc
         error = str(exc)
         log(f"下载 {name} 出错: {error}")
     finally:
@@ -1564,6 +1870,9 @@ def download_dudu(song_id):
                 conn.close()
             except Exception:
                 pass
+        if reserved:
+            with _downloads_lock:
+                _dudu_event_reservations.pop(_canonical_path(target), None)
         cancelled = not ok and _cancelled(run_id)
         if not ok:
             _remove_part(part)
@@ -1571,14 +1880,255 @@ def download_dudu(song_id):
     return ok
 
 
-def start_dudu_download(song_id):
+def start_dudu_download(song_id, event_key=None):
     target = dudu_target_path(song_id)
     if _nonempty_file(target):
         return
     with _downloads_lock:
         if _canonical_path(target) in _downloads_in_progress:
             return
-    _queue_serial_download("dudu", None, song_id)
+    _queue_serial_download("dudu", None, song_id, event_key=event_key)
+
+
+DUDU_EVENT_PLAYLIST_PATH = "/api/v1/managed-playlists/ddfd"
+DUDU_EVENT_STATE_FILENAME = "dudu-event-state.json"
+_dudu_event_state_lock = threading.RLock()
+
+
+def _dudu_event_state_path():
+    return os.path.join(data_dir(), DUDU_EVENT_STATE_FILENAME)
+
+
+def _load_dudu_event_state():
+    try:
+        with open(_dudu_event_state_path(), "r", encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except (OSError, ValueError):
+        raw = {}
+    if not isinstance(raw, dict):
+        raw = {}
+    return {
+        "handled_signature": str(raw.get("handled_signature") or ""),
+        "decision": str(raw.get("decision") or ""),
+        "playlists": raw.get("playlists") if isinstance(raw.get("playlists"), dict) else {},
+    }
+
+
+def _write_dudu_event_state(state):
+    now = time.time()
+    playlists = []
+    for signature, item in state.get("playlists", {}).items():
+        if not isinstance(item, dict) or not isinstance(item.get("song_ids"), list):
+            continue
+        try:
+            expires_at = float(item.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if expires_at < now - 7 * 86400:
+            continue
+        playlists.append((expires_at, signature, item))
+    playlists.sort(reverse=True)
+    payload = {
+        "handled_signature": state.get("handled_signature", ""),
+        "decision": state.get("decision", ""),
+        "playlists": {signature: item for _, signature, item in playlists[:8]},
+    }
+    base = data_dir()
+    os.makedirs(base, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix="dudu-event-", suffix=".tmp", dir=base)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, _dudu_event_state_path())
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _dudu_event_date_value(playlist):
+    try:
+        return float(playlist.get("event_date") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _dudu_event_expiry(playlist):
+    name = str(playlist.get("name") or "")
+    try:
+        day = datetime.strptime(name, "%Y%m%d")
+    except ValueError:
+        try:
+            day = datetime.fromtimestamp(_dudu_event_date_value(playlist)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
+        except (ValueError, OSError, OverflowError):
+            day = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    return (day + timedelta(days=1)).timestamp()
+
+
+def _dudu_event_api_request():
+    url = get_config()["dudu_event_api_url"]
+    parsed = urllib.parse.urlparse(url)
+    if parsed.hostname == DUDU_API_HOST and parsed.port in (None, 443):
+        path = (parsed.path or "/") + (("?" + parsed.query) if parsed.query else "")
+        return dudu_api_request(path)
+    request = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0", "Accept-Encoding": "identity"})
+    with _tracked_urlopen(request, 30) as response:
+        final_url = urllib.parse.urlparse(response.geturl())
+        if final_url.scheme != "https" or not final_url.hostname:
+            raise RuntimeError("DuDu 活动接口重定向到了非 HTTPS 地址")
+        body = response.read(2 * 1048576 + 1)
+        if len(body) > 2 * 1048576:
+            raise RuntimeError("DuDu API 响应过大")
+        return response.status, {key.lower(): value for key, value in response.getheaders()}, body
+
+
+def _fetch_dudu_latest_event():
+    status, _, body = _dudu_event_api_request()
+    if status != 200:
+        raise RuntimeError(f"DuDu 活动歌单 API HTTP {status}")
+    data = json.loads(body.decode("utf-8"))
+    playlists = data.get("playlists") if isinstance(data, dict) else None
+    if not isinstance(playlists, list) or not playlists:
+        raise RuntimeError("DuDu 活动接口没有返回歌单")
+    candidates = [item for item in playlists
+                  if isinstance(item, dict) and isinstance(item.get("ordered_items"), list)]
+    if not candidates:
+        raise RuntimeError("DuDu 活动歌单缺少歌曲列表")
+    playlist = max(candidates, key=lambda item: (_dudu_event_date_value(item), int(item.get("id") or 0)))
+    song_ids = list(dict.fromkeys(
+        value for value in playlist["ordered_items"]
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0))
+    if not song_ids:
+        raise RuntimeError("DuDu 活动歌单没有可预载的歌曲")
+    name = str(playlist.get("name") or playlist.get("id") or "最新活动")
+    signature = hashlib.sha256(json.dumps(
+        {"id": playlist.get("id"), "name": name, "song_ids": song_ids},
+        ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    expires_at = _dudu_event_expiry(playlist)
+    return {
+        "name": name, "playlist_id": playlist.get("id"), "song_ids": song_ids,
+        "signature": signature, "expires_at": expires_at,
+        "expires_text": datetime.fromtimestamp(expires_at).strftime("%Y-%m-%d %H:%M"),
+        "total": len(song_ids),
+    }
+
+
+def _dudu_event_with_local_status(event):
+    result = dict(event)
+    permanent_ids = []
+    temporary_ids = []
+    missing_ids = []
+    for song_id in event["song_ids"]:
+        path = dudu_local_path(song_id)
+        if not path:
+            missing_ids.append(song_id)
+        elif _canonical_path(path) == _canonical_path(cache_path(dudu_cache_name(song_id))):
+            temporary_ids.append(song_id)
+        else:
+            permanent_ids.append(song_id)
+    result.update({
+        "permanent_cached": len(permanent_ids), "temporary_cached": len(temporary_ids),
+        "already_cached": len(permanent_ids) + len(temporary_ids),
+        "missing_ids": missing_ids, "queued": len(missing_ids),
+    })
+    return result
+
+
+def _remember_dudu_event(event):
+    with _dudu_event_state_lock:
+        state = _load_dudu_event_state()
+        state["playlists"][event["signature"]] = {
+            key: event[key] for key in ("name", "playlist_id", "song_ids", "expires_at", "expires_text")
+        }
+        _write_dudu_event_state(state)
+        return state
+
+
+def _mark_dudu_event_decision(signature, decision):
+    with _dudu_event_state_lock:
+        state = _load_dudu_event_state()
+        if signature not in state["playlists"]:
+            raise RuntimeError("活动歌单状态已变化，请重新检查")
+        state["handled_signature"] = signature
+        state["decision"] = decision
+        _write_dudu_event_state(state)
+
+
+def check_dudu_latest_event():
+    config = get_config()
+    if not config.get("dudu_enabled", False):
+        return {"action": "disabled"}
+    mode = config.get("dudu_event_mode", "ask")
+    if mode == "off":
+        return {"action": "off"}
+    event = _dudu_event_with_local_status(_fetch_dudu_latest_event())
+    state = _remember_dudu_event(event)
+    if event["expires_at"] <= time.time():
+        return {**event, "action": "expired"}
+    same = state.get("handled_signature") == event["signature"]
+    decision = state.get("decision")
+    if same and decision in ("skipped", "complete"):
+        action = decision
+    elif not event["missing_ids"]:
+        _mark_dudu_event_decision(event["signature"], "complete")
+        action = "complete"
+    elif same and decision in ("accepted", "auto"):
+        action = "resume"
+    elif mode == "auto":
+        action = "auto"
+    else:
+        action = "ask"
+    return {**event, "action": action}
+
+
+def dismiss_dudu_latest_event(signature):
+    _mark_dudu_event_decision(signature, "skipped")
+    return {"signature": signature, "action": "skipped"}
+
+
+def preload_dudu_latest_event(signature=None, automatic=False):
+    if automatic:
+        config = get_config()
+        if not config.get("dudu_enabled", False):
+            return {"action": "disabled", "queued": 0}
+        if config.get("dudu_event_mode", "ask") == "off":
+            return {"action": "off", "queued": 0}
+        if not is_running():
+            return {"action": "stopped", "queued": 0}
+    if not is_running():
+        raise RuntimeError("请先启动缓存服务，再预载 DuDu 活动")
+    event = _dudu_event_with_local_status(_fetch_dudu_latest_event())
+    if signature and signature != event["signature"]:
+        raise RuntimeError("DuDu 活动歌单已更新，请重新检查后再缓存")
+    _remember_dudu_event(event)
+    if automatic and event["expires_at"] <= time.time():
+        return {**event, "action": "expired", "queued": 0}
+    _mark_dudu_event_decision(event["signature"], "accepted" if event["missing_ids"] else "complete")
+    for song_id in reversed(event["missing_ids"]):
+        start_dudu_download(song_id, event_key=event["signature"])
+    log(f"DuDu 活动预载 {event['name']}：共 {event['total']} 首，已有 {event['already_cached']} 首，"
+        f"加入队列 {len(event['missing_ids'])} 首，临时活动文件保护至 {event['expires_text']}")
+    return {**event, "action": "accepted", "queued": len(event["missing_ids"])}
+
+
+def _dudu_event_protected_names(now=None):
+    now = time.time() if now is None else now
+    with _dudu_event_state_lock:
+        state = _load_dudu_event_state()
+    names = set()
+    for item in state["playlists"].values():
+        try:
+            if float(item.get("expires_at") or 0) <= now:
+                continue
+        except (TypeError, ValueError):
+            continue
+        for song_id in item.get("song_ids", []):
+            if isinstance(song_id, int) and not isinstance(song_id, bool) and song_id > 0:
+                names.add(dudu_cache_name(song_id))
+    return names
 
 
 # ---------------- 曲库浏览（GUI 曲库管理窗口） ----------------
@@ -1667,7 +2217,7 @@ def refresh_wd_favorites():
     return False
 
 
-NUMERIC_MP4_RE = re.compile(r"^(\d+)\.mp4$")  # PyPyDance 曲库命名（编号即文件名）
+NUMERIC_MP4_RE = re.compile(r"^(\d+)(?:_compressed)?\.mp4$")  # 编号曲库，支持英文已压缩标记
 
 
 WD_CATALOG_CACHE_FILENAME = "wannadance-catalog.json"
@@ -1778,6 +2328,29 @@ DUDU_CATALOG_CACHE_FILENAME = "dudu-catalog.json"
 DUDU_CATALOG_CACHE_SECONDS = 86400
 _dudu_catalog_retry_at = 0.0
 
+_dudu_song_groups = {}
+
+
+def _update_dudu_groups(data):
+    global _dudu_song_groups
+    result = {}
+    for group in data.get("groups") or []:
+        if not isinstance(group, dict):
+            continue
+        name = str(group.get("name") or "").strip()
+        if not name or name.casefold() in ("all", "favorites", "favourites"):
+            continue
+        for sid in group.get("videos") or []:
+            if isinstance(sid, int) and not isinstance(sid, bool) and sid > 0:
+                result[sid] = name
+    _dudu_song_groups = result
+
+
+def dudu_song_groups():
+    if not _dudu_song_groups:
+        _read_dudu_catalog()
+    return dict(_dudu_song_groups)
+
 
 def _read_dudu_catalog():
     try:
@@ -1785,6 +2358,7 @@ def _read_dudu_catalog():
             data = json.load(handle)
     except (OSError, ValueError):
         return None
+    _update_dudu_groups(data)
     catalog = {}
     for song in data.get("videos", []) if isinstance(data, dict) else []:
         if not isinstance(song, dict):
@@ -1800,6 +2374,7 @@ def _fetch_dudu_catalog():
     if status != 200:
         raise RuntimeError(f"DuDu 清单 HTTP {status}")
     data = json.loads(body.decode("utf-8"))
+    _update_dudu_groups(data)
     videos = data.get("videos") if isinstance(data, dict) else None
     if not isinstance(videos, list) or not videos:
         raise ValueError("DuDu 清单为空或格式无效")
@@ -1848,9 +2423,7 @@ def _ensure_dudu_catalog():
 
 
 def scan_library(kind):
-    """扫描曲库目录。kind: "pypy" | "wd" | "dudu"。未配置目录返回 None，否则返回
-    {"dir", "kind", "songs": [{id, name, size, mtime}], "parts", "total_bytes"}。
-    .part 只计数不列入；歌名分别读取 PyPyDance 直取表或对应官方清单。"""
+    """扫描曲库文件，并附带官方分类与可用于筛选的完整分类清单。"""
     with _config_lock:
         if kind == "dudu":
             directory = _config.get("dudu_library_dir") or ""
@@ -1867,8 +2440,11 @@ def scan_library(kind):
         refresh_wd_favorites()
     favorite_ids = get_wd_favorites() if kind == "wd" else set()
     names = {}
+    categories = {}
+    secondary = {}
     if kind == "dudu":
         catalog = _ensure_dudu_catalog()
+        groups = dudu_song_groups()
         if catalog:
             for sid, item in catalog.items():
                 nm = str(item.get("name") or "").strip()
@@ -1876,6 +2452,8 @@ def scan_library(kind):
                 label = f"{nm} - {ar}" if ar and ar != nm else nm
                 if label:
                     names[sid] = label
+                if groups.get(sid):
+                    categories[sid] = groups[sid]
     elif kind == "wd":
         catalog = _wd_catalog()
         if catalog:
@@ -1885,35 +2463,50 @@ def scan_library(kind):
                 label = f"{nm} - {ar}" if ar and ar != nm else nm
                 if label:
                     names[sid] = label
+                group = str(item.get("group") or "").strip()
+                if group:
+                    categories[sid] = group
+                tags = item.get("tag") or []
+                if isinstance(tags, str):
+                    tags = [tags]
+                if isinstance(tags, list):
+                    secondary[sid] = [str(tag) for tag in tags if str(tag).strip()]
     else:
-        names = bundle_song_names()  # PyPyDance 歌名来自官方歌单直取表
+        names = bundle_song_names()
+        categories, secondary = bundle_song_classification()
     songs = []
     parts = 0
     total = 0
-    try:
-        with os.scandir(directory) as it:
-            for entry in it:
-                if entry.name.endswith(".part"):
-                    parts += 1
-                    continue
-                m = pattern.match(entry.name)
-                if not m:
-                    continue
-                try:
-                    if not entry.is_file():
-                        continue
-                    st = entry.stat()
-                except OSError:
-                    continue
-                sid = int(m.group(1))
-                songs.append({"id": sid, "name": names.get(sid),
-                              "size": st.st_size, "mtime": st.st_mtime,
-                              "favorite": kind == "wd" and sid in favorite_ids})
-                total += st.st_size
-    except OSError:
-        return None
-    songs.sort(key=lambda s: s["id"])
-    return {"dir": directory, "kind": kind, "songs": songs,
+    seen = {}
+    for path in _walk_library_files(directory, kind):
+        name = os.path.basename(path)
+        if name.endswith(".part"):
+            parts += 1
+            continue
+        match = pattern.fullmatch(name)
+        if not match:
+            continue
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        sid = int(match.group(1))
+        seen[sid] = seen.get(sid, 0) + 1
+        songs.append({"id": sid, "name": names.get(sid),
+                      "category": categories.get(sid, ""),
+                      "secondary": list(secondary.get(sid) or []),
+                      "size": stat.st_size, "mtime": stat.st_mtime,
+                      "path": path, "relative_path": os.path.relpath(path, directory),
+                      "favorite": kind == "wd" and sid in favorite_ids})
+        total += stat.st_size
+    songs.sort(key=lambda s: (s["id"], s["relative_path"]))
+    _library_index(kind, refresh=True)
+    facets = {
+        "categories": sorted({value for value in categories.values() if value}, key=str.casefold),
+        "secondary": sorted({value for values in secondary.values() for value in values}, key=str.casefold),
+    }
+    return {"dir": directory, "kind": kind, "songs": songs, "facets": facets,
+            "duplicate_ids": sorted(sid for sid, count in seen.items() if count > 1),
             "parts": parts, "total_bytes": total}
 
 
@@ -1928,25 +2521,23 @@ def index_maintenance_status():
 
 
 def library_missing(kind):
-    """对照官方清单找曲库里缺的编号。返回 None（目录未设置）或
-    {"source": 清单描述或 None, "expected", "missing": [id], "dead": [id],
-     "names": {id: 歌名}, "dir"}。
-    pypy 对照完整官方歌单（_bundle_ids），dead 是历史 404 确认的下架歌曲；
-    wd 对照 wannadance_catalog.json（下架曲目已被清单排除）。"""
+    """对照官方清单找缺失编号，同时返回缺失行的歌名与分类信息。"""
     scan = scan_library(kind)
     if scan is None:
         return None
     have = {s["id"] for s in scan["songs"]}
     favorites = sorted(get_wd_favorites()) if kind == "wd" else []
     names = {}
+    metadata = {}
     dead = []
     if kind == "dudu":
         catalog = _ensure_dudu_catalog()
         if catalog is None:
-            return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
+            return {"source": None, "expected": 0, "missing": [], "dead": [], "names": {}, "metadata": {},
+                    "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = set(catalog)
         source = "DuDu 官方清单"
+        groups = dudu_song_groups()
         for sid in expected - have:
             item = catalog.get(sid) or {}
             nm = str(item.get("name") or "").strip()
@@ -1954,11 +2545,12 @@ def library_missing(kind):
             label = f"{nm} - {ar}" if ar and ar != nm else nm
             if label:
                 names[sid] = label
+            metadata[sid] = {"category": groups.get(sid, ""), "secondary": []}
     elif kind == "wd":
         catalog = _ensure_wd_catalog()
         if catalog is None:
-            return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
+            return {"source": None, "expected": 0, "missing": [], "dead": [], "names": {}, "metadata": {},
+                    "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = {sid for sid, item in catalog.items() if not item.get("disable_public")}
         source = "WannaDance 官方清单"
         for sid in expected - have:
@@ -1968,6 +2560,11 @@ def library_missing(kind):
             label = f"{nm} - {ar}" if ar and ar != nm else nm
             if label:
                 names[sid] = label
+            tags = item.get("tag") or []
+            if isinstance(tags, str):
+                tags = [tags]
+            metadata[sid] = {"category": str(item.get("group") or "").strip(),
+                             "secondary": [str(tag) for tag in tags if str(tag).strip()] if isinstance(tags, list) else []}
     else:
         with _bundle_lock:
             ids = set(_bundle_ids)
@@ -1976,37 +2573,34 @@ def library_missing(kind):
             with _bundle_lock:
                 ids = set(_bundle_ids)
         if not ids:
-            return {"source": None, "expected": 0, "missing": [], "dead": [],
-                    "names": {}, "dir": scan["dir"], "kind": kind, "favorites": favorites}
+            return {"source": None, "expected": 0, "missing": [], "dead": [], "names": {}, "metadata": {},
+                    "dir": scan["dir"], "kind": kind, "favorites": favorites}
         expected = ids
         source = "官方歌单"
         _ensure_dead_loaded()
         with _bundle_lock:
             name_table = dict(_bundle_names)
+            category_table = dict(_bundle_categories)
+            genre_table = {sid: list(values) for sid, values in _bundle_genres.items()}
         lacking = expected - have
         dead = sorted(lacking & _bundle_miss)
         for sid in lacking:
             nm = name_table.get(sid)
             if nm:
                 names[sid] = nm
+            metadata[sid] = {"category": category_table.get(sid, ""),
+                             "secondary": genre_table.get(sid, [])}
     return {"source": source, "expected": len(expected),
             "missing": sorted(expected - have), "dead": dead,
-            "names": names, "dir": scan["dir"], "kind": kind, "favorites": favorites}
+            "names": names, "metadata": metadata,
+            "dir": scan["dir"], "kind": kind, "favorites": favorites}
 
 
 def delete_library_songs(kind, ids):
     """从曲库目录永久删除指定编号的 mp4（不进回收站）。
     服务运行中或曲库维护任务（重建/校验）进行中拒绝。返回 {"deleted", "failed", "freed"}。"""
     with _config_lock:
-        if kind == "dudu":
-            directory = _config.get("dudu_library_dir") or ""
-            name_for = dudu_cache_name
-        elif kind == "wd":
-            directory = _config.get("wd_library_dir") or ""
-            name_for = wd_cache_name
-        else:
-            directory = _config.get("library_dir") or ""
-            name_for = lambda sid: f"{sid}.mp4"
+        directory = _library_root(kind)
     if not directory or not os.path.isdir(directory):
         raise RuntimeError("曲库目录未设置或不存在")
     if is_running():
@@ -2016,21 +2610,207 @@ def delete_library_songs(kind, ids):
     deleted = 0
     freed = 0
     failed = []
-    for sid in ids:
-        sid = int(sid)
-        path = os.path.join(directory, name_for(sid))
-        try:
-            size = os.path.getsize(path)
-            os.remove(path)
-            deleted += 1
-            freed += size
-        except FileNotFoundError:
-            failed.append((sid, "文件不存在"))
-        except OSError as e:
-            failed.append((sid, str(e)))
+    files = _library_index(kind, refresh=True)
+    removed_paths = set()
+    for sid in {int(value) for value in ids}:
+        names = (_library_filename(kind, sid), _library_filename(kind, sid, compressed=True))
+        paths = [path for name in names for path in (files.get(name) or [])]
+        if not paths:
+            paths = [os.path.join(directory, names[0])]
+        for path in paths:
+            canonical = _canonical_path(path)
+            if canonical in removed_paths:
+                continue
+            removed_paths.add(canonical)
+            try:
+                size = os.path.getsize(path)
+                os.remove(path)
+                deleted += 1
+                freed += size
+            except FileNotFoundError:
+                failed.append((sid, "文件不存在"))
+            except OSError as e:
+                failed.append((sid, str(e)))
+    _library_index(kind, refresh=True)
     log(f"曲库浏览：永久删除 {deleted} 个文件，释放 {freed / 1048576:.1f} MB"
         + (f"，失败 {len(failed)} 个" if failed else ""))
     return {"deleted": deleted, "failed": failed, "freed": freed}
+
+
+_organize_cancel = threading.Event()
+
+
+def _relocate_compression_records(moves):
+    if not moves:
+        return
+    path = os.path.join(data_dir(), "compression-queue.json")
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return
+    except (OSError, ValueError, TypeError) as error:
+        raise RuntimeError(f"无法读取压缩队列记录：{error}")
+    if not isinstance(payload, dict) or not isinstance(payload.get("items"), list):
+        return
+    destinations = {_canonical_path(source): destination for source, destination in moves}
+    changed = False
+    for item in payload["items"]:
+        if not isinstance(item, dict) or not item.get("path"):
+            continue
+        destination = destinations.get(_canonical_path(item["path"]))
+        if destination:
+            item["path"] = destination
+            changed = True
+    if not changed:
+        return
+    descriptor, temporary = tempfile.mkstemp(prefix="compression-queue-", suffix=".tmp", dir=data_dir())
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _report_organization(kind, phase, done=0, total=0, current=""):
+    emit("library_organize_progress", room=kind, phase=phase, done=done, total=total, current=current)
+
+
+def library_organization_plan(kind, report_progress=False, flatten=False):
+    if report_progress:
+        _report_organization(kind, "scanning")
+    scan = scan_library(kind)
+    if scan is None:
+        raise RuntimeError("曲库目录未设置或不存在")
+    duplicate_ids = set(scan.get("duplicate_ids") or [])
+    moves = []
+    conflicts = []
+    destinations = {}
+    total = len(scan["songs"])
+    if report_progress:
+        _report_organization(kind, "planning", 0, total)
+    for index, song in enumerate(scan["songs"], 1):
+        sid = int(song["id"])
+        source = song["path"]
+        if report_progress and (index == 1 or index % 100 == 0 or index == total):
+            _report_organization(kind, "planning", index, total, os.path.basename(source))
+        if flatten:
+            destination = os.path.join(scan["dir"], os.path.basename(source))
+        else:
+            group = _safe_group_folder(song.get("category"))
+            destination = os.path.join(scan["dir"], group, os.path.basename(source))
+        if _canonical_path(source) == _canonical_path(destination):
+            continue
+        if sid in duplicate_ids or os.path.exists(destination) or (
+                _canonical_path(destination) in destinations):
+            conflicts.append({"id": sid, "source": source, "destination": destination})
+            continue
+        destinations[_canonical_path(destination)] = source
+        moves.append({"id": sid, "source": source, "destination": destination})
+    if conflicts:
+        moves = [move for move in moves if move["id"] not in duplicate_ids]
+    return {"kind": kind, "dir": scan["dir"], "moves": moves,
+            "conflicts": conflicts, "total": total}
+
+
+def cancel_library_organization():
+    _organize_cancel.set()
+
+
+def _cleanup_flattened_directories(root, moved):
+    root_key = _canonical_path(root)
+    candidates = sorted({os.path.dirname(move["source"]) for move in moved},
+                        key=lambda path: len(Path(path).parts), reverse=True)
+    logged = set()
+    for candidate in candidates:
+        directory = candidate
+        while _canonical_path(directory) != root_key and _canonical_path(directory).startswith(
+                root_key.rstrip(os.sep) + os.sep):
+            try:
+                entries = os.listdir(directory)
+            except FileNotFoundError:
+                directory = os.path.dirname(directory)
+                continue
+            except OSError:
+                break
+            if entries:
+                key = _canonical_path(directory)
+                if key not in logged:
+                    log(f"平铺整理保留非空目录：{directory}（包含其他文件）")
+                    logged.add(key)
+                break
+            try:
+                os.rmdir(directory)
+            except OSError:
+                break
+            directory = os.path.dirname(directory)
+
+
+def organize_library(kind, flatten=False):
+    if is_running():
+        raise RuntimeError("请先停止缓存服务，再整理曲库文件夹")
+    if rebuilding() or verifying():
+        raise RuntimeError("曲库维护任务进行中，请稍后再整理")
+    with _downloads_lock:
+        if _downloads_in_progress:
+            raise RuntimeError("仍有下载任务进行中，请等待或取消后再整理")
+    _organize_cancel.clear()
+    plan = library_organization_plan(kind, report_progress=True, flatten=flatten)
+    if _organize_cancel.is_set():
+        log("曲库整理已取消，尚未移动文件")
+        return {"kind": kind, "moved": 0, "total": 0, "cancelled": True}
+    if plan["conflicts"]:
+        raise RuntimeError(f"检测到 {len(plan['conflicts'])} 个同名或重复文件冲突，未移动任何文件")
+    moves = plan["moves"]
+    for move in moves:
+        if _cooldown_path_in_use(move["source"]):
+            raise RuntimeError("CoolDown 正在使用曲库中的文件，请取消或退出 CoolDown 后再整理")
+    moved = []
+    try:
+        _report_organization(kind, "moving", 0, len(moves))
+        for index, move in enumerate(moves, 1):
+            if _organize_cancel.is_set():
+                raise InterruptedError("用户取消整理")
+            os.makedirs(os.path.dirname(move["destination"]), exist_ok=True)
+            if os.path.exists(move["destination"]):
+                raise FileExistsError(move["destination"])
+            os.replace(move["source"], move["destination"])
+            moved.append(move)
+            _sync_cooldown_path(move["source"], move["destination"])
+            if index == 1 or index % 25 == 0 or index == len(moves):
+                _report_organization(kind, "moving", index, len(moves), os.path.basename(move["source"]))
+        _report_organization(kind, "finalizing", len(moved), len(moves))
+        _relocate_compression_records([(move["source"], move["destination"]) for move in moved])
+    except Exception as error:
+        rollback_errors = []
+        for index, move in enumerate(reversed(moved), 1):
+            if index == 1 or index % 25 == 0 or index == len(moved):
+                _report_organization(kind, "rollback", index, len(moved), os.path.basename(move["source"]))
+            try:
+                if os.path.exists(move["source"]):
+                    raise FileExistsError(move["source"])
+                os.replace(move["destination"], move["source"])
+                _sync_cooldown_path(move["destination"], move["source"])
+            except Exception as exc:
+                rollback_errors.append(f"{move['id']}: {exc}")
+        _library_index(kind, refresh=True)
+        emit_stats()
+        if rollback_errors:
+            raise RuntimeError("整理失败且部分文件未能回滚：" + "；".join(rollback_errors[:3])) from error
+        if isinstance(error, InterruptedError):
+            log("曲库整理已取消，已移动的文件均已回滚")
+            return {"kind": kind, "moved": 0, "total": len(moves), "cancelled": True}
+        raise RuntimeError(f"整理失败，已回滚本次移动：{error}") from error
+    if flatten:
+        _cleanup_flattened_directories(plan["dir"], moved)
+    _library_index(kind, refresh=True)
+    emit_stats()
+    log(f"曲库{'平铺' if flatten else '分类'}整理完成：{len(moved)} 个文件已移动")
+    return {"kind": kind, "moved": len(moved), "total": len(moves), "cancelled": False}
 
 
 def learn_mapping_from_redirect(song_num, loc):
@@ -2064,53 +2844,130 @@ def api_request(path):
         conn.close()
 
 
-def get_cache_stats():
-    count = total = lib_count = lib_total = wd_count = wd_total = dudu_count = dudu_total = 0
+_STORAGE_STATS_LOCK = threading.RLock()
+_STORAGE_STATS = None
+STORAGE_STATS_FILENAME = "storage-stats.json"
+
+
+def _empty_storage_stats():
+    return {"count": 0, "total_mb": 0, "limit_mb": int(_config["max_cache_mb"]),
+            "lib_count": 0, "lib_mb": 0, "lib_enabled": library_enabled(),
+            "wd_count": 0, "wd_mb": 0, "dudu_count": 0, "dudu_mb": 0,
+            "updated_at": 0, "region_times": {}, "no_history": True}
+
+
+def storage_stats_snapshot():
+    global _STORAGE_STATS
+    with _STORAGE_STATS_LOCK:
+        if _STORAGE_STATS is None:
+            loaded = None
+            try:
+                candidate = json.loads((Path(data_dir()) / STORAGE_STATS_FILENAME).read_text(encoding="utf-8"))
+                numeric_keys = ("count", "total_mb", "limit_mb", "lib_count", "lib_mb", "wd_count",
+                                "wd_mb", "dudu_count", "dudu_mb", "updated_at")
+                if (isinstance(candidate, dict)
+                        and all(isinstance(candidate.get(key, 0), (int, float))
+                                and not isinstance(candidate.get(key, 0), bool) for key in numeric_keys)
+                        and isinstance(candidate.get("region_times", {}), dict)):
+                    loaded = candidate
+            except (OSError, ValueError, TypeError):
+                pass
+            if loaded is not None:
+                _STORAGE_STATS = {**_empty_storage_stats(), **loaded, "no_history": False}
+            else:
+                _STORAGE_STATS = _empty_storage_stats()
+        return {**copy.deepcopy(_STORAGE_STATS), "from_cache": True}
+
+
+def _publish_storage_stats(update, regions):
+    global _STORAGE_STATS
+    with _STORAGE_STATS_LOCK:
+        current = storage_stats_snapshot()
+        current.update(update)
+        now = time.time()
+        region_times = dict(current.get("region_times") or {})
+        for region in regions:
+            region_times[region] = now
+        current.update(updated_at=now, region_times=region_times, from_cache=False, no_history=False,
+                       directories={"cache": _config["cache_dir"], "pypy": _library_root("pypy"),
+                                    "wd": _library_root("wd"), "dudu": _library_root("dudu")})
+        _STORAGE_STATS = copy.deepcopy(current)
+        try:
+            destination = Path(data_dir()) / STORAGE_STATS_FILENAME
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_suffix(".tmp")
+            temporary.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+            os.replace(temporary, destination)
+        except OSError:
+            pass
+    emit("stats", **copy.deepcopy(current))
+
+
+def emit_cached_storage_stats():
+    emit("stats", **storage_stats_snapshot())
+
+
+def _cache_file_stats():
+    count = total = 0
     try:
         for name in os.listdir(_config["cache_dir"]):
-            p = os.path.join(_config["cache_dir"], name)
-            if name.endswith(".mp4") and os.path.isfile(p):
+            path = os.path.join(_config["cache_dir"], name)
+            if name.endswith(".mp4") and os.path.isfile(path):
                 count += 1
-                total += os.path.getsize(p)
+                total += os.path.getsize(path)
     except Exception:
         pass
-    if library_enabled():
-        try:
-            for name in os.listdir(_config["library_dir"]):
-                p = os.path.join(_config["library_dir"], name)
-                if name.endswith(".mp4") and os.path.isfile(p):
-                    lib_count += 1
-                    lib_total += os.path.getsize(p)
-        except Exception:
-            pass
-    if wd_library_enabled():
-        try:
-            wd_dir = _config["wd_library_dir"]
-            for name in os.listdir(wd_dir):
-                p = os.path.join(wd_dir, name)
-                if WD_CACHE_RE.match(name) and os.path.isfile(p):
-                    wd_count += 1
-                    wd_total += os.path.getsize(p)
-        except Exception:
-            pass
-    if dudu_library_enabled():
-        try:
-            directory = _config["dudu_library_dir"]
-            for name in os.listdir(directory):
-                path = os.path.join(directory, name)
-                if DUDU_CACHE_RE.match(name) and os.path.isfile(path):
-                    dudu_count += 1
-                    dudu_total += os.path.getsize(path)
-        except Exception:
-            pass
+    return count, total
+
+
+def _library_total(kind, enabled, refresh=False):
+    if not enabled:
+        return 0, 0
+    count = total = 0
+    for paths in _library_index(kind, refresh=refresh, wait=False).values():
+        for path in paths:
+            if not path.lower().endswith(".mp4"):
+                continue
+            try:
+                size = os.path.getsize(path)
+            except OSError:
+                continue
+            count += 1
+            total += size
+    return count, total
+
+
+def get_cache_stats(refresh_library=False):
+    count, total = _cache_file_stats()
+    lib_count, lib_total = _library_total("pypy", library_enabled(), refresh_library)
+    wd_count, wd_total = _library_total("wd", wd_library_enabled(), refresh_library)
+    dudu_count, dudu_total = _library_total("dudu", dudu_library_enabled(), refresh_library)
     return count, total, lib_count, lib_total, wd_count, wd_total, dudu_count, dudu_total
 
 
-def emit_stats():
+def emit_stats(refresh_library=False):
+    if refresh_library:
+        count, total = _cache_file_stats()
+        _publish_storage_stats({"count": count, "total_mb": total / 1048576,
+                                "limit_mb": int(_config["max_cache_mb"])}, ("cache",))
+        for kind, enabled in (("pypy", library_enabled()), ("wd", wd_library_enabled()),
+                              ("dudu", dudu_library_enabled())):
+            count, total = _library_total(kind, enabled, refresh=True)
+            if kind == "pypy":
+                update = {"lib_count": count, "lib_mb": total / 1048576, "lib_enabled": enabled}
+            elif kind == "wd":
+                update = {"wd_count": count, "wd_mb": total / 1048576}
+            else:
+                update = {"dudu_count": count, "dudu_mb": total / 1048576}
+            _publish_storage_stats(update, (kind,))
+        return
     count, total, lib_count, lib_total, wd_count, wd_total, dudu_count, dudu_total = get_cache_stats()
-    emit("stats", count=count, total_mb=total / 1048576, limit_mb=int(_config["max_cache_mb"]),
-         lib_count=lib_count, lib_mb=lib_total / 1048576, lib_enabled=library_enabled(),
-         wd_count=wd_count, wd_mb=wd_total / 1048576, dudu_count=dudu_count, dudu_mb=dudu_total / 1048576)
+    _publish_storage_stats({"count": count, "total_mb": total / 1048576,
+                            "limit_mb": int(_config["max_cache_mb"]),
+                            "lib_count": lib_count, "lib_mb": lib_total / 1048576,
+                            "lib_enabled": library_enabled(), "wd_count": wd_count,
+                            "wd_mb": wd_total / 1048576, "dudu_count": dudu_count,
+                            "dudu_mb": dudu_total / 1048576}, ("cache", "pypy", "wd", "dudu"))
 
 
 def clear_cache():
@@ -2166,14 +3023,14 @@ def _owned_directory_file(name, kind):
         return False
     stem = base[:-4]
     if kind == "cache":
-        if (stem.isdigit() or re.fullmatch(r"[A-Za-z0-9_-]{11}", stem)
+        if (NUMERIC_MP4_RE.fullmatch(base) or re.fullmatch(r"[A-Za-z0-9_-]{11}", stem)
                 or YT_FILENAME_RE.fullmatch(base) or WD_CACHE_RE.fullmatch(base)
                 or DUDU_CACHE_RE.fullmatch(base)):
             return True
         with _mapping_lock:
             return base in _reverse_mapping
     if kind == "pypy":
-        return stem.isdigit()
+        return NUMERIC_MP4_RE.fullmatch(base) is not None
     if kind == "wd":
         return WD_CACHE_RE.fullmatch(base) is not None
     if kind == "dudu":
@@ -2182,14 +3039,7 @@ def _owned_directory_file(name, kind):
 
 
 def _directory_files(directory, kind):
-    if not directory:
-        return []
-    try:
-        with os.scandir(directory) as entries:
-            return [entry.path for entry in entries
-                    if entry.is_file(follow_symlinks=False) and _owned_directory_file(entry.name, kind)]
-    except FileNotFoundError:
-        return []
+    return _walk_library_files(directory, kind)
 
 
 def directory_has_files(directory, kind):
@@ -2202,6 +3052,8 @@ def _validate_directory_action(source, destination, action, new_config, changed_
     normalized = os.path.abspath(source)
     if os.path.dirname(normalized) == normalized:
         raise ValueError("为保护磁盘根目录，已拒绝迁移或删除")
+    if action == "migrate" and (_path_in_directory(destination, source) or _path_in_directory(source, destination)):
+        raise ValueError("目标目录不能位于原目录内部，原目录也不能位于目标目录内部")
     for other, directory in new_config.items():
         if other not in DIRECTORY_KINDS or not directory:
             continue
@@ -2232,13 +3084,17 @@ def _apply_directory_action(source, destination, kind, action, new_config, chang
 
     os.makedirs(destination, exist_ok=True)
     moved = skipped = transferred = 0
+    moved_paths = []
     for source_path in files:
         name = os.path.basename(source_path)
-        destination_path = os.path.join(destination, name)
+        relative = os.path.relpath(source_path, source)
+        destination_path = os.path.join(destination, relative)
+        destination_dir = os.path.dirname(destination_path)
+        os.makedirs(destination_dir, exist_ok=True)
         if os.path.exists(destination_path):
             skipped += 1
             continue
-        descriptor, temporary = tempfile.mkstemp(prefix=".dance-migrate-", dir=destination)
+        descriptor, temporary = tempfile.mkstemp(prefix=".dance-migrate-", dir=destination_dir)
         os.close(descriptor)
         try:
             shutil.copy2(source_path, temporary)
@@ -2250,7 +3106,9 @@ def _apply_directory_action(source, destination, kind, action, new_config, chang
             os.remove(source_path)
             moved += 1
             transferred += size
+            moved_paths.append((source_path, destination_path))
         except OSError as exc:
+            _relocate_compression_records(moved_paths)
             raise RuntimeError(
                 f"迁移 {name} 失败: {exc}；已成功迁移 {moved} 个，配置未更改，未覆盖同名文件") from exc
         finally:
@@ -2258,7 +3116,8 @@ def _apply_directory_action(source, destination, kind, action, new_config, chang
                 os.remove(temporary)
             except FileNotFoundError:
                 pass
-    log(f"目录迁移完成：迁移 {moved} 个，同名保留 {skipped} 个，其他文件和子目录未改动")
+    _relocate_compression_records(moved_paths)
+    log(f"目录迁移完成：迁移 {moved} 个，同名保留 {skipped} 个，保留分类层级，其他文件未改动")
     return {"moved": moved, "skipped": skipped, "bytes": transferred}
 
 
@@ -2471,28 +3330,44 @@ def _hosts_watchdog_loop(include_api):
 
 # ---------------- 源站请求（绕过劫持，用真实 IP + Host 头） ----------------
 
+_host_ip_cooldown = {}
+_host_health_lock = threading.Lock()
+_verify_request_context = threading.local()
+
+
 def _parse_retry_after(value, default):
     if value and value.strip().isdigit():
         return float(value)
     return default
 
 
+def _note_host_ip_success(host, ip):
+    with _host_health_lock:
+        _host_ip_cooldown.pop((host, ip), None)
+
+
+def _note_host_ip_failure(host, ip):
+    with _host_health_lock:
+        _host_ip_cooldown[(host, ip)] = time.monotonic() + 60
+
+
 def ordered_ips(host):
-    """cdn.pypy.dance / play.udon.dance 优先使用用户设置的优选 IP（同为 Cloudflare，一个 IP 两家通用），
-    失效时自动回落到默认解析结果。
-    注意实际下载会被 301 到带哈希的子域名（如 806bb815.cdn.pypy.dance），优选 IP 必须对子域名同样生效，
-    否则真实下载永远走系统 DNS 分配的节点，优选形同虚设。
-    子域名（韩国源站直连，通常只有一个 IP）额外附上主域名的 Cloudflare 节点做兜底：
-    源站限流(429)/故障时自动改用 CF 节点访问子域名（HTTP 下 CF 可为子域服务）。"""
+    """按域名排序节点；PyPy 优选不直接套用到其他房间。"""
+    snapshot = getattr(_verify_request_context, "nodes", None)
+    if snapshot and host in snapshot:
+        return list(snapshot[host])
     ips = list(_origin_ips.get(host, []))
     pref = (_config.get("preferred_cdn_ip") or "").strip()
-    is_cdn = host == UDON_PLAY_HOST or host == "cdn.pypy.dance" or host.endswith(".cdn.pypy.dance")
-    if pref and _is_public_ip(pref) and is_cdn:
+    is_pypy_cdn = host == "cdn.pypy.dance" or host.endswith(".cdn.pypy.dance")
+    if pref and _is_public_ip(pref) and is_pypy_cdn:
         ips = [pref] + [ip for ip in ips if ip != pref]
     if host.endswith(".cdn.pypy.dance"):
         for ip in _origin_ips.get("cdn.pypy.dance", []):
             if ip not in ips:
                 ips.append(ip)
+    now = time.monotonic()
+    with _host_health_lock:
+        ips.sort(key=lambda ip: _host_ip_cooldown.get((host, ip), 0) > now)
     return ips
 
 
@@ -2519,6 +3394,7 @@ def _open_upstream_once(host, path, extra_headers=None, redirects=3):
                     headers.update(extra_headers)
                 conn.request("GET", cur_path, headers=headers)
                 resp = conn.getresponse()
+                _note_host_ip_success(cur_host, ip)
                 if resp.status in RETRYABLE_STATUS:
                     ra = _parse_retry_after(resp.getheader("Retry-After"), 0.0)
                     resp.read()
@@ -2537,11 +3413,13 @@ def _open_upstream_once(host, path, extra_headers=None, redirects=3):
                     break
                 return conn, resp
             except TransientUpstream as e:
+                _note_host_ip_failure(cur_host, ip)
                 last_transient = e  # 该 IP 被限流/临时故障，先换下一个 IP 试试
                 continue
             except RuntimeError:
                 raise
             except Exception as e:
+                _note_host_ip_failure(cur_host, ip)
                 last_err = e
                 if conn:
                     try:
@@ -2560,6 +3438,8 @@ def open_upstream(host, path, extra_headers=None, redirects=3, retries=5):
     """带限流/临时错误退避重试的源站请求"""
     last_err = None
     for attempt in range(retries):
+        if hasattr(_verify_request_context, "nodes") and _library_stop.is_set():
+            raise RuntimeError("校验已取消")
         wait_rate_limit()
         if _stop_event.is_set():
             raise RuntimeError("已停止")
@@ -2586,6 +3466,11 @@ _connections_lock = threading.Lock()
 
 
 def _register_connection(conn):
+    if hasattr(_verify_request_context, "nodes"):
+        try:
+            conn._dance_verify_connection = True
+        except AttributeError:
+            pass
     with _connections_lock:
         _active_connections.add(conn)
 
@@ -2595,36 +3480,56 @@ def _unregister_connection(conn):
         _active_connections.discard(conn)
 
 
+def _force_close_connection(conn):
+    try:
+        sock = getattr(conn, "sock", None)
+        if sock is None:
+            raw = getattr(getattr(conn, "fp", None), "raw", None)
+            sock = getattr(raw, "_sock", None)
+        forced = False
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except (OSError, AttributeError):
+                pass
+            try:
+                descriptor = sock.detach()
+                if not isinstance(descriptor, int):
+                    raise TypeError("无效 socket 描述符")
+                forced = True
+                socket.socket(fileno=descriptor).close()
+            except (OSError, AttributeError, TypeError):
+                pass
+        # Windows 上跨线程关闭 HTTPResponse 会等待读取锁；底层 socket 已脱离时由读取方自行收尾。
+        if not forced:
+            conn.close()
+    except Exception:
+        pass
+    finally:
+        _unregister_connection(conn)
+
+
+def _abort_background_downloads_from(ip):
+    with _connections_lock:
+        connections = list(_active_connections)
+    count = 0
+    for conn in connections:
+        owner = getattr(conn, "_owner_thread", None)
+        if (not getattr(owner, "_dance_background_download", False)
+                or getattr(conn, "_selected_ip", None) != ip
+                or getattr(owner, "_dance_retry_requested", False)):
+            continue
+        owner._dance_retry_requested = True
+        _force_close_connection(conn)
+        count += 1
+    return count
+
+
 def close_active_connections():
     with _connections_lock:
         connections = list(_active_connections)
     for conn in connections:
-        try:
-            sock = getattr(conn, "sock", None)
-            if sock is None:
-                raw = getattr(getattr(conn, "fp", None), "raw", None)
-                sock = getattr(raw, "_sock", None)
-            forced = False
-            if sock is not None:
-                try:
-                    sock.shutdown(socket.SHUT_RDWR)
-                except (OSError, AttributeError):
-                    pass
-                try:
-                    descriptor = sock.detach()
-                    if not isinstance(descriptor, int):
-                        raise TypeError("无效 socket 描述符")
-                    forced = True
-                    socket.socket(fileno=descriptor).close()
-                except (OSError, AttributeError, TypeError):
-                    pass
-            # Windows 上跨线程关闭 HTTPResponse 会等待读取锁；底层 socket 已脱离时由读取方自行收尾。
-            if not forced:
-                conn.close()
-        except Exception:
-            pass
-        finally:
-            _unregister_connection(conn)
+        _force_close_connection(conn)
 
 
 @contextmanager
@@ -2646,6 +3551,7 @@ class _HTTPConnectionIP(http.client.HTTPConnection):
     def __init__(self, ip, host=API_HOST, port=80, **kw):
         self._ip = ip
         self._selected_ip = ip
+        self._owner_thread = threading.current_thread()
         super().__init__(host, port, **kw)
         _register_connection(self)
 
@@ -2665,6 +3571,7 @@ class _HTTPSConnectionIP(http.client.HTTPSConnection):
     def __init__(self, ip, host=API_HOST, port=443, **kw):
         self._ip = ip
         self._selected_ip = ip
+        self._owner_thread = threading.current_thread()
         super().__init__(host, port, **kw)
         _register_connection(self)
 
@@ -2814,10 +3721,9 @@ def _cancelled(run_id):
 
 
 def _storage_label(path):
-    """文件落在永久曲库（PyPyDance 或 WannaDance）返回 library，否则 cache"""
-    dirname = os.path.dirname(path)
-    if (_same_directory(dirname, _config.get("library_dir")) or _same_directory(dirname, _config.get("wd_library_dir"))
-            or _same_directory(dirname, _config.get("dudu_library_dir"))):
+    """平铺和分类子目录都按永久曲库统计。"""
+    if any(_path_in_directory(path, _config.get(name))
+           for name in ("library_dir", "wd_library_dir", "dudu_library_dir")):
         return "library"
     return "cache"
 
@@ -2886,15 +3792,18 @@ def _remove_part(part):
 
 
 def touch(path):
+    if not _path_in_directory(path, _config.get("cache_dir")):
+        return
     try:
         os.utime(path)
     except Exception:
         pass
 
 
-def download_file(filename, song_id=None, stall_timeout=None):
+def download_file(filename, song_id=None, stall_timeout=None, destination=None):
     """完整下载；只有正常读至 EOF 且长度匹配才发布成功。"""
-    target = target_path(filename, song_id)
+    target = destination or target_path(filename, song_id)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
     if os.path.isfile(target) and os.path.getsize(target) > 0:
         return True
     run_id = _run_id
@@ -2938,6 +3847,7 @@ def download_file(filename, song_id=None, stall_timeout=None):
             error = error or f"下载不完整 ({done}/{total})"
             log(f"{filename}: {error}")
     except Exception as e:
+        threading.current_thread()._dance_download_error = e
         error = str(e)
         log(f"下载 {filename} 出错: {e}")
     finally:
@@ -2965,10 +3875,11 @@ def start_background_download(filename, song_id=None):
     _queue_serial_download("cdn", filename, song_id)
 
 
-def download_wd(song_id):
+def download_wd(song_id, destination=None):
     """WannaDance 完整下载：api.udon.dance/Api/Songs/play?id=N 302 到 play.udon.dance 文件。
     文件名本身带编号，无需映射表。"""
-    target = wd_target_path(song_id)
+    target = destination or wd_target_path(song_id)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
     if os.path.isfile(target) and os.path.getsize(target) > 0:
         return True
     name = wd_cache_name(song_id)
@@ -3005,6 +3916,7 @@ def download_wd(song_id):
             error = f"下载不完整 ({done}/{total})"
             log(f"{name}: {error}")
     except Exception as e:
+        threading.current_thread()._dance_download_error = e
         error = str(e)
         log(f"下载 {name} 出错: {e}")
     finally:
@@ -3091,6 +4003,7 @@ def download_googlevideo(song_id, url):
             error = f"录制不完整 ({done}/{total})，下次播放时重试"
             log(f"YouTube 源 id={song_id}: {error}")
     except Exception as e:
+        threading.current_thread()._dance_download_error = e
         error = str(e)
         log(f"YouTube 源录制失败 id={song_id}: {e}")
     finally:
@@ -3113,6 +4026,50 @@ def start_googlevideo_download(song_id, url):
 
 # ---------------- 缓存目录清理 (LRU，曲库目录不清理) ----------------
 
+def _reserve_dudu_event_download(target, total, event_key):
+    if not event_key or _config.get("dudu_event_allow_over_limit", False):
+        return False
+    if not _path_in_directory(target, _config.get("cache_dir")):
+        return False
+    directory = _config["cache_dir"]
+    if (_same_directory(directory, _config.get("library_dir")) or _same_directory(directory, _config.get("wd_library_dir"))
+            or _same_directory(directory, _config.get("dudu_library_dir"))):
+        return False
+    if total <= 0:
+        raise DuduEventCapacityError("无法确认活动视频大小，已在写入前暂停预载；可允许活动超限后重试")
+    with _downloads_lock:
+        files = []
+        current = 0
+        for name in os.listdir(directory):
+            path = os.path.join(directory, name)
+            if name.endswith(".mp4") and os.path.isfile(path):
+                stat = os.stat(path)
+                files.append((stat.st_mtime, stat.st_size, path))
+                current += stat.st_size
+        limit = int(_config["max_cache_mb"]) * 1048576
+        key = _canonical_path(target)
+        reserved = sum(size for path, size in _dudu_event_reservations.items() if path != key)
+        needed = current + reserved + total - limit
+        protected = _dudu_event_protected_names()
+        for _, size, path in sorted(files):
+            if needed <= 0:
+                break
+            if os.path.basename(path) in protected or _canonical_path(path) in _downloads_in_progress:
+                continue
+            try:
+                os.remove(path)
+                needed -= size
+                log(f"活动预载腾空间，清理普通缓存 {os.path.basename(path)}")
+            except OSError:
+                pass
+        if needed > 0:
+            raise DuduEventCapacityError(
+                f"临时缓存上限不足，活动预载已暂停，还需约 {needed / 1048576:.1f} MB；"
+                "请提高上限、清理普通缓存，或在高级模式允许活动超限")
+        _dudu_event_reservations[key] = total
+        return True
+
+
 def cleanup_cache():
     # 与登记下载/手工清理共用锁，避免检查 busy 后又有新任务开始写入。
     with _downloads_lock:
@@ -3122,6 +4079,7 @@ def cleanup_cache():
                     or _same_directory(directory, _config.get("dudu_library_dir"))):
                 return
             limit = int(_config["max_cache_mb"]) * 1048576
+            protected = _dudu_event_protected_names()
             files = []
             total = 0
             for name in os.listdir(directory):
@@ -3133,7 +4091,8 @@ def cleanup_cache():
             for _, size, path in sorted(files):
                 if total <= limit:
                     break
-                if _canonical_path(path) in _downloads_in_progress:
+                if (_canonical_path(path) in _downloads_in_progress
+                        or os.path.basename(path) in protected):
                     continue
                 try:
                     os.remove(path)
@@ -3149,6 +4108,11 @@ def cleanup_cache():
 
 def cancel_library_download():
     _library_stop.set()
+    with _connections_lock:
+        connections = [conn for conn in _active_connections
+                       if getattr(conn, "_dance_verify_connection", False)]
+    for conn in connections:
+        _force_close_connection(conn)
 
 
 # ---------------- 映射重建 ----------------
@@ -3156,11 +4120,11 @@ def cancel_library_download():
 _rebuild_thread = None
 
 
-def _start_library_task(kind, worker):
+def _start_library_task(kind, worker, *args):
     global _rebuild_thread, _verify_thread
     with _lifecycle_lock, _config_lock, _library_task_lock:
-        if not library_enabled():
-            log("请先设置有效的曲库目录")
+        if kind == "rebuild" and not library_enabled():
+            log("请先设置有效的 PyPyDance 曲库目录")
             return False
         if rebuilding() or verifying():
             log("已有曲库任务正在进行，请等待完成或取消后再试")
@@ -3169,7 +4133,7 @@ def _start_library_task(kind, worker):
             log("服务已停止，请重新启动服务后再运行曲库任务")
             return False
         _library_stop.clear()
-        thread = threading.Thread(target=worker, daemon=True)
+        thread = threading.Thread(target=worker, args=args, daemon=True)
         if kind == "rebuild":
             _rebuild_thread = thread
         else:
@@ -3192,91 +4156,206 @@ def rebuilding():
 _verify_thread = None
 
 
-def verify_library():
-    """对比远端文件大小，仅报告不一致，不自动删除或重新下载。"""
-    return _start_library_task("verify", _verify_worker)
+def verify_library(kind="pypy"):
+    """按房间只读校验；压缩文件不与官方原片比较。"""
+    if kind not in ("all", "pypy", "wd", "dudu"):
+        return False
+    return _start_library_task("verify", _verify_worker, kind)
 
 
 def verifying():
     return _verify_thread is not None and _verify_thread.is_alive()
 
 
+def _response_remote_size(resp):
+    if resp.status == 200:
+        value = resp.getheader("Content-Length")
+        return int(value) if value else None
+    if resp.status != 206:
+        return None
+    match = re.search(r"/(\d+)\s*$", resp.getheader("Content-Range") or "")
+    return int(match.group(1)) if match else None
+
+
 def _remote_size(filename):
     conn, resp = open_upstream("cdn.pypy.dance", "/" + filename,
                                extra_headers={"Range": "bytes=0-0"}, retries=2)
     try:
-        if resp.status == 200:
-            value = resp.getheader("Content-Length")
-            return int(value) if value else None
-        if resp.status != 206:
-            return None
-        match = re.search(r"/(\d+)\s*$", resp.getheader("Content-Range") or "")
-        return int(match.group(1)) if match else None
+        return _response_remote_size(resp)
     finally:
-        # 服务器忽略 Range 时不要为校验而读取整个视频。
         conn.close()
 
 
-def _verify_worker():
-    checked = bad = failed = skipped = 0
-    bad_ids = []
-    total = 0
-    error = None
-    try:
-        directory = _config["library_dir"]
-        ids = sorted({int(name[:-4]) for name in os.listdir(directory)
-                      if re.fullmatch(r"\d+\.mp4", name)})
-        total = len(ids)
-        log(f"开始校验曲库文件大小，共 {total} 个文件...")
-        emit("verify_progress", checked=0, bad=0, failed=0, skipped=0, total=total, current="")
-        lock = threading.Lock()
+def _remote_size_for(kind, song_id, filename=None):
+    if kind == "pypy":
+        return _remote_size(filename)
+    if kind == "wd":
+        conn, resp = open_upstream(UDON_API_HOST, f"/Api/Songs/play?id={song_id}",
+                                   extra_headers={"Range": "bytes=0-0"}, retries=2)
+        try:
+            return _response_remote_size(resp)
+        finally:
+            conn.close()
+    for attempt in range(2):
+        conn = None
+        try:
+            path = dudu_video_path(song_id)
+            conn, resp = open_upstream(DUDU_PLAY_HOST, path,
+                                       extra_headers={"Range": "bytes=0-0"}, retries=2)
+            if resp.status in (401, 403) and attempt == 0:
+                continue
+            return _response_remote_size(resp)
+        finally:
+            if conn is not None:
+                conn.close()
+    return None
 
-        def work(sid):
-            nonlocal checked, bad, failed, skipped
+
+def _compressed_paths():
+    try:
+        with open(os.path.join(data_dir(), "compression-queue.json"), "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return {}
+    result = {}
+    for item in payload.get("items", []) if isinstance(payload, dict) else []:
+        if item.get("status") == "done" and item.get("output_mtime_ns") is not None:
+            result[_canonical_path(item.get("path", ""))] = (
+                int(item["output_mtime_ns"]), item.get("output_size"))
+    return result
+
+
+def _verify_worker(kind="pypy"):
+    kinds = ("pypy", "wd", "dudu") if kind == "all" else (kind,)
+    counts = {"matched": 0, "different": 0, "compressed": 0, "youtube": 0, "failed": 0}
+    records = []
+    results = []
+    bad_ids = set()
+    checked = 0
+    error = None
+    lock = threading.Lock()
+    compressed = _compressed_paths()
+    node_hosts = set(CDN_HOSTS + [API_HOST, UDON_API_HOST, UDON_PLAY_HOST,
+                                  DUDU_API_HOST, DUDU_PLAY_HOST])
+    node_snapshot = {host: ordered_ips(host) for host in node_hosts}
+    try:
+        for room in kinds:
+            directory = _library_root(room)
+            pattern = {"pypy": NUMERIC_MP4_RE, "wd": WD_CACHE_RE, "dudu": DUDU_CACHE_RE}[room]
+            for path in _walk_library_files(directory, room):
+                if not path.lower().endswith(".mp4"):
+                    continue
+                match = pattern.fullmatch(os.path.basename(path))
+                if match:
+                    records.append({"kind": room, "id": int(match.group(1)), "path": path})
+        records.sort(key=lambda item: (item["kind"], item["id"], item["path"]))
+        total = len(records)
+        duplicates = sum(count - 1 for count in Counter(
+            (item["kind"], item["id"]) for item in records).values() if count > 1)
+        log(f"开始校验 {kind} 曲库，共 {total} 个文件（重复编号额外文件 {duplicates} 个）...")
+        emit("verify_progress", room=kind, checked=0, bad=0, failed=0, skipped=0,
+             matched=0, compressed=0, youtube=0, total=total, current="")
+        remote_cache = {}
+
+        def work(item):
+            nonlocal checked
+            _verify_request_context.nodes = node_snapshot
             if _library_stop.is_set() or _stop_event.is_set():
                 return
-            filename = resolve_video_filename(sid)
-            if _library_stop.is_set() or _stop_event.is_set():
-                return
-            problem = None
-            is_youtube = song_route(sid)[0] == "yt"
-            if filename:
-                try:
-                    local_size = os.path.getsize(os.path.join(directory, f"{sid}.mp4"))
-                    remote_size = _remote_size(filename)
-                    if remote_size is None:
-                        problem = "failed"
-                    elif local_size != remote_size:
-                        problem = "bad"
-                        log(f"校验不一致 {sid}.mp4: 本地 {local_size} / 远端 {remote_size}（仅报告，未修改文件）")
-                except Exception:
-                    problem = "failed"
-            else:
-                problem = "skipped" if is_youtube else "failed"
+            room, sid, local_path = item["kind"], item["id"], item["path"]
+            status = "failed"
+            local_size = remote_size = None
+            message = ""
+            filename = None
+            try:
+                stat = os.stat(local_path)
+                local_size = stat.st_size
+                marker = compressed.get(_canonical_path(local_path))
+                marked_name = os.path.basename(local_path) == compressed_filename(local_path)
+                valid_record = bool(marker and marker[0] == stat.st_mtime_ns
+                                    and (marker[1] is None or int(marker[1]) == local_size))
+                if marked_name or valid_record:
+                    status = "compressed"
+                    message = "已压缩，跳过官方原片大小比较"
+                else:
+                    if room == "pypy":
+                        filename = resolve_video_filename(sid)
+                        if not filename:
+                            is_youtube = song_route(sid)[0] == "yt"
+                            status = "youtube" if is_youtube else "failed"
+                            message = "YouTube 源无固定 CDN 原片" if is_youtube else "无法解析官方文件"
+                    if not message:
+                        cache_key = (room, sid)
+                        with lock:
+                            remote_size = remote_cache.get(cache_key)
+                        if remote_size is None:
+                            remote_size = _remote_size_for(room, sid, filename)
+                            if remote_size is not None:
+                                with lock:
+                                    remote_cache[cache_key] = remote_size
+                        if remote_size is None:
+                            status = "failed"
+                            message = "无法取得官方当前文件大小"
+                        elif local_size == remote_size:
+                            status = "matched"
+                            message = "与官方当前文件大小一致"
+                        else:
+                            status = "different"
+                            message = "与官方当前文件大小不同（不代表文件损坏）"
+            except Exception as exc:
+                status = "failed"
+                message = str(exc) or type(exc).__name__
+            result = {**item, "status": status, "local_size": local_size,
+                      "remote_size": remote_size, "message": message}
             with lock:
                 checked += 1
-                if problem == "bad":
-                    bad += 1
-                    bad_ids.append(sid)
-                elif problem == "failed":
-                    failed += 1
-                elif problem == "skipped":
-                    skipped += 1
-                progress = dict(checked=checked, bad=bad, failed=failed, skipped=skipped,
-                                total=total, current=str(sid))
+                counts[status] = counts.get(status, 0) + 1
+                results.append(result)
+                if status == "different":
+                    bad_ids.add(sid)
+                skipped = counts["compressed"] + counts["youtube"]
+                progress = dict(room=kind, checked=checked, bad=counts["different"],
+                                failed=counts["failed"], skipped=skipped,
+                                matched=counts["matched"], compressed=counts["compressed"],
+                                youtube=counts["youtube"], total=total,
+                                current=f"{room}:{os.path.basename(local_path)}")
+                show_difference = status == "different" and counts["different"] <= 20
+            if show_difference:
+                log(f"大小不同 {room} id={sid}: 本地 {local_size} / 官方 {remote_size}（仅报告，未修改文件）")
             emit("verify_progress", **progress)
 
         with ThreadPoolExecutor(max_workers=8) as executor:
-            list(executor.map(work, ids))
+            list(executor.map(work, records))
         flush_mapping()
-    except Exception as e:
-        error = str(e)
-        log(f"曲库校验出错: {e}")
+    except Exception as exc:
+        error = str(exc)
+        log(f"曲库校验出错: {exc}")
+    total = len(records)
     cancelled = _library_stop.is_set() or _stop_event.is_set()
+    skipped = counts["compressed"] + counts["youtube"]
+    results.sort(key=lambda item: (item["kind"], item["id"], item["path"]))
+    report_path = os.path.join(data_dir(), "verification-report.json")
+    report = {"version": 2, "kind": kind, "created_at": time.time(), "total": total,
+              "checked": checked, "matched": counts["matched"], "different": counts["different"],
+              "compressed": counts["compressed"], "youtube": counts["youtube"],
+              "failed": counts["failed"], "cancelled": cancelled, "error": error,
+              "bad_ids": sorted(bad_ids), "results": results}
+    try:
+        os.makedirs(data_dir(), exist_ok=True)
+        descriptor, temporary = tempfile.mkstemp(prefix="verification-report-", suffix=".tmp", dir=data_dir())
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(report, handle, ensure_ascii=False, indent=2)
+        os.replace(temporary, report_path)
+    except OSError as exc:
+        report_path = ""
+        log(f"校验报告保存失败：{exc}")
     log(("曲库校验已取消。" if cancelled else "曲库校验完成。")
-        + f"已检查 {checked}/{total}，不一致 {bad}，YouTube 跳过 {skipped}，失败 {failed}")
-    emit("verify_done", total=total, checked=checked, bad=bad, skipped=skipped, failed=failed,
-         bad_ids=sorted(bad_ids), cancelled=cancelled, error=error)
+        + f"已检查 {checked}/{total}，一致 {counts['matched']}，大小不同 {counts['different']}，"
+        + f"已压缩 {counts['compressed']}，YouTube {counts['youtube']}，失败 {counts['failed']}")
+    emit("verify_done", room=kind, total=total, checked=checked, bad=counts["different"],
+         matched=counts["matched"], compressed=counts["compressed"], youtube=counts["youtube"],
+         skipped=skipped, failed=counts["failed"], bad_ids=sorted(bad_ids), cancelled=cancelled,
+         error=error, report_path=report_path)
     emit_stats()
 
 
@@ -3284,8 +4363,8 @@ def _rebuild_worker():
     done = failed = total = 0
     error = None
     try:
-        ids = sorted({int(name[:-4]) for name in os.listdir(_config["library_dir"])
-                      if re.fullmatch(r"\d+\.mp4", name)})
+        ids = sorted({int(match.group(1)) for path in _walk_library_files(_library_root("pypy"), "pypy")
+                      if (match := NUMERIC_MP4_RE.fullmatch(os.path.basename(path)))})
         with _mapping_lock:
             todo = [sid for sid in ids if not _mapping.get(sid)]
         total = len(todo)
@@ -3328,6 +4407,7 @@ CDN_POOL_FAILURE_LIMIT = 3
 QUICK_CANDIDATE_LIMIT = 8
 QUICK_NEW_IPS = 4
 QUICK_PROBE_BYTES = 256 * 1024
+QUICK_PROBE_THREADS = 6
 QUICK_FINALISTS = 8
 _cdn_pool_lock = threading.RLock()
 
@@ -3573,12 +4653,13 @@ def _speedtest_sample_bytes():
     return value * 1048576
 
 
-def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True, with_latency=False):
+def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True, with_latency=False,
+                 concurrency=None):
     if not candidates:
         return []
     if nbytes is None:
         nbytes = _speedtest_sample_bytes()
-    workers = min(_speedtest_thread_count(), len(candidates))
+    workers = min(concurrency or _speedtest_thread_count(), len(candidates))
     sample = f"{nbytes // 1048576}MB" if nbytes >= 1048576 else f"{nbytes // 1024}KB"
     log(f"{'测速' if report else '初筛'}使用 {workers} 个并发线程，每个节点下载 {sample} 取样...")
 
@@ -3616,8 +4697,34 @@ def _measure_ips(candidates, filename, nbytes=None, timeout=None, report=True, w
 
 def _quick_speedtest(candidates, filename):
     probes = _measure_ips(candidates, filename, QUICK_PROBE_BYTES, 6,
-                          report=False, with_latency=True)
+                          report=False, with_latency=True, concurrency=QUICK_PROBE_THREADS)
     usable = [item for item in probes if not item.get("error") and (item.get("mbps") or 0) > 0]
+    log(f"快速初筛完成：{len(usable)}/{len(candidates)} 个可用")
+    if not usable and not _speedtest_stop.is_set() and not _stop_event.is_set():
+        pref = (get_config().get("preferred_cdn_ip") or "").strip()
+        recovery = []
+        for ip in [pref, *(_origin_ips.get("cdn.pypy.dance") or [])]:
+            if _is_public_ip(ip) and ip not in recovery:
+                recovery.append(ip)
+        fresh = []
+        for _ in range(5):
+            for ip in _sample_cf_ips(4):
+                if ip not in candidates and ip not in recovery and ip not in fresh:
+                    fresh.append(ip)
+                    if len(fresh) == 2:
+                        break
+            if len(fresh) == 2:
+                break
+        recovery.extend(fresh)
+        if recovery:
+            log(f"初筛无可用节点，进行最后一次恢复复测：当前、默认与 {len(fresh)} 个新节点（超时 12 秒）...")
+            recovered = _measure_ips(recovery, filename, QUICK_PROBE_BYTES, 12,
+                                     report=False, with_latency=True, concurrency=QUICK_PROBE_THREADS)
+            usable = [item for item in recovered if not item.get("error") and (item.get("mbps") or 0) > 0]
+            probes.extend(item for item in recovered if item["ip"] not in candidates)
+            if not usable:
+                log("恢复复测仍无可用节点，本轮测速结束，保持当前设置")
+                return probes
     if len(usable) <= QUICK_FINALISTS:
         finalists = [item["ip"] for item in usable]
     else:
@@ -3627,13 +4734,16 @@ def _quick_speedtest(candidates, filename):
     current = next((item for item in usable if item["ip"] == pref), None)
     if current is not None and pref not in finalists:
         finalists.append(pref)
-    log(f"快速初筛完成：{len(usable)}/{len(candidates)} 个可用，对 {len(finalists)} 个候选进行完整测速...")
+    log(f"对 {len(finalists)} 个候选进行完整测速...")
     if not finalists:
         return probes
     return _measure_ips(finalists, filename)
 
 
 def _apply_fastest_result(results, *, selection_revision=None, require_auto=False):
+    if require_auto and verifying():
+        log("曲库校验进行中，自动 CDN 切换已暂缓")
+        return False
     valid = [item for item in results if not item.get("error") and (item.get("mbps") or 0) > 0]
     if not valid:
         log("CDN 优选：没有可用的测速结果，保持当前设置")
@@ -3673,22 +4783,44 @@ _slow_check_running = False
 _slow_check_after = 0.0
 
 
+def _slow_recheck_candidates(current_ip):
+    pool = _load_cdn_pool()
+    known = set(pool) | set(_origin_ips.get("cdn.pypy.dance", [])) | {current_ip}
+    candidates = []
+
+    def add(ip):
+        ip = str(ip)
+        if _is_public_ip(ip) and ip not in candidates:
+            candidates.append(ip)
+
+    add(current_ip)
+    history = sorted((item for item in pool.items()
+                      if item[1].get("failures", 0) == 0 and (item[1].get("mbps") or 0) > 0),
+                     key=lambda pair: pair[1]["mbps"], reverse=True)
+    for ip, _ in history:
+        add(ip)
+    for ip in _origin_ips.get("cdn.pypy.dance", []):
+        add(ip)
+    candidates = candidates[:4]
+    needed = max(2, 6 - len(candidates))
+    fresh = []
+    attempts = 0
+    while len(fresh) < needed and attempts < 3:
+        for ip in _sample_cf_ips(needed * 2):
+            if ip not in known and ip not in fresh:
+                fresh.append(ip)
+                if len(fresh) == needed:
+                    break
+        attempts += 1
+    return candidates + fresh[:needed]
+
+
 def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None, selection_revision=None):
     global _slow_check_running
     if preferred_at_trigger is None:
         preferred_at_trigger = get_config().get("preferred_cdn_ip") or ""
     try:
-        candidates = [current_ip]
-        history = sorted((item for item in _load_cdn_pool().items()
-                          if item[1].get("failures", 0) == 0 and (item[1].get("mbps") or 0) > 0),
-                         key=lambda pair: pair[1]["mbps"], reverse=True)
-        for ip, _ in history:
-            if ip not in candidates:
-                candidates.append(ip)
-        for ip in _origin_ips.get("cdn.pypy.dance", []):
-            if ip not in candidates:
-                candidates.append(ip)
-        candidates = candidates[:4]
+        candidates = _slow_recheck_candidates(current_ip)
         log(f"检测到 CDN 持续偏慢（{observed_speed:.2f} MB/s），后台小样本复测 {len(candidates)} 个节点...")
         results = []
         with ThreadPoolExecutor(max_workers=min(2, len(candidates))) as pool:
@@ -3721,7 +4853,10 @@ def _slow_recheck(current_ip, observed_speed, preferred_at_trigger=None, selecti
         if not updated["changed"]:
             return
         log(f"CDN 慢速恢复：后续请求改用 {best['ip']}（{best['mbps']:.2f} MB/s），"
-            f"当前连接不中断" + (f"，原节点 {previous}" if previous else ""))
+            f"当前播放连接不中断" + (f"，原节点 {previous}" if previous else ""))
+        restarted = _abort_background_downloads_from(current_ip)
+        if restarted:
+            log(f"已将 {restarted} 个旧节点上的后台下载任务切换到新节点重试（每个任务最多立即重试一次）")
     except Exception as error:
         log(f"CDN 慢速复测失败: {error}")
     finally:
@@ -3834,6 +4969,8 @@ def speed_test_ips(ips=None):
 
 def auto_speedtest_apply():
     """服务启动后自动做一次快速测速，只在最快节点优于当前节点时切换。"""
+    if verifying():
+        return
     with _config_lock:
         revision = _cdn_selection_revision
         if not _config.get("auto_prefer_cdn", True):
@@ -4417,7 +5554,10 @@ VIDEO_RELOAD_RE = re.compile(r"\[Video Playback\] Attempting to resolve URL '")
 
 def _room_kind(name):
     normalized = name.strip().casefold().replace(" ", "")
-    return {"pypydance": "pypy", "wannadance": "wd", "dudufitdance": "dudu"}.get(normalized, "other")
+    for prefix, kind in (("pypydance", "pypy"), ("wannadance", "wd"), ("dudufitdance", "dudu")):
+        if normalized.startswith(prefix):
+            return kind
+    return "other"
 
 
 def _reset_wd_state():
@@ -4716,7 +5856,7 @@ def _wait_for_active_download(target):
         _stop_event.wait(.2)
 
 
-def _queue_serial_download(kind, key, song_id, stall_timeout=None):
+def _queue_serial_download(kind, key, song_id, stall_timeout=None, event_key=None):
     run_id = _run_id
     if _stop_event.is_set():
         return
@@ -4725,7 +5865,7 @@ def _queue_serial_download(kind, key, song_id, stall_timeout=None):
     with _downloads_lock:
         if identity in _downloads_in_progress:
             return
-    task = (kind, key, song_id, stall_timeout)
+    task = (kind, key, song_id, stall_timeout, event_key) if event_key else (kind, key, song_id, stall_timeout)
     with _preload_dl_lock:
         if _cancelled(run_id) or identity in _preload_dl_active:
             return
@@ -4740,27 +5880,54 @@ def _queue_serial_download(kind, key, song_id, stall_timeout=None):
 
 
 def _execute_preload_download(task, identity):
+    thread = threading.current_thread()
+    thread._dance_background_download = True
+    run_id = _run_id
+    attempt = 0
     try:
         if _stop_event.is_set():
             return
-        kind, key, song_id, stall_timeout = task
-        try:
-            if kind == "dudu":
-                download_dudu(song_id)
-            elif kind == "wd":
-                download_wd(song_id)
-            elif kind == "youtube":
-                download_googlevideo(song_id, key)
-            else:
-                download_file(key, song_id, stall_timeout=stall_timeout)
-        except Exception as e:
-            log(f"预载下载出错（{key or song_id}）: {e}")
+        kind, key, song_id, stall_timeout = task[:4]
+        event_key = task[4] if len(task) > 4 else None
+        while not _cancelled(run_id):
+            thread._dance_retry_requested = False
+            thread._dance_download_error = None
+            result = False
+            try:
+                if kind == "dudu":
+                    result = download_dudu(song_id, event_key=event_key)
+                elif kind == "wd":
+                    result = download_wd(song_id)
+                elif kind == "youtube":
+                    result = download_googlevideo(song_id, key)
+                else:
+                    result = download_file(key, song_id, stall_timeout=stall_timeout)
+            except Exception as e:
+                thread._dance_download_error = e
+                log(f"预载下载出错（{key or song_id}）: {e}")
+            if isinstance(thread._dance_download_error, DuduEventCapacityError):
+                with _preload_dl_lock:
+                    _preload_dl_items[:] = [item for item in _preload_dl_items
+                                            if len(item) < 5 or item[4] != event_key]
+                emit("dudu_event_capacity", signature=event_key,
+                     message=str(thread._dance_download_error))
+                break
+            if result or _cancelled(run_id) or attempt >= 1:
+                break
+            retryable_error = isinstance(thread._dance_download_error,
+                                         (TimeoutError, ConnectionError, http.client.IncompleteRead))
+            if not thread._dance_retry_requested and not retryable_error:
+                break
+            attempt += 1
+            log(f"后台下载 {key or song_id} 连接已恢复，使用当前优选节点重试（{attempt}/1）")
         _wait_for_active_download(_preload_target(kind, key, song_id))
     finally:
         with _preload_dl_lock:
             _preload_dl_active.discard(identity)
         _preload_dl_wake.set()
-        thread = threading.current_thread()
+        thread._dance_background_download = False
+        thread._dance_retry_requested = False
+        thread._dance_download_error = None
         if thread in _service_threads:
             _service_threads.remove(thread)
 
@@ -4772,17 +5939,28 @@ def _preload_download_loop():
     by a playback request. Foreground proxy connections are never gated here.
     """
     while not _stop_event.is_set():
-        with _config_lock, _preload_dl_lock:
-            limit = 1 if _config.get("preload_sequential", True) else max(1, int(_config["max_parallel"]))
-            task = None
-            if len(_preload_dl_active) < limit and _preload_dl_items:
+        with _config_lock:
+            sequential = _config.get("preload_sequential", True)
+            limit = 1 if sequential else max(1, int(_config["max_parallel"]))
+        with _downloads_lock:
+            direct_download = bool(_downloads_in_progress)
+        task = None
+        with _preload_dl_lock:
+            # A direct playback download is intentionally never blocked. In
+            # sequential mode it instead pauses new background reservations.
+            waiting_for_playback = sequential and direct_download and not _preload_dl_active
+            if not waiting_for_playback and len(_preload_dl_active) < limit and _preload_dl_items:
                 task = _preload_dl_items.pop(0)
-                identity = _preload_key(task)
                 _preload_dl_priority.discard(_preload_task_id(task))
+        if task is not None:
+            # Classification may read the configuration. Never hold the queue lock
+            # while resolving a target, and never hold the configuration lock while
+            # taking the queue lock; the opposite order deadlocks WannaDance.
+            identity = _preload_key(task)
+            with _preload_dl_lock:
                 if identity in _preload_dl_active:
                     continue
                 _preload_dl_active.add(identity)
-        if task is not None:
             try:
                 _spawn_service_thread(_execute_preload_download, (task, identity))
             except Exception:
@@ -4881,7 +6059,14 @@ def resolve_cooldown_file(configured_path=""):
     """留空使用内置视频；显式选择失效时不替换成其他视频。"""
     path = (configured_path or "").strip() or DEFAULT_COOLDOWN_PATH
     try:
-        return path if path and os.path.isfile(path) and os.path.getsize(path) > 0 else None
+        if path and os.path.isfile(path) and os.path.getsize(path) > 0:
+            return path
+        stem, extension = os.path.splitext(path)
+        if not stem.endswith(COMPRESSED_SUFFIX):
+            marked = stem + COMPRESSED_SUFFIX + extension
+            if os.path.isfile(marked) and os.path.getsize(marked) > 0:
+                return marked
+        return None
     except OSError:
         return None
 
@@ -5348,7 +6533,7 @@ def start_services():
                                warnings=warnings, error=None)
             for warning in warnings:
                 log("提示: " + warning)
-            emit_stats()
+            emit_cached_storage_stats()
             log("本地缓存服务运行中：127.0.0.1:80")
             return None
         except Exception as e:

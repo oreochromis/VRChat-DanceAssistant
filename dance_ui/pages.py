@@ -3,11 +3,11 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QProgressBar, QPushButton,
+    QCheckBox, QComboBox, QHBoxLayout, QLineEdit, QPlainTextEdit, QProgressBar, QPushButton,
     QSpinBox, QVBoxLayout, QWidget,
 )
 
-from . import __version__
+from . import __version__, i18n
 from .widgets import Card, HeroCard, MetricCard, label, page, section_title, status_label, table
 
 
@@ -182,6 +182,16 @@ class Pages:
     def build_settings_page(self):
         area, body, box = page()
         box.addWidget(section_title("设置", "下载、放松视频、网络与启动"))
+        language_card = Card()
+        language_card.box.addWidget(label("界面语言", subheading=True))
+        self.language = QComboBox()
+        for language_code, language_name in (("zh", "简体中文"), ("zh_TW", "繁體中文"),
+                                             ("en", "English"), ("ja", "日本語"), ("ko", "한국어")):
+            self.language.addItem(language_name, language_code)
+        self.language.currentIndexChanged.connect(lambda: self.mark_dirty("settings"))
+        language_card.box.addWidget(self.language)
+        language_card.box.addWidget(label("首次启动跟随电脑系统语言；之后可在这里切换并保存。", muted=True, wrap=True))
+        box.addWidget(language_card)
         startup = Card()
         startup.box.addWidget(label("启动", subheading=True))
         self.steamvr_startup = QCheckBox("跟随 SteamVR 启动")
@@ -303,10 +313,14 @@ class Pages:
         self.cooldown_path = QLineEdit()
         self.cooldown_path.setPlaceholderText("留空使用内置默认放松视频")
         self.cooldown_path.textChanged.connect(lambda: self.mark_dirty("settings"))
-        self.default_cooldown_button = button("使用内置视频", self.cooldown_path.clear)
-        file_row, file_box = row(self.cooldown_path, button("选择视频", self.browse_cooldown), self.default_cooldown_button)
+        self.default_cooldown_button = button("恢复默认视频", self.cooldown_path.clear)
+        file_row, file_box = row(self.cooldown_path)
         file_box.setStretch(0, 1)
         cooldown.box.addWidget(file_row)
+        cooldown_actions, _ = row(button("自己上传视频", self.browse_cooldown),
+                                  button("选择曲库中视频", self.choose_cooldown_from_library),
+                                  self.default_cooldown_button, stretch=True)
+        cooldown.box.addWidget(cooldown_actions)
         self.cooldown_trigger = QComboBox()
         self.cooldown_trigger.addItem("播放至下一首歌时自动触发", "next")
         self.cooldown_trigger.addItem("通过点击房间“重新载入视频”按键触发", "reload")
@@ -456,15 +470,74 @@ class Pages:
         layout.addWidget(actions)
         return wrapper
 
+    def _compression_resource_changed(self):
+        if self._syncing or self._compression_resources_syncing:
+            return
+        self._compression_encoder_selection = "full"
+        self._update_compression_assignment_hint()
+        self.mark_dirty("storage")
+
+    def _update_compression_assignment_hint(self):
+        if not hasattr(self, "compression_assignment_hint"):
+            return
+        selected = [encoder for encoder, checkbox in self.compression_resource_checks.items()
+                    if checkbox.isEnabled() and checkbox.isChecked()]
+        if not selected:
+            text = "请至少勾选一项当前可用的压缩资源。"
+        elif self._compression_encoder_selection == "auto":
+            text = "自动选择模式：每个任务会检测可用显卡，失败时回退 CPU。"
+        else:
+            parallel = self.compression_parallel.value()
+            names = {"cpu": "CPU x264", "nvenc": "NVIDIA NVENC", "amf": "AMD AMF", "qsv": "Intel QSV"}
+            assignments = [selected[index % len(selected)] for index in range(parallel)]
+            assignment_text = " + ".join(
+                i18n.tr(names[encoder]) + (f"×{assignments.count(encoder)}" if assignments.count(encoder) > 1 else "")
+                for encoder in selected)
+            if parallel >= len(selected):
+                text = f"当前 {parallel} 路：{assignment_text}；已覆盖全部已选资源。"
+            else:
+                missing = " + ".join(i18n.tr(names[encoder]) for encoder in selected if encoder not in assignments)
+                text = (f"当前 {parallel} 路：{assignment_text}；{missing} 未参与，"
+                        f"增加至 {len(selected)} 路可覆盖全部已选资源。")
+        self.compression_assignment_hint.setProperty("_i18n_original_text", text)
+        self.compression_assignment_hint.setText(i18n.tr(text))
+
+    def select_all_compression_resources(self):
+        for checkbox in self.compression_resource_checks.values():
+            if checkbox.isEnabled():
+                checkbox.setChecked(True)
+        self._compression_resource_changed()
+
+    def render_compression_resources(self, available):
+        available = set(available)
+        self._compression_resources_syncing = True
+        try:
+            for encoder, checkbox in self.compression_resource_checks.items():
+                usable = encoder in available
+                checkbox.setEnabled(usable)
+                checkbox.setToolTip("" if usable else "当前硬件或编码器不可用")
+                if not usable:
+                    checkbox.setChecked(False)
+        finally:
+            self._compression_resources_syncing = False
+        self._update_compression_assignment_hint()
+
     def build_storage_page(self):
         area, body, box = page()
+        self.storage_scroll_area = area
         box.addWidget(section_title("存储", "管理临时缓存与永久曲库"))
         self.directory_pending_hint = label("", muted=True, wrap=True)
         self.directory_pending_hint.hide()
         box.addWidget(self.directory_pending_hint)
+        self.library_structure = QComboBox()
+        self.library_structure.addItem("根目录平铺（默认）", "flat")
+        self.library_structure.addItem("按官方分类文件夹", "classified")
+        self.library_structure.currentIndexChanged.connect(lambda: self.mark_dirty("storage"))
+        self.library_structure_row, _ = row(label("曲库保存结构"), self.library_structure, stretch=True)
+        box.addWidget(self.library_structure_row)
         cache = Card()
         cache.box.addWidget(label("临时缓存", subheading=True))
-        self.cache_summary = label("等待统计")
+        self.cache_summary = label("暂无历史统计")
         self.cache_summary.setProperty("number", True)
         cache.box.addWidget(self.cache_summary)
         self.cache_usage = QProgressBar()
@@ -497,6 +570,8 @@ class Pages:
         cache.box.addWidget(label("达到上限时，缓存会自动按最近使用情况清理。正在写入的文件会保留。", muted=True, wrap=True))
         box.addWidget(cache)
 
+        self.organize_buttons = {}
+        self.flatten_buttons = {}
         library = Card()
         library.box.addWidget(label("永久曲库 · PyPyDance", subheading=True))
         self.library_summary = label("尚未启用永久保存")
@@ -517,6 +592,10 @@ class Pages:
         library.box.addWidget(label("歌单直取开启时，YouTube 源会优先尝试 CDN 同名文件并参与预载；CDN 无文件时再于实际播放后录制。"
                                     "永久保存需先填写曲库目录才会生效，未填写时自动暂缓。", muted=True, wrap=True))
         library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("pypy"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
+        self.organize_buttons["pypy"] = button("整理为分类文件夹…", lambda: self.start_library_organization("pypy"), link=True)
+        library.box.addWidget(self.organize_buttons["pypy"], 0, Qt.AlignmentFlag.AlignLeft)
+        self.flatten_buttons["pypy"] = button("整理为根目录平铺…", lambda: self.start_library_flatten("pypy"), link=True)
+        library.box.addWidget(self.flatten_buttons["pypy"], 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(library)
 
         wd_library = Card()
@@ -536,6 +615,10 @@ class Pages:
         wd_library.box.addWidget(label("永久保存需先填写曲库目录才会生效，未填写时自动暂缓。"
                                        "永久曲库不受临时缓存上限影响。", muted=True, wrap=True))
         wd_library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("wd"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
+        self.organize_buttons["wd"] = button("整理为分类文件夹…", lambda: self.start_library_organization("wd"), link=True)
+        wd_library.box.addWidget(self.organize_buttons["wd"], 0, Qt.AlignmentFlag.AlignLeft)
+        self.flatten_buttons["wd"] = button("整理为根目录平铺…", lambda: self.start_library_flatten("wd"), link=True)
+        wd_library.box.addWidget(self.flatten_buttons["wd"], 0, Qt.AlignmentFlag.AlignLeft)
         box.addWidget(wd_library)
 
         dudu_library = Card()
@@ -553,25 +636,140 @@ class Pages:
         self.dudu_permanent.toggled.connect(lambda: self.mark_dirty("storage"))
         dudu_library.box.addWidget(self.dudu_permanent)
         dudu_library.box.addWidget(button("浏览曲库…", lambda: self.open_library_browser("dudu"), link=True), 0, Qt.AlignmentFlag.AlignLeft)
+        self.dudu_event_mode = QComboBox()
+        self.dudu_event_mode.addItem("发现新活动时询问", "ask")
+        self.dudu_event_mode.addItem("发现新活动时自动缓存", "auto")
+        self.dudu_event_mode.addItem("关闭新活动检测", "off")
+        self.dudu_event_mode.currentIndexChanged.connect(lambda: self.mark_dirty("storage"))
+        dudu_library.box.addWidget(field(
+            "活动歌单预载策略", self.dudu_event_mode,
+            "启用 DuDu 证书后，每次启动软件后台检查；已有歌曲不重复下载，临时活动文件至少保留到活动次日 00:00。"))
+        self.dudu_event_status = label("", muted=True, wrap=True)
+        dudu_library.box.addWidget(self.dudu_event_status)
+        self.dudu_event_api_url = QLineEdit()
+        self.dudu_event_api_url.setPlaceholderText("https://api.dudufit.dance/api/v1/managed-playlists/ddfd")
+        self.dudu_event_api_url.textChanged.connect(lambda: self.mark_dirty("storage"))
+        self.dudu_event_api_reset_button = button("恢复默认接口", self.reset_dudu_event_api)
+        api_row, api_row_box = row(self.dudu_event_api_url, self.dudu_event_api_reset_button)
+        api_row_box.setStretch(0, 1)
+        self.dudu_event_api_row = field(
+            "歌单接口", api_row,
+            "默认读取 DuDu 官方活动接口；可改为其他 HTTPS 地址。恢复默认后需点击“应用更改”。")
+        dudu_library.box.addWidget(self.dudu_event_api_row)
+        self.dudu_event_allow_over_limit = QCheckBox("允许活动歌曲在保留期内超过临时缓存上限")
+        self.dudu_event_allow_over_limit.toggled.connect(lambda: self.mark_dirty("storage"))
+        self.dudu_event_over_limit_row = field(
+            "活动缓存超限（高级）", self.dudu_event_allow_over_limit,
+            "关闭时先清理普通缓存，仍不足则暂停活动预载并提示；正常播放下载优先，未到期活动不会被提前删除。")
+        dudu_library.box.addWidget(self.dudu_event_over_limit_row)
+        self.organize_buttons["dudu"] = button("整理为分类文件夹…", lambda: self.start_library_organization("dudu"), link=True)
+        dudu_library.box.addWidget(self.organize_buttons["dudu"], 0, Qt.AlignmentFlag.AlignLeft)
+        self.flatten_buttons["dudu"] = button("整理为根目录平铺…", lambda: self.start_library_flatten("dudu"), link=True)
+        dudu_library.box.addWidget(self.flatten_buttons["dudu"], 0, Qt.AlignmentFlag.AlignLeft)
         self.dudu_setup_button = button("启用 DuDu FitDance 缓存…", self.setup_dudu, primary=True)
         dudu_library.box.addWidget(self.dudu_setup_button, 0, Qt.AlignmentFlag.AlignLeft)
         self.dudu_setup_status = label("首次启用会生成并信任本机开发证书；之后自动复用。", muted=True, wrap=True)
         dudu_library.box.addWidget(self.dudu_setup_status)
         box.addWidget(dudu_library)
+        for flatten_button in self.flatten_buttons.values():
+            flatten_button.setToolTip("整理后删除空分类文件夹；含其他文件的文件夹会保留。")
+
+        compression = Card()
+        self.compression_card = compression
+        compression.box.addWidget(label("曲库压缩", subheading=True))
+        compression.box.addWidget(label(
+            "仅处理永久曲库，保持分辨率、帧率和实际帧数；新文件至少小 25% 才替换原片，验证失败不会修改原文件。",
+            muted=True, wrap=True))
+        self._compression_encoder_selection = "cpu"
+        self._compression_resources_syncing = False
+        self.compression_resource_checks = {}
+        resource_widgets = [label("可用资源")]
+        for value, text in (("cpu", "CPU x264"), ("nvenc", "NVIDIA NVENC"),
+                            ("amf", "AMD AMF"), ("qsv", "Intel QSV")):
+            checkbox = QCheckBox(text)
+            checkbox.setChecked(True)
+            checkbox.toggled.connect(self._compression_resource_changed)
+            self.compression_resource_checks[value] = checkbox
+            resource_widgets.append(checkbox)
+        self.compression_browse_button = button("浏览并选择歌曲…", self.open_compression_library_browser)
+        self.compression_browse_row, _ = row(self.compression_browse_button, stretch=True)
+        compression.box.addWidget(self.compression_browse_row)
+        resource_widgets.append(button("全部勾选", self.select_all_compression_resources))
+        self.compression_resources_row, _ = row(*resource_widgets, stretch=True)
+        compression.box.addWidget(self.compression_resources_row)
+        self.compression_crf = QComboBox()
+        self.compression_crf.addItem("质量档（更清晰，文件通常较大）", "quality")
+        self.compression_crf.addItem("体积档（更省空间）", "volume")
+        self.compression_crf.setToolTip("自动使用适合当前编码器的参数；无需了解 CRF、CQ、QP 或 ICQ。")
+        self.compression_crf.currentIndexChanged.connect(lambda: self.mark_dirty("storage"))
+        self.compression_parallel = QSpinBox()
+        self.compression_parallel.setRange(1, 8)
+        self.compression_parallel.setValue(1)
+        self.compression_parallel.setToolTip("同时压缩的视频总数，可设为 1–8。多选硬件时按 CPU、NVIDIA、AMD、Intel 顺序循环分配；达到资源数量后覆盖全部设备，继续增加则重复分配。")
+        self.compression_parallel.valueChanged.connect(lambda: self.mark_dirty("storage"))
+        self.compression_parallel.valueChanged.connect(self._update_compression_assignment_hint)
+        crf_row, crf_box = row(label("压缩档位"), self.compression_crf,
+                               label("并行任务"), self.compression_parallel, stretch=True)
+        compression.box.addWidget(crf_row)
+        self.compression_assignment_hint = label("", muted=True, wrap=True)
+        compression.box.addWidget(self.compression_assignment_hint)
+        self._update_compression_assignment_hint()
+        self.compression_auto_game = QCheckBox("VRChat 启动时自动暂停，退出后自动继续")
+        self.compression_auto_game.setToolTip("手动暂停优先级更高；手动暂停后不会因 VRChat 退出而自动恢复。")
+        self.compression_auto_game.toggled.connect(lambda: self.mark_dirty("storage"))
+        compression.box.addWidget(self.compression_auto_game)
+        self.compression_start_button = button("开始压缩", self.start_compression, primary=True)
+        self.compression_start_button.setEnabled(False)
+        self.compression_pause_button = button("暂停", self.pause_compression)
+        self.compression_resume_button = button("继续", self.resume_compression)
+        self.compression_cancel_button = button("取消任务", self.cancel_compression)
+        compression_actions, _ = row(self.compression_start_button, self.compression_pause_button,
+                                     self.compression_resume_button, self.compression_cancel_button, stretch=True)
+        compression.box.addWidget(compression_actions)
+        self.compression_progress = QProgressBar()
+        self.compression_progress.setRange(0, 100)
+        self.compression_progress.setValue(0)
+        self.compression_progress.setTextVisible(False)
+        compression.box.addWidget(self.compression_progress)
+        self.compression_status = label("尚未开始压缩", muted=True, wrap=True)
+        compression.box.addWidget(self.compression_status)
+        self.compression_current = label("", muted=True, wrap=True)
+        compression.box.addWidget(self.compression_current)
+        self.compression_details_button = button("处理详情", self.toggle_compression_details, link=True)
+        compression.box.addWidget(self.compression_details_button, 0, Qt.AlignmentFlag.AlignLeft)
+        self.compression_details = QPlainTextEdit()
+        self.compression_details.setReadOnly(True)
+        self.compression_details.setMaximumHeight(220)
+        self.compression_details.hide()
+        compression.box.addWidget(self.compression_details)
+        box.addWidget(compression)
 
         maintenance = Card()
         self.maintenance_card = maintenance
         maintenance.box.addWidget(label("曲库维护", subheading=True))
-        maintenance.box.addWidget(label("重建索引用于重新关联歌曲编号与文件；校验会比较本地文件与远端文件大小。"
-                                        "仅针对 PyPyDance；WannaDance 文件名自带编号（如 wd_5283.mp4），放入曲库即自动识别，无需索引。", muted=True, wrap=True))
-        self.rebuild_button = button("重建索引", lambda: self.start_maintenance("rebuild"))
+        maintenance.box.addWidget(label("PyPyDance 需要编号索引；WannaDance 和 DuDu FitDance 文件名自带编号，无需重建索引。", muted=True, wrap=True))
+        self.rebuild_button = button("重建 PyPyDance 索引", lambda: self.start_maintenance("rebuild"))
+        self.maintenance_rebuild_row, _ = row(self.rebuild_button, stretch=True)
+        maintenance.box.addWidget(self.maintenance_rebuild_row)
+        self.maintenance_verify_note = label("校验支持三种曲库；已压缩文件跳过官方原片大小比较，大小不同不代表文件损坏。", muted=True, wrap=True)
+        maintenance.box.addWidget(self.maintenance_verify_note)
+        self.verify_source = QComboBox()
+        self.verify_source.addItem("全部永久曲库", "all")
+        self.verify_source.addItem("仅 PyPyDance", "pypy")
+        self.verify_source.addItem("仅 WannaDance", "wd")
+        self.verify_source.addItem("仅 DuDu FitDance", "dudu")
         self.verify_button = button("校验曲库", lambda: self.start_maintenance("verify"))
+        self.verify_export_button = button("导出校验报告", self.export_verification_report)
+        self.verify_export_button.setEnabled(False)
+        self.maintenance_verify_row, _ = row(label("校验来源"), self.verify_source,
+                                             self.verify_button, self.verify_export_button, stretch=True)
+        maintenance.box.addWidget(self.maintenance_verify_row)
         self.cancel_maintenance_button = button("取消任务", self.cancel_maintenance)
         self.cancel_maintenance_button.setEnabled(False)
-        actions, _ = row(self.rebuild_button, self.verify_button, self.cancel_maintenance_button, stretch=True)
-        maintenance.box.addWidget(actions)
+        self.maintenance_cancel_row, _ = row(self.cancel_maintenance_button, stretch=True)
+        maintenance.box.addWidget(self.maintenance_cancel_row)
         self.maintenance_progress = QProgressBar()
-        self.maintenance_progress.setTextVisible(False)
+        self.maintenance_progress.setTextVisible(True)
         self.maintenance_progress.hide()
         maintenance.box.addWidget(self.maintenance_progress)
         self.maintenance_status = label("尚未运行维护任务", muted=True, wrap=True)

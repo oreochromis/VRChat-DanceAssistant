@@ -27,10 +27,10 @@ from PySide6.QtCore import QObject, Signal
 
 from .steamvr_startup import APP_KEY
 from .openvr_probe import probe_steamvr_ready
-from . import __version__
+from . import __version__, i18n
 
 PANEL_KEY = APP_KEY + ".panel"
-PANEL_NAME = "VRChat 跳舞房助手"
+PANEL_NAME = "VRChat DanceAssistant"
 TEXTURE_W, TEXTURE_H = 1024, 640
 WIDTH_METERS = 1.5
 RENDER_INTERVAL = 1.0   # 状态纹理刷新间隔（秒）
@@ -123,6 +123,9 @@ def render_panel(state):
     """
     from PIL import Image, ImageDraw
 
+    if state.get("language"):
+        i18n.set_language(state["language"])
+    tr = i18n.tr
     img = Image.new("RGBA", (TEXTURE_W, TEXTURE_H), (24, 27, 36, 255))
     draw = ImageDraw.Draw(img)
     title_font = _font(34, bold=True)
@@ -130,42 +133,39 @@ def render_panel(state):
     body_font = _font(22)
     small_font = _font(19)
 
-    # 标题栏
     draw.text((40, 24), f"{PANEL_NAME}  v{__version__}", font=title_font, fill=(235, 238, 245, 255))
     dot = (88, 199, 120, 255) if state.get("running") else (140, 145, 158, 255)
     draw.ellipse((TEXTURE_W - 76, 36, TEXTURE_W - 48, 64), fill=dot)
-    draw.text((TEXTURE_W - 210, 34), "运行中" if state.get("running") else "未运行",
+    draw.text((TEXTURE_W - 210, 34), tr("运行中") if state.get("running") else tr("未运行"),
               font=small_font, fill=dot)
     draw.line((40, 84, TEXTURE_W - 40, 84), fill=(58, 63, 80, 255), width=2)
 
     y = 104
-    # 当前歌曲
-    draw.text((40, y), "当前歌曲", font=head_font, fill=(150, 158, 178, 255))
+    draw.text((40, y), tr("当前歌曲"), font=head_font, fill=(150, 158, 178, 255))
     current = state.get("current")
     if current:
-        draw.text((40, y + 36), _clip(draw, current.get("name") or "（无标题）", body_font, TEXTURE_W - 360),
+        draw.text((40, y + 36), _clip(draw, current.get("name") or tr("（无标题）"), body_font, TEXTURE_W - 360),
                   font=body_font, fill=(238, 240, 247, 255))
-        badge = current.get("state") or ""
+        badge = tr(current.get("state") or "")
         bw = draw.textlength(badge, font=small_font) + 24
         draw.rounded_rectangle((TEXTURE_W - 40 - bw, y + 34, TEXTURE_W - 40, y + 70), 10,
                                fill=(46, 84, 62, 255))
         draw.text((TEXTURE_W - 40 - bw + 12, y + 38), badge, font=small_font, fill=(126, 222, 160, 255))
-        draw.text((40, y + 68), _clip(draw, current.get("meta") or "", small_font, TEXTURE_W - 80),
+        draw.text((40, y + 68), _clip(draw, tr(current.get("meta") or ""), small_font, TEXTURE_W - 80),
                   font=small_font, fill=(150, 158, 178, 255))
     else:
-        draw.text((40, y + 36), "等待房间队列", font=body_font, fill=(120, 126, 145, 255))
+        draw.text((40, y + 36), tr("等待房间队列"), font=body_font, fill=(120, 126, 145, 255))
     y += 116
 
-    # 接下来
     queue = state.get("queue") or []
-    draw.text((40, y), f"接下来（{len(queue)} 首排队中）" if queue else "接下来（尚无排队歌曲）",
-              font=head_font, fill=(150, 158, 178, 255))
+    queue_title = tr(f"接下来（{len(queue)} 首排队中）") if queue else tr("接下来（尚无排队歌曲）")
+    draw.text((40, y), queue_title, font=head_font, fill=(150, 158, 178, 255))
     y += 38
     for row in queue[:4]:
         draw.text((40, y), f"{row.get('index', ''):>2}", font=small_font, fill=(120, 126, 145, 255))
         draw.text((92, y), _clip(draw, row.get("name") or "", small_font, TEXTURE_W - 320),
                   font=small_font, fill=(222, 226, 236, 255))
-        tag = row.get("state") or ""
+        tag = tr(row.get("state") or "")
         tw = draw.textlength(tag, font=small_font) + 20
         tone = (46, 84, 62, 255) if row.get("cached") else (68, 72, 92, 255)
         draw.rounded_rectangle((TEXTURE_W - 40 - tw, y - 4, TEXTURE_W - 40, y + 26), 8, fill=tone)
@@ -173,29 +173,26 @@ def render_panel(state):
                   fill=(126, 222, 160, 255) if row.get("cached") else (170, 175, 195, 255))
         y += 36
 
-    # 下载进度 / 统计
     downloading = (state.get("downloading") or [None])[0]
     stats = state.get("stats") or {}
     y = TEXTURE_H - 210
     if downloading:
         name = _clip(draw, downloading.get("name") or "", small_font, 560)
         percent = max(0.0, min(1.0, float(downloading.get("percent") or 0)))
-        draw.text((40, y), f"正在缓存  {name}", font=small_font, fill=(150, 158, 178, 255))
+        draw.text((40, y), tr(f"正在缓存  {name}"), font=small_font, fill=(150, 158, 178, 255))
         draw.rounded_rectangle((40, y + 30, TEXTURE_W - 40, y + 48), 9, fill=(52, 56, 72, 255))
         if percent > 0:
             draw.rounded_rectangle((40, y + 30, 40 + (TEXTURE_W - 80) * percent, y + 48), 9,
                                    fill=(90, 108, 255, 255))
         draw.text((TEXTURE_W - 130, y), f"{percent * 100:.0f}%", font=small_font, fill=(170, 175, 195, 255))
-    draw.text((40, y + 62),
-              f"本次会话：本地命中 {stats.get('hits', 0)} 首 · 回源 {stats.get('misses', 0)} 首 · "
-              f"节省流量 {stats.get('saved_mb', 0):.0f} MB",
-              font=small_font, fill=(150, 158, 178, 255))
+    session_text = (f"本次会话：本地命中 {stats.get('hits', 0)} 首 · 回源 {stats.get('misses', 0)} 首 · "
+                    f"节省流量 {stats.get('saved_mb', 0):.0f} MB")
+    draw.text((40, y + 62), tr(session_text), font=small_font, fill=(150, 158, 178, 255))
     message = state.get("message")
     if message:
-        draw.text((40, y + 92), _clip(draw, message, small_font, TEXTURE_W - 80),
+        draw.text((40, y + 92), _clip(draw, tr(message), small_font, TEXTURE_W - 80),
                   font=small_font, fill=(216, 178, 92, 255))
 
-    # 按钮
     rects = _button_rects()
     hover = state.get("hover")
     for action, rect in rects.items():
@@ -203,18 +200,18 @@ def render_panel(state):
         fill = (98, 116, 255, 255) if hover == action else (62, 68, 90, 255)
         draw.rounded_rectangle(rect, 12, fill=fill)
         if action == "toggle_service":
-            label = state.get("service_label") or "启动/停止服务"
+            label = tr(state.get("service_label") or "启动/停止服务")
         elif action == "cooldown":
             cooldown = state.get("cooldown") or {}
             if not cooldown.get("available"):
-                label = "CoolDown（未设放松视频）"
+                label = tr("CoolDown（未设放松视频）")
             elif cooldown.get("phase") == "idle":
-                label = "启用 CoolDown"
+                label = tr("启用 CoolDown")
             else:
-                label = "取消 CoolDown"
+                label = tr("取消 CoolDown")
         else:
-            mode = "重新载入当前歌曲" if state.get("cooldown_trigger") == "reload" else "下一首"
-            for text, offset in (("切换 CoolDown 时机", 7), (f"当前：{mode}", 31)):
+            mode = tr("重新载入当前歌曲") if state.get("cooldown_trigger") == "reload" else tr("下一首")
+            for text, offset in ((tr("切换 CoolDown 时机"), 7), (tr(f"当前：{mode}"), 31)):
                 lw = draw.textlength(text, font=small_font)
                 draw.text(((x0 + x1 - lw) / 2, y0 + offset), text, font=small_font,
                           fill=(238, 240, 247, 255))
@@ -329,7 +326,8 @@ def collect_state():
 
     state = {"running": False, "current": None, "queue": [], "stats": {},
              "downloading": [], "cooldown": {"phase": "idle", "available": False},
-             "cooldown_trigger": "next", "service_label": "启动服务", "message": None}
+             "cooldown_trigger": "next", "service_label": "启动服务", "message": None,
+             "language": "zh"}
     try:
         runtime = core.get_runtime_state()
     except Exception:
@@ -345,7 +343,7 @@ def collect_state():
         state["current"] = {
             "name": first.get("name"),
             "state": first.get("state"),
-            "meta": f"点歌人：{first.get('player') or '?'} · 来源：{first.get('source') or '?'}",
+            "meta": f"点歌人：{first.get('player') or '?'} · 来源：{i18n.tr(first.get('source') or '?')}",
         }
         state["queue"] = [
             {"index": i + 1, "name": r.get("name"), "state": r.get("state"),
@@ -359,6 +357,7 @@ def collect_state():
     try:
         state["cooldown"] = core.get_cooldown_state()
         state["cooldown_trigger"] = core.get_config().get("cooldown_trigger", "next")
+        state["language"] = core.get_config().get("language") or i18n.detect_system_language()
     except Exception:
         pass
     try:

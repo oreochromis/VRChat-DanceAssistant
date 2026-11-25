@@ -53,6 +53,8 @@ class CoreController(QObject):
         self._vrcx_last_key = None
         self._initializing = not demo
         self._maintenance_cancel = threading.Event()
+        self._stats_last_refresh = 0.0
+        self._compression = None
         self._listener = self._receive
         if not demo:
             core.add_listener(self._listener)
@@ -154,7 +156,9 @@ class CoreController(QObject):
             self.event.emit("progress", task)
         self.event.emit("cooldown", core.get_cooldown_state())
         self.event.emit("session", core.get_session_stats())
-        self.refresh_stats()
+        self.event.emit("compression", self.compression_state())
+        self.event.emit("stats", core.storage_stats_snapshot())
+        self.refresh_stats(force=True)
 
     def configure_steamvr(self, state_dir):
         from .steamvr_startup import SteamVRStartup
@@ -176,9 +180,14 @@ class CoreController(QObject):
         else:
             self._run("steamvr_startup", lambda: self._steamvr_startup.set_enabled(enabled))
 
-    def refresh_stats(self):
-        if not self.demo:
-            self._run("stats", core.emit_stats)
+    def refresh_stats(self, force=True):
+        if self.demo:
+            return
+        now = time.monotonic()
+        if not force and (self.busy("stats") or now - self._stats_last_refresh < 60):
+            return
+        self._stats_last_refresh = now
+        self._run("stats", lambda: core.emit_stats(refresh_library=True))
 
     def _publish_demo_state(self):
         self.event.emit("state", {"running": self._demo_running,
@@ -304,11 +313,61 @@ class CoreController(QObject):
         return {"dir": "演示曲库", "kind": kind, "songs": songs, "parts": 1,
                 "total_bytes": sum(s["size"] for s in songs), "demo": True}
 
+    @staticmethod
+    def _scan_all_libraries():
+        songs = []
+        directories = []
+        parts = 0
+        facets = {"categories": set(), "secondary": set()}
+        for kind in ("pypy", "wd", "dudu"):
+            result = core.scan_library(kind)
+            if not result:
+                continue
+            directories.append(result.get("dir") or "")
+            parts += result.get("parts", 0)
+            for song in result.get("songs") or []:
+                item = dict(song)
+                item["kind"] = kind
+                songs.append(item)
+            for key in facets:
+                facets[key].update((result.get("facets") or {}).get(key) or [])
+        return {"kind": "all", "songs": songs, "dir": "；".join(filter(None, directories)),
+                "parts": parts, "total_bytes": sum(song.get("size", 0) for song in songs),
+                "facets": {key: sorted(values) for key, values in facets.items()}}
+
     def library_scan(self, kind: str):
         if self.demo:
-            self.result.emit("library_scan", self._demo_library_scan(kind))
+            if kind == "all":
+                songs = []
+                for source in ("pypy", "wd", "dudu"):
+                    for song in self._demo_library_scan(source)["songs"]:
+                        songs.append({**song, "kind": source})
+                self.result.emit("library_scan", {"kind": "all", "dir": "演示曲库", "songs": songs,
+                                                  "total_bytes": sum(song["size"] for song in songs)})
+            else:
+                self.result.emit("library_scan", self._demo_library_scan(kind))
             return
-        self._run("library_scan", lambda: core.scan_library(kind))
+        self._run("library_scan", self._scan_all_libraries if kind == "all" else lambda: core.scan_library(kind))
+
+    @staticmethod
+    def _all_library_missing():
+        entries = []
+        expected = 0
+        for kind in ("pypy", "wd", "dudu"):
+            result = core.library_missing(kind)
+            if not result:
+                continue
+            expected += result.get("expected", 0)
+            names = result.get("names") or {}
+            metadata = result.get("metadata") or {}
+            dead = set(result.get("dead") or [])
+            favorites = set(result.get("favorites") or [])
+            for sid in result.get("missing") or []:
+                info = dict(metadata.get(str(sid)) or metadata.get(sid) or {})
+                info.update(id=int(sid), kind=kind, name=names.get(str(sid)) or names.get(sid),
+                            dead=sid in dead, favorite=sid in favorites)
+                entries.append(info)
+        return {"kind": "all", "source": "全部曲库", "expected": expected, "missing_entries": entries}
 
     def library_missing(self, kind: str):
         if self.demo:
@@ -316,11 +375,39 @@ class CoreController(QObject):
             scan.update({"source": "演示清单", "expected": 5, "missing": [9998, 9999],
                          "dead": [9998],
                          "names": {9998: "下架演示曲 - 歌手", 9999: "缺失演示曲 - 歌手"}})
+            if kind == "all":
+                scan = {"kind": "all", "source": "全部曲库", "expected": 15,
+                        "missing_entries": [{"id": 9998, "kind": source, "name": "下架演示曲 - 歌手", "dead": True}
+                                            for source in ("pypy", "wd", "dudu")]}
             self.result.emit("library_missing", scan)
             return
-        self._run("library_missing", lambda: core.library_missing(kind))
+        self._run("library_missing", self._all_library_missing if kind == "all" else lambda: core.library_missing(kind))
+
+    @staticmethod
+    def _delete_all_libraries(groups):
+        combined = {"kind": "all", "deleted": 0, "failed": [], "freed": 0}
+        for kind in ("pypy", "wd", "dudu"):
+            ids = groups.get(kind) or []
+            if not ids:
+                continue
+            result = core.delete_library_songs(kind, ids)
+            combined["deleted"] += result.get("deleted", 0)
+            combined["freed"] += result.get("freed", 0)
+            combined["failed"].extend(result.get("failed") or [])
+        return combined
 
     def library_delete(self, kind: str, ids):
+        if kind == "all":
+            groups = {source: [int(value) for value in values]
+                      for source, values in ids.items()}
+            count = sum(len(values) for values in groups.values())
+            if self.demo:
+                self.result.emit("library_delete", {"deleted": count, "failed": [],
+                                                    "freed": count * 20 * 1024**2,
+                                                    "demo": True, "kind": "all"})
+            else:
+                self._run("library_delete", lambda: self._delete_all_libraries(groups))
+            return
         ids = [int(i) for i in ids]
         if self.demo:
             self.result.emit("library_delete", {"deleted": len(ids), "failed": [],
@@ -328,6 +415,65 @@ class CoreController(QObject):
                                                 "demo": True, "kind": kind})
             return
         self._run("library_delete", lambda: core.delete_library_songs(kind, ids))
+
+    def library_organize(self, kind):
+        if self.demo:
+            self.result.emit("library_organize", {"kind": kind, "moved": 2, "total": 2,
+                                                  "cancelled": False, "demo": True,
+                                                  "structure": "classified"})
+            return
+
+        def organize():
+            if self._compression is not None and self._compression.snapshot()["phase"] != "idle":
+                raise RuntimeError("曲库压缩进行中，请先取消压缩再整理文件夹")
+            core.update_config({"library_structure": "classified"})
+            self._config_cache = core.get_config()
+            result = core.organize_library(kind)
+            result["structure"] = "classified"
+            return result
+
+        self._run("library_organize", organize)
+
+    def library_flatten(self, kind):
+        if self.demo:
+            self.result.emit("library_organize", {"kind": kind, "moved": 2, "total": 2,
+                                                  "cancelled": False, "demo": True, "structure": "flat"})
+            return
+
+        def flatten():
+            if self._compression is not None and self._compression.snapshot()["phase"] != "idle":
+                raise RuntimeError("曲库压缩进行中，请先取消压缩再整理文件夹")
+            core.update_config({"library_structure": "flat"})
+            self._config_cache = core.get_config()
+            result = core.organize_library(kind, flatten=True)
+            result["structure"] = "flat"
+            return result
+
+        self._run("library_organize", flatten)
+
+    def cancel_library_organization(self):
+        if not self.demo:
+            core.cancel_library_organization()
+
+    def check_legacy_library_status(self):
+        if self.demo:
+            self.result.emit("legacy_library_status", {"rooms": [], "acknowledged": False})
+            return
+        if not self.busy("legacy_library_status"):
+            self._run("legacy_library_status", core.legacy_library_status)
+
+    def check_legacy_library_notice(self):
+        self.check_legacy_library_status()
+
+    def acknowledge_legacy_library_notice(self):
+        if self.demo:
+            return
+
+        def acknowledge():
+            core.update_config({"legacy_library_notice_acknowledged": True})
+            self._config_cache = core.get_config()
+
+        self._run("legacy_library_acknowledge", acknowledge)
 
     def scan_room_events(self):
         if not self.demo and not self.busy("room_events"):
@@ -341,13 +487,13 @@ class CoreController(QObject):
         if not self.demo and not self.busy("index_check"):
             self._run("index_check", core.index_maintenance_status)
 
-    def maintenance(self, kind: str):
+    def maintenance(self, kind: str, room="pypy"):
         if self.demo:
             self._demo_maintenance_kind = kind
             self.event.emit(f"{kind}_progress", {"done": 0, "failed": 0, "checked": 0, "total": 486, "bad": 0, "current": "示例曲库"})
             self._demo_maintenance_timer.start(500)
             return
-        function = core.rebuild_mapping if kind == "rebuild" else core.verify_library
+        function = core.rebuild_mapping if kind == "rebuild" else lambda: core.verify_library(room)
         request = threading.Event()
         self._maintenance_cancel = request
 
@@ -384,6 +530,27 @@ class CoreController(QObject):
             self.error.emit("dudu_setup", "演示模式不会生成本机证书，请在正式模式中启用。")
             return
         self._run("dudu_setup", lambda: core.configure_dudu(enabled))
+
+    def check_dudu_latest_event(self):
+        if self.demo:
+            self.result.emit("dudu_event_check", {"action": "off", "demo": True})
+            return
+        self._run("dudu_event_check", core.check_dudu_latest_event)
+
+    def dismiss_dudu_latest_event(self, signature):
+        if self.demo:
+            self.result.emit("dudu_event_dismiss", {"action": "skipped", "signature": signature, "demo": True})
+            return
+        self._run("dudu_event_dismiss", lambda: core.dismiss_dudu_latest_event(signature))
+
+    def preload_dudu_event(self, signature=None, automatic=False):
+        if self.demo:
+            self.result.emit("dudu_event_preload", {"name": "20261124", "playlist_id": 65,
+                                                      "total": 2, "already_cached": 1, "queued": 1,
+                                                      "song_ids": [2398, 1559], "demo": True})
+            return
+        self._run("dudu_event_preload",
+                  lambda: core.preload_dudu_latest_event(signature=signature, automatic=automatic))
 
     def scan(self, *, full=False, ips=None):
         if self.demo:
@@ -597,6 +764,55 @@ class CoreController(QObject):
                                     "available": core.resolve_cooldown_file(self._demo_config.get("cooldown_file", "")) is not None,
                                     "active": self._demo_cooldown != "idle", "serving_filename": None})
 
+    @property
+    def compression(self):
+        if self._compression is None:
+            from .compression import CompressionManager
+            self._compression = CompressionManager(
+                listener=lambda kind, data: self.event.emit("compression", data))
+        return self._compression
+
+    def compression_state(self):
+        if self.demo:
+            return {"phase": "idle", "auto_game": True, "encoder": "cpu", "current": None, "counts": {}, "items": []}
+        return self.compression.snapshot()
+
+    def compression_records(self):
+        return [] if self.demo else self.compression.records()
+
+    def compression_detect_resources(self):
+        if self.demo:
+            self.result.emit("compression_resources", ["cpu", "nvenc", "amf"])
+        else:
+            self._run("compression_resources", self.compression.available_encoders)
+
+    def compression_start(self, kind, encoder, auto_game, selected_paths=None):
+        if self.demo:
+            self.error.emit("compression_start", "演示模式不执行真实曲库压缩。")
+            return
+
+        def start():
+            added = self.compression.enqueue(kind, selected_paths)
+            started = self.compression.start(
+                kind, encoder, auto_game, self.config().get("compression_crf", "volume"),
+                self.config().get("compression_parallel", 1),
+                self.config().get("compression_full_encoders", ["cpu", "nvenc", "amf", "qsv"]))
+            return {"added": added, "started": started}
+
+        self._run("compression_start", start)
+
+    def compression_pause(self):
+        if not self.demo:
+            self.compression.pause()
+
+    def compression_resume(self):
+        if not self.demo:
+            self.compression.resume()
+
+    def compression_cancel(self):
+        if not self.demo:
+            self.compression.cancel()
+
     def open_directory(self, path: str):
         if self.demo:
             self.error.emit("open_directory", "演示路径仅用于展示。正式模式下可以打开实际缓存或曲库目录。")
@@ -616,6 +832,8 @@ class CoreController(QObject):
             self._demo_maintenance_timer.stop()
             self.result.emit("shutdown", None)
         else:
+            if self._compression is not None:
+                self._compression.shutdown()
             pending_start = self._workers.get("start")
 
             def shutdown():
@@ -629,5 +847,7 @@ class CoreController(QObject):
             self._run("shutdown", shutdown)
 
     def dispose(self):
+        if self._compression is not None:
+            self._compression.shutdown()
         if not self.demo:
             core.remove_listener(self._listener)

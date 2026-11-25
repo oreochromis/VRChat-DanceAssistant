@@ -7,8 +7,10 @@ from datetime import datetime
 
 from PySide6.QtCore import QDate, QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QImage, QLinearGradient, QPainter, QPainterPath, QPen
-from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLineEdit, QScrollArea, QVBoxLayout, QWidget
 
+from . import i18n
+from .i18n import MessageBox as QMessageBox
 from .pages import button
 from .vrcx_profile import friend_avatar_path
 from .vrcx_stats import format_duration
@@ -30,7 +32,7 @@ def _text(painter, rect, text, *, size=14, color=None, weight=QFont.Weight.Norma
     painter.setFont(_font(size, weight))
     if color is not None:
         painter.setPen(color)
-    painter.drawText(rect, align, str(text))
+    painter.drawText(rect, align, str(i18n.tr(text)))
 
 
 def _elided(painter, text, width):
@@ -91,17 +93,17 @@ class ReportCanvas(QWidget):
         self.border = QColor(theme["border_color"])
         self.border.setAlpha(150)
         if start.month() == 1 and start.day() == 1 and start.year() == end.year():
-            self.title = f"我的 {start.year()} 年度舞蹈报告"
+            self.title = i18n.tr(f"我的 {start.year()} 年度舞蹈报告")
             self.kicker = f"{start.year()} · ANNUAL DANCE REPORT"
         else:
-            self.title = "我的舞蹈报告"
+            self.title = i18n.tr("我的舞蹈报告")
             self.kicker = "MY DANCE COLLECTION"
-        self.setAccessibleName("舞蹈年度报告")
+        self.setAccessibleName(i18n.tr("舞蹈年度报告"))
         self.setMinimumWidth(720)
         self.setMinimumHeight(self._report_height(self.width()))
 
     def set_title(self, text):
-        self.title = str(text).strip() or "我的舞蹈报告"
+        self.title = str(text).strip() or i18n.tr("我的舞蹈报告")
         self.update()
 
     def set_trend_mode(self, mode):
@@ -225,7 +227,7 @@ class ReportCanvas(QWidget):
         painter.drawRoundedRect(rect, 16, 16)
 
     def _hero_stat(self, painter, rect, value, caption, value_size):
-        value, caption = str(value), str(caption)
+        value, caption = str(value), i18n.tr(str(caption))
         caption_size, gap = 16, 10
         size = value_size
         while True:

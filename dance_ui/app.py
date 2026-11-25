@@ -11,12 +11,13 @@ from pathlib import Path
 from PySide6.QtCore import QStandardPaths, Qt, QTimer, Signal, Slot, QUrl
 from PySide6.QtGui import QBrush, QColor, QDesktopServices, QFont, QFontDatabase, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFileDialog, QHBoxLayout, QHeaderView,
-    QMainWindow, QMenu, QMessageBox, QPlainTextEdit, QProgressBar, QScrollArea,
+    QApplication, QButtonGroup, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
+    QMainWindow, QMenu, QPlainTextEdit, QProgressBar, QScrollArea,
     QStackedWidget, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import __version__
+from . import __version__, i18n
+from .i18n import MessageBox as QMessageBox
 from .appearance import AppearancePage
 from .controller import CoreController
 from .pages import Pages, button, row
@@ -54,9 +55,15 @@ CONFIG_LABELS = {
     "speedtest_sample_mb": "测速样本大小", "enable_youtube_cache": "YouTube 缓存",
     "youtube_permanent": "永久保存 YouTube 视频", "cdn_permanent": "永久保存 CDN 视频",
     "wd_permanent": "永久保存 WannaDance 视频", "dudu_permanent": "永久保存 DuDu 视频",
+    "dudu_event_mode": "DuDu 新活动检测", "dudu_event_allow_over_limit": "DuDu 活动缓存超限",
+    "dudu_event_api_url": "DuDu 活动接口",
     "cooldown_file": "CoolDown 放松视频", "cooldown_trigger": "CoolDown 触发时机",
     "bundle_direct": "歌单直取模式", "vr_overlay": "SteamVR 面板页",
     "close_to_tray": "关闭时最小化到托盘", "auto_start_service": "打开软件时自动启动服务",
+    "compression_encoder": "曲库压缩引擎", "compression_auto_game": "VRChat 启动时自动暂停压缩",
+    "compression_crf": "压缩档位", "compression_parallel": "压缩并行任务数",
+    "compression_full_encoders": "满负载压缩资源",
+    "library_structure": "曲库保存结构", "language": "界面语言",
 }
 
 
@@ -105,8 +112,11 @@ class MainWindow(QMainWindow, Pages):
         self.apply_buttons, self.apply_hints = {}, {}
         self._runtime = {"running": False, "phase": "stopped", "warnings": []}
         self._cooldown = {"phase": "idle", "available": False}
+        self._compression_selected_paths = None
         self._queue = []
+        self._log_messages = []
         self._downloads = {}
+        self._download_sequence = 0
         self._scan_results = []
         self._steamvr_saved = None
         self._steamvr_available = False
@@ -115,6 +125,10 @@ class MainWindow(QMainWindow, Pages):
         self._steamvr_pending = None
         self._steamvr_busy = False
         self._maintenance = None
+        self._verify_report_path = ""
+        self._organizing_kind = None
+        self._legacy_rooms = set()
+        self._legacy_notice_shown = False
         self._can_close = False
         self._closing = False
         self._tray = None
@@ -132,6 +146,8 @@ class MainWindow(QMainWindow, Pages):
         self._vr_overlay = None  # load_fields 会先于服务创建调用 _sync_vr_overlay
         self._library_browser = None  # 曲库浏览窗口（非模态单例）
         self._record_editor = None
+        self._pending_dudu_event = None
+        self._dudu_event_prompt_open = False
         self.setWindowTitle("VRChat DanceAssistant" + (" · 界面演示" if controller.demo else ""))
         self.setWindowIcon(app_icon())
         self.resize(1100, 920)
@@ -174,12 +190,14 @@ class MainWindow(QMainWindow, Pages):
         self.stack.addWidget(self.play_stats_page)
         self.stack.addWidget(self.build_settings_page())
         self.minimal_page = self.build_minimal_page()
-        self._advanced_widgets = [self.general_card, self.maintenance_card,
+        self._advanced_widgets = [self.general_card, self.library_structure_row, self.maintenance_verify_row,
+                                  self.maintenance_verify_note,
                                   self.hosts_clean_row, self.hosts_clean_hint,
                                   self.storage_location_box, self.vrcx_sync_card,
                                   self.steamvr_detail, self.overlay_note, self.vrcx_group_heading,
                                   self.speedtest_threads_row, self.speedtest_candidates_row,
-                                  self.speedtest_sample_row]
+                                  self.speedtest_sample_row, self.dudu_event_api_row,
+                                  self.dudu_event_over_limit_row]
         self.apply_ui_mode()
         self.render_favorites()
         self.appearance_page = AppearancePage(store)
@@ -206,10 +224,12 @@ class MainWindow(QMainWindow, Pages):
         self.apply_appearance()
         self.render_queue()
         self.render_downloads()
+        QTimer.singleShot(0, self.controller.compression_detect_resources)
         QTimer.singleShot(0, self.refresh_steamvr_startup)
         QTimer.singleShot(0, self.controller.scan_room_events)
         QTimer.singleShot(0, self.controller.compact_history)
         QTimer.singleShot(1000, self.controller.check_index_maintenance)
+        QTimer.singleShot(1500, self.check_dudu_latest_event)
         # 极简模式默认自动启动，其他模式遵循设置；--no-autostart 优先。
         # controller.start 自身会拦截非 Windows/非管理员/已在启动中等情况。
         if auto_start and (store.preferences.get("ui_mode") == "minimal"
@@ -240,7 +260,7 @@ class MainWindow(QMainWindow, Pages):
         header = QWidget()
         header.setObjectName("header")
         box = QHBoxLayout(header)
-        box.setContentsMargins(16, 0, 22, 0)
+        box.setContentsMargins(16, 0, 12, 0)
         box.setSpacing(5)
         self.profile_widget = QWidget()
         profile_box = QHBoxLayout(self.profile_widget)
@@ -256,7 +276,6 @@ class MainWindow(QMainWindow, Pages):
         profile_box.addWidget(self.profile_name)
         self.profile_widget.setToolTip("从 VRCX 同步后显示当前账号昵称和头像")
         box.addWidget(self.profile_widget)
-        box.addSpacing(8)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
         for index, title in enumerate(("运行", "存储", "统计", "设置", "外观")):
@@ -273,10 +292,10 @@ class MainWindow(QMainWindow, Pages):
         self.mode_switch.setToolTip("界面模式：极简仅保留缓存服务；标准保留常用功能；高级显示全部选项")
         self.mode_switch.modeChanged.connect(self.set_ui_mode)
         box.addWidget(self.mode_switch)
-        box.addSpacing(12)
+        box.addSpacing(2)
         self.service_status = label("●  已停止")
         box.addWidget(self.service_status)
-        box.addSpacing(12)
+        box.addSpacing(2)
         self.service_button = button("启动服务", self.toggle_service)
         box.addWidget(self.service_button)
         outer.addWidget(header)
@@ -288,9 +307,10 @@ class MainWindow(QMainWindow, Pages):
             from .vrcx_profile import load_vrcx_profile
             profile = load_vrcx_profile()
         name = str((profile or {}).get("name") or "VRCX 账号")
-        self.profile_name.setText(self.profile_name.fontMetrics().elidedText(
-            name, Qt.TextElideMode.ElideRight, 150))
+        self.profile_name.setProperty("fullName", name)
+        self.profile_name.setText(name)
         self.profile_widget.setToolTip(name if not profile else f"{name}\n{profile.get('id', '')}")
+        self._apply_header_layout()
         source = QPixmap(str((profile or {}).get("avatar") or ""))
         if source.isNull():
             self.profile_avatar.setPixmap(app_icon().pixmap(32, 32))
@@ -308,16 +328,76 @@ class MainWindow(QMainWindow, Pages):
         painter.end()
         self.profile_avatar.setPixmap(rounded)
 
-    def resizeEvent(self, event):
+    def _apply_header_layout(self, width=None):
+        width = self.width() if width is None else width
+        minimal = self.store.preferences.get("ui_mode") == "minimal"
         if hasattr(self, "profile_name"):
-            self.profile_name.setVisible(event.size().width() >= 1000)
+            self.profile_name.setVisible(not minimal)
+        if hasattr(self, "profile_widget"):
+            self.profile_widget.setVisible(not minimal)
+        if hasattr(self, "service_status"):
+            self.service_status.setVisible(not minimal)
         if hasattr(self, "nav_buttons"):
-            compact = event.size().width() < 1000
+            compact = width < 1350
+            english_compact = i18n.current_language() == "en" and compact
             for nav in self.nav_buttons:
-                if nav.property("compact") != compact:
+                if (nav.property("compact") != compact or nav.property("compactEnglish") != english_compact
+                        or nav.property("compactNarrow")):
                     nav.setProperty("compact", compact)
+                    nav.setProperty("compactEnglish", english_compact)
+                    nav.setProperty("compactNarrow", False)
                     nav.style().unpolish(nav)
                     nav.style().polish(nav)
+            for widget in (self.service_status, self.service_button):
+                if widget.property("compactNarrow"):
+                    widget.setProperty("compactNarrow", False)
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+        if hasattr(self, "mode_switch"):
+            full_name = self.profile_name.property("fullName")
+            if isinstance(full_name, str):
+                self.profile_name.setMaximumWidth(16777215)
+                self.profile_name.setText(full_name)
+            header = self.mode_switch.parentWidget()
+            layout = header.layout()
+            if width >= 1000:
+                layout.setContentsMargins(16, 0, 12, 0)
+            else:
+                layout.setContentsMargins(4, 0, 8, 0)
+
+            def fixed_width():
+                value = sum(widget.sizeHint().width()
+                            for widget in (self.profile_widget, *self.nav_buttons,
+                                           self.service_status, self.service_button)
+                            if not widget.isHidden())
+                margins = layout.contentsMargins()
+                return value + margins.left() + margins.right() + layout.spacing() * max(0, layout.count() - 1)
+
+            fixed = fixed_width()
+            expanded_width = self.mode_switch._seg_w + self.mode_switch._PAD * 2
+            overflow = fixed + expanded_width - width
+            if overflow > 0 and not minimal and isinstance(full_name, str):
+                name_width = self.profile_name.sizeHint().width()
+                shortened = max(24, name_width - overflow - 2)
+                self.profile_name.setMaximumWidth(shortened)
+                self.profile_name.setText(self.profile_name.fontMetrics().elidedText(
+                    full_name, Qt.TextElideMode.ElideRight, shortened))
+                fixed -= max(0, name_width - shortened)
+            if fixed + expanded_width > width:
+                for widget in (*self.nav_buttons, self.service_status, self.service_button):
+                    widget.setProperty("compactNarrow", True)
+                    widget.style().unpolish(widget)
+                    widget.style().polish(widget)
+                fixed = fixed_width()
+            self.mode_switch.set_compact(width < fixed + expanded_width + 24)
+
+    def refresh_translation(self):
+        self._render_logs()
+        self._apply_header_layout()
+
+    def resizeEvent(self, event):
+        if hasattr(self, "profile_name"):
+            self._apply_header_layout(event.size().width())
         super().resizeEvent(event)
 
     def build_logs_and_footer(self, outer):
@@ -361,7 +441,7 @@ class MainWindow(QMainWindow, Pages):
         self.stack.setCurrentIndex(index)
         self.nav_buttons[index].setChecked(True)
         if index == 1:
-            self.controller.refresh_stats()
+            self.controller.refresh_stats(force=False)
             self.controller.check_index_maintenance()
         elif index == 2:
             self.play_stats_page.refresh()
@@ -401,6 +481,12 @@ class MainWindow(QMainWindow, Pages):
             self._return_mode = previous if previous in ("simple", "advanced") else "simple"
         for widget in self._advanced_widgets:
             widget.setVisible(advanced)
+        for organize_button in self.organize_buttons.values():
+            organize_button.setVisible(advanced)
+        for flatten_button in self.flatten_buttons.values():
+            flatten_button.setVisible(advanced)
+        self.maintenance_cancel_row.setVisible(
+            advanced or self._maintenance is not None or self._organizing_kind is not None)
         if hasattr(self, "appearance_page"):
             self.appearance_page.apply_ui_mode()
         if hasattr(self, "play_stats_page"):
@@ -408,7 +494,7 @@ class MainWindow(QMainWindow, Pages):
         for nav in self.nav_buttons:
             nav.setVisible(not minimal)
         self.profile_widget.setVisible(not minimal)
-        self.service_status.setVisible(not minimal)
+        self._apply_header_layout()
         self.service_button.setVisible(not minimal)
         if hasattr(self, "footer"):
             self.footer.setVisible(not minimal)
@@ -472,7 +558,8 @@ class MainWindow(QMainWindow, Pages):
         task = dict(previous)
         task.update(data)
         if kind == "download_start":
-            task.update(status="active", done=0, total=0, speed=0)
+            self._download_sequence += 1
+            task.update(status="active", done=0, total=0, speed=0, order=self._download_sequence)
         elif kind == "progress":
             elapsed = now - previous.get("updated", now)
             if "demo_speed" in data:
@@ -501,7 +588,9 @@ class MainWindow(QMainWindow, Pages):
         self.render_downloads()
 
     def render_downloads(self):
-        tasks = sorted(self._downloads.values(), key=lambda item: (item.get("status") != "active", -item.get("updated", 0)))
+        tasks = sorted(self._downloads.values(), key=lambda item: (
+            item.get("status") != "active",
+            item.get("order", 0) if item.get("status") == "active" else -item.get("updated", 0)))
         self.download_table.setRowCount(len(tasks))
         active = sum(item.get("status") == "active" for item in tasks)
         self.download_count.setText(f"{active} 项进行中" if active else "暂无进行中的任务")
@@ -611,9 +700,16 @@ class MainWindow(QMainWindow, Pages):
         self.cooldown_button.setEnabled((not available or self._runtime.get("running", False)) and not self.controller.busy("cooldown"))
 
     def render_stats(self, data):
+        self._last_stats_data = data
         used, limit = float(data.get("total_mb", 0)), float(data.get("limit_mb", 0))
-        self.cache_summary.setText(f"{bytes_text(used * 1024**2)}  /  {bytes_text(limit * 1024**2)}")
-        self.cache_detail.setText(f"{data.get('count', 0)} 个视频文件 · 临时缓存用量")
+        self.cache_summary.setText("暂无历史统计" if data.get("no_history") else
+                                   f"{bytes_text(used * 1024**2)}  /  {bytes_text(limit * 1024**2)}")
+        detail = f"{data.get('count', 0)} 个视频文件 · 临时缓存用量"
+        if data.get("updated_at"):
+            detail += " · 上次同步 " + time.strftime("%H:%M:%S", time.localtime(data["updated_at"]))
+        if getattr(self, "_stats_refreshing", False):
+            detail += " · 后台刷新中"
+        self.cache_detail.setText(detail)
         self.cache_usage.setValue(min(1000, round(used / limit * 1000)) if limit else 0)
         self.cache_usage.setAccessibleName(f"已用 {used:.0f} MB，上限 {limit:.0f} MB")
         lib_count, lib_mb = data.get("lib_count", 0), data.get("lib_mb", 0)
@@ -649,10 +745,34 @@ class MainWindow(QMainWindow, Pages):
                 self.library_path.setText(config["library_dir"])
                 self.wd_library_path.setText(config.get("wd_library_dir", ""))
                 self.dudu_library_path.setText(config.get("dudu_library_dir", ""))
+                self.library_structure.setCurrentIndex(self.library_structure.findData(
+                    config.get("library_structure", "flat")))
                 self.cdn_permanent.setChecked(config["cdn_permanent"])
                 self.wd_permanent.setChecked(config.get("wd_permanent", False))
                 self.dudu_permanent.setChecked(config.get("dudu_permanent", False))
+                self.dudu_event_mode.setCurrentIndex(self.dudu_event_mode.findData(
+                    config.get("dudu_event_mode", "ask")))
+                self.dudu_event_allow_over_limit.setChecked(
+                    config.get("dudu_event_allow_over_limit", False))
+                self.dudu_event_api_url.setText(config.get(
+                    "dudu_event_api_url", self.dudu_event_api_url.placeholderText()))
                 self.youtube_permanent.setChecked(config["youtube_permanent"])
+                saved_encoder = config.get("compression_encoder", "cpu")
+                self._compression_encoder_selection = saved_encoder
+                if saved_encoder == "full":
+                    selected_resources = set(config.get("compression_full_encoders", ["cpu", "nvenc", "amf", "qsv"]))
+                elif saved_encoder == "auto":
+                    selected_resources = {"cpu", "nvenc", "amf", "qsv"}
+                else:
+                    selected_resources = {saved_encoder}
+                for encoder, checkbox in self.compression_resource_checks.items():
+                    checkbox.setChecked(encoder in selected_resources)
+                compression_mode = config.get("compression_crf", "volume")
+                if compression_mode not in ("quality", "volume"):
+                    compression_mode = "volume" if compression_mode in (30, "auto") else "quality"
+                self.compression_crf.setCurrentIndex(self.compression_crf.findData(compression_mode))
+                self.compression_parallel.setValue(config.get("compression_parallel", 1))
+                self.compression_auto_game.setChecked(config.get("compression_auto_game", True))
             if section in (None, "settings"):
                 self.preload_count.setMaximum(max(10, config["preload_count"]))
                 self.preload_count.setValue(config["preload_count"])
@@ -663,6 +783,8 @@ class MainWindow(QMainWindow, Pages):
                 self.cooldown_path.setText(config["cooldown_file"])
                 self.cooldown_trigger.setCurrentIndex(
                     self.cooldown_trigger.findData(config.get("cooldown_trigger", "next")))
+                self.language.setCurrentIndex(self.language.findData(
+                    config.get("language") or i18n.detect_system_language()))
                 self.preferred_ip.setText(config["preferred_cdn_ip"])
                 self.auto_prefer_cdn.setChecked(config.get("auto_prefer_cdn", True))
                 self.speedtest_threads.setValue(config.get("speedtest_threads", 3))
@@ -681,6 +803,7 @@ class MainWindow(QMainWindow, Pages):
                 self._dirty[name] = False
                 self.apply_buttons[name].setEnabled(False)
                 self.apply_hints[name].setText("已保存" + (" · 仅本次演示有效" if self.controller.demo else ""))
+                self._refresh_apply_text(name)
         finally:
             self._syncing = False
         self.render_cooldown()
@@ -763,19 +886,30 @@ class MainWindow(QMainWindow, Pages):
             return
         self.controller.set_storage_mode(mode)
 
+    def _refresh_apply_text(self, section):
+        text = "应用更改"
+        if section == "settings" and self._dirty["settings"]:
+            current = self.controller.config().get("language") or i18n.detect_system_language()
+            planned = self.language.currentData() or current
+            if current != planned:
+                text = f"应用更改：{i18n.SUPPORTED_LANGUAGES[current]} → {i18n.SUPPORTED_LANGUAGES[planned]}"
+        self.apply_buttons[section].setText(text)
+
     def mark_dirty(self, section):
         if self._syncing:
             return
         self._dirty[section] = True
         self.apply_buttons[section].setEnabled(not self.controller.busy("apply_" + section))
         self.apply_hints[section].setText("有未应用的更改")
+        self._refresh_apply_text(section)
         self._refresh_pending_banner()
 
     def _choose_directory_action(self, title, old_dir, new_dir, permanent):
+        title = i18n.tr(title)
         if new_dir:
             dialog = QMessageBox(self)
             dialog.setIcon(QMessageBox.Icon.Question)
-            dialog.setWindowTitle("迁移" + title)
+            dialog.setWindowTitle(i18n.tr("迁移") + title)
             dialog.setText(f"{title}目录已更改：\n\n原目录：{old_dir}\n新目录：{new_dir}\n\n是否把原目录中的软件视频迁移到新目录？")
             migrate = dialog.addButton("迁移原文件", QMessageBox.ButtonRole.AcceptRole)
             skip = dialog.addButton("不迁移", QMessageBox.ButtonRole.NoRole)
@@ -791,7 +925,7 @@ class MainWindow(QMainWindow, Pages):
 
         choice = QMessageBox(self)
         choice.setIcon(QMessageBox.Icon.Warning)
-        choice.setWindowTitle("处理原" + title)
+        choice.setWindowTitle(i18n.tr("处理原") + title)
         choice.setText("不迁移时，原目录中的软件视频如何处理？\n\n只会处理本软件使用的视频及 .part 文件，其他文件和子目录不会改动。")
         keep = choice.addButton("保留不动", QMessageBox.ButtonRole.AcceptRole)
         delete = choice.addButton("全部删除", QMessageBox.ButtonRole.DestructiveRole)
@@ -882,9 +1016,19 @@ class MainWindow(QMainWindow, Pages):
                     "max_cache_mb": self.cache_limit.value(), "library_dir": self.library_path.text().strip(),
                     "wd_library_dir": self.wd_library_path.text().strip(),
                     "dudu_library_dir": self.dudu_library_path.text().strip(),
+                    "library_structure": self.library_structure.currentData(),
                     "cdn_permanent": self.cdn_permanent.isChecked(), "wd_permanent": self.wd_permanent.isChecked(),
                     "dudu_permanent": self.dudu_permanent.isChecked(),
-                    "youtube_permanent": self.youtube_permanent.isChecked()}
+                    "dudu_event_mode": self.dudu_event_mode.currentData(),
+                    "dudu_event_allow_over_limit": self.dudu_event_allow_over_limit.isChecked(),
+                    "dudu_event_api_url": self.dudu_event_api_url.text().strip(),
+                    "youtube_permanent": self.youtube_permanent.isChecked(),
+                    "compression_encoder": self._compression_encoder_selection,
+                    "compression_auto_game": self.compression_auto_game.isChecked(),
+                    "compression_crf": self.compression_crf.currentData(),
+                    "compression_parallel": self.compression_parallel.value(),
+                    "compression_full_encoders": [encoder for encoder, checkbox in self.compression_resource_checks.items()
+                                                  if checkbox.isChecked()]}
         return {"preload_count": self.preload_count.value(), "preload_sequential": self.preload_sequential.isChecked(),
                 "max_parallel": self.max_parallel.value(),
                 "enable_youtube_cache": self.youtube_enabled.isChecked(), "bundle_direct": self.bundle_direct.isChecked(),
@@ -895,7 +1039,8 @@ class MainWindow(QMainWindow, Pages):
                 "speedtest_threads": self.speedtest_threads.value(),
                 "speedtest_candidates": self.speedtest_candidates.value(),
                 "speedtest_sample_mb": self.speedtest_sample_mb.value(),
-                "auto_start_service": self.auto_start_service.isChecked()}
+                "auto_start_service": self.auto_start_service.isChecked(),
+                "language": self.language.currentData()}
 
     def _refresh_pending_banner(self):
         if not hasattr(self, "pending_banner"):
@@ -1055,6 +1200,72 @@ class MainWindow(QMainWindow, Pages):
             self.dudu_setup_button.setEnabled(False)
             self.controller.configure_dudu(not enabled)
 
+    def reset_dudu_event_api(self):
+        self.dudu_event_api_url.setText(self.dudu_event_api_url.placeholderText())
+
+    def check_dudu_latest_event(self):
+        if not self._closing:
+            self.controller.check_dudu_latest_event()
+
+    def _flush_dudu_event(self):
+        if (self._pending_dudu_event is None or not self._runtime.get("running")
+                or self.controller.busy("dudu_event_preload")):
+            return
+        event = self._pending_dudu_event
+        self._pending_dudu_event = None
+        self.controller.preload_dudu_event(signature=event.get("signature"), automatic=True)
+
+    def _prompt_dudu_event(self, event):
+        if self._dudu_event_prompt_open:
+            return
+        self._dudu_event_prompt_open = True
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("发现 DuDu 新活动")
+        box.setText(
+            f"活动 {event.get('name', '最新活动')} 共 {event.get('total', 0)} 首，"
+            f"本地已有 {event.get('already_cached', 0)} 首，需要下载 {len(event.get('missing_ids', []))} 首。\n\n"
+            f"临时活动文件将至少保留到 {event.get('expires_text', '活动次日 00:00')}。"
+            "确定后会启动缓存服务（如尚未运行）并只下载缺失歌曲。")
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        automatic = QCheckBox("以后发现新活动时自动缓存", box)
+        box.setCheckBox(automatic)
+        try:
+            answer = box.exec()
+        finally:
+            self._dudu_event_prompt_open = False
+        if answer == QMessageBox.StandardButton.Yes:
+            if automatic.isChecked():
+                self.controller.apply_config({"dudu_event_mode": "auto"}, "dudu_event")
+            self._pending_dudu_event = event
+            self.dudu_event_status.setText("等待启动服务后缓存活动…")
+            if not self._runtime.get("running"):
+                self.controller.start()
+            self._flush_dudu_event()
+        else:
+            self.controller.dismiss_dudu_latest_event(event["signature"])
+
+    def _handle_dudu_event_check(self, event):
+        action = (event or {}).get("action", "off")
+        if action == "ask":
+            self._prompt_dudu_event(event)
+            return
+        if action in ("auto", "resume"):
+            self._pending_dudu_event = event
+            self.dudu_event_status.setText("等待启动服务后自动缓存活动…")
+            self._flush_dudu_event()
+            return
+        if action == "complete":
+            self.dudu_event_status.setText(
+                f"{event.get('name', '最新活动')} 已在本地完整保存，临时活动文件保护至 {event.get('expires_text', '次日 00:00')}。")
+        elif action == "skipped":
+            self.dudu_event_status.setText(f"已跳过活动 {event.get('name', '')}，同一版本不再询问。")
+        elif action == "disabled":
+            self.dudu_event_status.setText("未启用 DuDu 证书，不会自动检测新活动。")
+        elif action == "expired":
+            self.dudu_event_status.setText(f"活动 {event.get('name', '')} 已过保留期限，不再自动缓存。")
+
     def browse_cooldown(self):
         path, _ = QFileDialog.getOpenFileName(self, "选择放松视频", self.cooldown_path.text(), "MP4 视频 (*.mp4)")
         if path:
@@ -1063,15 +1274,25 @@ class MainWindow(QMainWindow, Pages):
     def open_cache(self):
         self.controller.open_directory(self.controller.config()["cache_dir"])
 
-    def open_library_browser(self, kind="pypy"):
+    def open_library_browser(self, kind="pypy", compression_mode=False, cooldown_mode=False):
         from .library_browser import LibraryBrowser
         if self._library_browser is not None:
             self._library_browser.close()
             self._library_browser = None
-        self._library_browser = LibraryBrowser(self, kind)
+        self._library_browser = LibraryBrowser(self, kind, compression_mode, cooldown_mode)
         self._library_browser.show()
         self._library_browser.raise_()
         self._library_browser.activateWindow()
+
+    def open_compression_library_browser(self):
+        self.open_library_browser("all", compression_mode=True)
+
+    def choose_cooldown_from_library(self):
+        self.open_library_browser("all", cooldown_mode=True)
+
+    def select_cooldown_from_library(self, path):
+        self.cooldown_path.setText(path)
+        self.notify("已选择曲库视频作为 CoolDown，请点击“应用更改”保存。")
 
     def clear_cache(self):
         directory = self.controller.config()["cache_dir"]
@@ -1099,6 +1320,182 @@ class MainWindow(QMainWindow, Pages):
             return
         self.controller.cooldown()
 
+    def start_compression(self):
+        if self._compression_selected_paths is None:
+            return
+        if self._dirty["storage"]:
+            self.notify("请先应用存储设置，再开始曲库压缩。")
+            return
+        if not any(checkbox.isChecked() and checkbox.isEnabled()
+                   for checkbox in self.compression_resource_checks.values()):
+            self.notify("请至少勾选一项当前可用的压缩资源。")
+            return
+        self.controller.compression_start(
+            "all", self._compression_encoder_selection,
+            self.compression_auto_game.isChecked(),
+            selected_paths=self._compression_selected_paths)
+
+    def start_compression_paths(self, kind, paths):
+        if self._dirty["storage"]:
+            self.notify("请先应用存储设置，再开始曲库压缩。")
+            return False
+        if self.controller.compression_state().get("phase", "idle") != "idle":
+            self.notify("已有压缩任务正在进行，请等待完成或取消后再选择歌曲。")
+            return False
+        grouped = paths if kind == "all" else {"pypy": [], "wd": [], "dudu": [], kind: paths}
+        self._compression_selected_paths = grouped
+        self.compression_start_button.setEnabled(True)
+        self.controller.compression_start(
+            "all", self._compression_encoder_selection,
+            self.compression_auto_game.isChecked(), selected_paths=grouped)
+        return True
+
+    def pause_compression(self):
+        self.controller.compression_pause()
+
+    def resume_compression(self):
+        self.controller.compression_resume()
+
+    def cancel_compression(self):
+        self.controller.compression_cancel()
+
+    def toggle_compression_details(self):
+        visible = not self.compression_details.isVisible()
+        self.compression_details.setVisible(visible)
+        if visible:
+            self.render_compression(getattr(self, "_last_compression_data", {}))
+            self.storage_scroll_area.ensureWidgetVisible(self.compression_details, 0, 80)
+
+    @staticmethod
+    def _compression_eta_text(seconds):
+        if seconds is None:
+            return "正在估算剩余时间"
+        seconds = max(0, int(seconds))
+        if seconds < 60:
+            return "预计剩余不到 1 分钟"
+        if seconds < 3600:
+            return f"预计剩余约 {round(seconds / 60)} 分钟"
+        return f"预计剩余约 {seconds // 3600} 小时 {round(seconds % 3600 / 60)} 分钟"
+
+    def render_compression(self, data):
+        data = data or {}
+        self._last_compression_data = data
+        phase = data.get("phase", "idle")
+        current = data.get("current") or {}
+        current_items = data.get("current_items") or ([current] if current else [])
+        counts = data.get("counts") or {}
+        progress = round(sum(float(item.get("progress") or 0) for item in current_items) / len(current_items)) if current_items else 0
+        self.compression_progress.setValue(progress)
+        phase_text = {
+            "running": "正在压缩", "manual_paused": "已手动暂停",
+            "game_paused": "VRChat 运行中，压缩已暂停", "idle": "队列空闲",
+        }.get(phase, phase)
+        summary = (f"{phase_text} · 待处理 {counts.get('queued', 0)} · 完成 {counts.get('done', 0)} · "
+                   f"跳过 {counts.get('skipped', 0)} · 失败 {counts.get('failed', 0)}")
+        if phase == "running":
+            summary += " · " + self._compression_eta_text(data.get("eta_seconds"))
+        self.compression_status.setText(summary)
+        if current_items:
+            self.compression_current.setText("\n\n".join(
+                f"{item.get('path', '')}\n{item.get('message', '')}" for item in current_items))
+        else:
+            completed_items = data.get("details") or data.get("items") or []
+            recent = next((item for item in reversed(completed_items)
+                           if item.get("status") in ("done", "skipped", "failed", "cancelled")), None)
+            if recent and recent.get("status") == "done":
+                encoder = recent.get("encoder", "cpu")
+                encoder_names = {"cpu": "CPU x264", "nvenc": "NVIDIA NVENC",
+                                 "qsv": "Intel QSV", "amf": "AMD AMF"}
+                parameter_names = {"cpu": "CRF", "nvenc": "CQ", "qsv": "ICQ", "amf": "QP"}
+                details = ["已压缩"]
+                if recent.get("crf") is not None:
+                    details.append(f"{parameter_names.get(encoder, '质量')} {recent['crf']}")
+                if recent.get("encoder"):
+                    details.append(encoder_names.get(encoder, encoder))
+                self.compression_current.setText(
+                    f"最近完成：{recent.get('path', '')}\n" + " · ".join(details))
+            elif recent:
+                self.compression_current.setText(
+                    f"{recent.get('path', '')}\n{recent.get('message', '')}")
+            else:
+                self.compression_current.setText("没有正在处理的文件。")
+        completed = data.get("details") or []
+        if self.compression_details.isVisible():
+            status_names = {"done": "完成", "skipped": "跳过", "failed": "失败", "cancelled": "取消"}
+            self.compression_details.setPlainText("\n\n".join(
+                f"[{status_names.get(item.get('status'), item.get('status', ''))}] {item.get('path', '')}\n"
+                f"{item.get('message', '')}" for item in completed))
+        total = data.get("detail_total", len(completed))
+        self.compression_details_button.setText(
+            f"处理详情（最近 {len(completed)} / 共 {total}）" if total > len(completed)
+            else f"处理详情（{total}）")
+        self.compression_details_button.setEnabled(bool(completed))
+        running = phase in ("running", "manual_paused", "game_paused")
+        self.compression_start_button.setEnabled(
+            self._compression_selected_paths is not None and not running
+            and not self.controller.busy("compression_start"))
+        self.compression_pause_button.setEnabled(phase == "running")
+        self.compression_resume_button.setEnabled(phase == "manual_paused")
+        self.compression_cancel_button.setEnabled(running)
+
+    def start_library_organization(self, kind):
+        if self._organizing_kind or self._maintenance:
+            return
+        if self._dirty["storage"]:
+            self.notify("请先应用存储设置，再整理曲库文件夹。")
+            return
+        if self._runtime.get("running"):
+            self.notify("请先停止缓存服务，再整理曲库文件夹。")
+            return
+        answer = QMessageBox.warning(
+            self, "整理为分类文件夹",
+            "将按当前官方分类把本软件识别的歌曲移动到对应子文件夹；未识别的歌曲放入“_未分类”。\n"
+            "同名或重复冲突会在移动前停止，失败或取消会回滚本次移动。其他文件不会被删除。\n\n确定开始吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._organizing_kind = kind
+        self.maintenance_cancel_row.show()
+        for button_widget in (*self.organize_buttons.values(), *self.flatten_buttons.values()):
+            button_widget.setEnabled(False)
+        self.cancel_maintenance_button.setEnabled(True)
+        self.maintenance_card.show()
+        self.maintenance_progress.setRange(0, 0)
+        self.maintenance_progress.show()
+        self.maintenance_status.setText("正在扫描曲库文件…")
+        self.storage_scroll_area.ensureWidgetVisible(self.maintenance_card, 0, 120)
+        self.controller.library_organize(kind)
+
+    def start_library_flatten(self, kind):
+        if self._organizing_kind or self._maintenance:
+            return
+        if self._dirty["storage"]:
+            self.notify("请先应用存储设置，再整理曲库文件夹。")
+            return
+        if self._runtime.get("running"):
+            self.notify("请先停止缓存服务，再整理曲库文件夹。")
+            return
+        answer = QMessageBox.warning(
+            self, "整理为根目录平铺",
+            "将把分类子文件夹中的软件视频移动到曲库根目录，保留 _compressed 后缀并更新压缩记录。\n"
+            "同名或重复冲突会在移动前停止，失败或取消会回滚本次移动。\n\n确定开始吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._organizing_kind = kind
+        self.maintenance_cancel_row.show()
+        for button_widget in (*self.organize_buttons.values(), *self.flatten_buttons.values()):
+            button_widget.setEnabled(False)
+        self.cancel_maintenance_button.setEnabled(True)
+        self.maintenance_card.show()
+        self.maintenance_progress.setRange(0, 0)
+        self.maintenance_progress.show()
+        self.maintenance_status.setText("正在扫描曲库文件…")
+        self.storage_scroll_area.ensureWidgetVisible(self.maintenance_card, 0, 120)
+        self.controller.library_flatten(kind)
+
     def start_maintenance(self, kind):
         if self._maintenance:
             return
@@ -1106,24 +1503,45 @@ class MainWindow(QMainWindow, Pages):
             self.notify("请先应用存储设置，再开始曲库维护。")
             return
         self._maintenance = kind
+        self.maintenance_cancel_row.show()
         self.rebuild_button.setEnabled(False)
         self.verify_button.setEnabled(False)
         self.cancel_maintenance_button.setEnabled(True)
         self.maintenance_progress.setRange(0, 0)
         self.maintenance_progress.show()
         self.maintenance_status.setText("正在准备" + ("重建索引…" if kind == "rebuild" else "校验曲库…"))
-        self.controller.maintenance(kind)
+        self.controller.maintenance(kind, self.verify_source.currentData())
 
     def cancel_maintenance(self):
         self.cancel_maintenance_button.setEnabled(False)
-        self.maintenance_status.setText("正在取消，请等待当前网络请求结束…")
-        self.controller.cancel_maintenance()
+        if self._organizing_kind:
+            self.maintenance_status.setText("正在取消并回滚本次已移动文件…")
+            self.controller.cancel_library_organization()
+        else:
+            self.maintenance_status.setText("正在取消，请等待当前网络请求结束…")
+            self.controller.cancel_maintenance()
 
     def finish_maintenance(self):
         self._maintenance = None
         self.rebuild_button.setEnabled(True)
         self.verify_button.setEnabled(True)
+        self.verify_export_button.setEnabled(bool(self._verify_report_path))
         self.cancel_maintenance_button.setEnabled(False)
+        self.apply_ui_mode()
+
+    def export_verification_report(self):
+        if not self._verify_report_path:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self, "导出校验报告", "verification-report.json", "JSON 报告 (*.json)")
+        if not destination:
+            return
+        try:
+            Path(destination).write_bytes(Path(self._verify_report_path).read_bytes())
+        except OSError as error:
+            self.notify(f"校验报告导出失败：{error}", error=True)
+            return
+        self.notify(f"校验报告已导出：{destination}")
 
     def start_favorite_scan(self):
         favorites = list(self.cdn_favorites.items)
@@ -1333,8 +1751,17 @@ class MainWindow(QMainWindow, Pages):
         self.minimal_saved.setText("节省流量 " + saved)
 
     def append_log(self, message):
-        self.logs.appendPlainText(str(message))
+        source = str(message)
+        self._log_messages.append(source)
+        if len(self._log_messages) > 2000:
+            del self._log_messages[:-2000]
+        self.logs.appendPlainText(i18n.tr_log(source))
 
+    def _render_logs(self):
+        self.logs.setPlainText("\n".join(i18n.tr_log(message) for message in self._log_messages))
+        self.logs.verticalScrollBar().setValue(self.logs.verticalScrollBar().maximum())
+
+    @i18n.translate_after
     def notify(self, message, *, error=False, persistent=False, raw=None):
         self._banner_generation += 1
         generation = self._banner_generation
@@ -1476,6 +1903,7 @@ class MainWindow(QMainWindow, Pages):
         self.resize_tables()
 
     @Slot(str, dict)
+    @i18n.translate_after
     def on_event(self, kind, data):
         if self._can_close:
             return
@@ -1486,6 +1914,11 @@ class MainWindow(QMainWindow, Pages):
         elif kind == "state":
             self._runtime.update(data)
             self.render_runtime()
+            self._flush_dudu_event()
+        elif kind == "dudu_event_capacity":
+            message = str(data.get("message") or "临时缓存上限不足，活动预载已暂停")
+            self.dudu_event_status.setText(message)
+            self.notify(message, error=True)
         elif kind == "config":
             # 自动优选只同步优选 IP 字段，其他未应用的草稿保持不变。
             self.controller.reload_config()
@@ -1505,8 +1938,29 @@ class MainWindow(QMainWindow, Pages):
         elif kind == "cooldown":
             self._cooldown.update(data)
             self.render_cooldown()
+        elif kind == "compression":
+            self.render_compression(data)
         elif kind in ("download_start", "progress", "download_done"):
             self.download_event(kind, data)
+        elif kind == "library_organize_progress":
+            phase = data.get("phase", "moving")
+            total = int(data.get("total", 0) or 0)
+            done = int(data.get("done", 0) or 0)
+            current = str(data.get("current") or "")
+            if phase == "scanning":
+                self.maintenance_progress.setRange(0, 0)
+                message = "正在扫描曲库文件…"
+            else:
+                self.maintenance_progress.setRange(0, max(1, total))
+                self.maintenance_progress.setValue(done)
+                message = {"planning": "正在计算分类与检查冲突…", "moving": "正在移动文件",
+                           "rollback": "正在回滚已移动文件", "finalizing": "正在更新索引和压缩记录…"}.get(phase, "分类整理")
+                if total and phase != "finalizing":
+                    message += f" {done} / {total}"
+            if current:
+                message += " · " + current
+            self.maintenance_progress.show()
+            self.maintenance_status.setText(message)
         elif kind in ("rebuild_progress", "verify_progress"):
             total = data.get("total", 0)
             done = data.get("done", 0) if kind.startswith("rebuild") else data.get("checked", 0)
@@ -1516,6 +1970,8 @@ class MainWindow(QMainWindow, Pages):
             current = str(data.get("current") or "")
             self.maintenance_status.setText(f"{'重建索引' if kind.startswith('rebuild') else '校验曲库'}  {done} / {total}" + (" · " + current if current else ""))
         elif kind in ("rebuild_done", "verify_done"):
+            if kind == "verify_done":
+                self._verify_report_path = data.get("report_path") or self._verify_report_path
             self.finish_maintenance()
             if data.get("error"):
                 self.maintenance_progress.hide()
@@ -1530,7 +1986,9 @@ class MainWindow(QMainWindow, Pages):
             if kind == "rebuild_done":
                 result += f" · 已关联 {data.get('done', 0)} / {total} · 失败 {data.get('failed', 0)}"
             else:
-                result += f" · 已检查 {data.get('checked', total)} / {total} · 大小不符 {data.get('bad', 0)} · 跳过 {data.get('skipped', 0)} · 失败 {data.get('failed', 0)}"
+                result += (f" · 已检查 {data.get('checked', total)} / {total} · 一致 {data.get('matched', 0)}"
+                           f" · 大小不同 {data.get('bad', 0)} · 已压缩 {data.get('compressed', 0)}"
+                           f" · YouTube {data.get('youtube', 0)} · 失败 {data.get('failed', 0)}")
             self.maintenance_status.setText(result)
             self.controller.refresh_stats()
             if kind == "rebuild_done":
@@ -1542,6 +2000,7 @@ class MainWindow(QMainWindow, Pages):
             self.finish_scan(data.get("results"))
 
     @Slot(str, object)
+    @i18n.translate_after
     def on_result(self, operation, result):
         if operation in ("vrcx_stats", "vrcx_stats_auto"):
             self.clear_vrcx_auto_error()
@@ -1555,10 +2014,34 @@ class MainWindow(QMainWindow, Pages):
             self._handle_index_check(result)
         elif operation == "steamvr_startup":
             self.show_steamvr_status(result)
+        elif operation == "dudu_event_check":
+            self._handle_dudu_event_check(result or {})
+        elif operation == "dudu_event_dismiss":
+            self.dudu_event_status.setText("已跳过本次活动，同一版本不再询问。")
+        elif operation == "dudu_event_preload":
+            data = result or {}
+            action = data.get("action")
+            if action == "expired":
+                self.dudu_event_status.setText("活动已过保留期限，未自动缓存。")
+            elif action == "disabled":
+                self.dudu_event_status.setText("未启用 DuDu 证书，未自动缓存。")
+            elif action == "off":
+                self.dudu_event_status.setText("活动歌单预载已关闭，未自动缓存。")
+            elif action == "stopped":
+                self.dudu_event_status.setText("服务未运行，活动预载将在下次启动后重试。")
+            else:
+                text = (f"{data.get('name', '最新活动')}：共 {data.get('total', 0)} 首，"
+                        f"已有 {data.get('already_cached', 0)} 首，加入队列 {data.get('queued', 0)} 首；"
+                        f"临时活动文件保护至 {data.get('expires_text', '次日 00:00')}")
+                self.dudu_event_status.setText(text)
+                self.notify("活动预载已加入下载队列" if data.get("queued") else "活动歌曲已全部在本地")
         elif operation == "dudu_setup":
+            enabled = self.controller.config().get("dudu_enabled")
+            if not enabled:
+                self._pending_dudu_event = None
             self.load_fields()
             self.controller.refresh_stats()
-            self.notify("DuDu FitDance 缓存已启用。" if self.controller.config().get("dudu_enabled")
+            self.notify("DuDu FitDance 缓存已启用。" if enabled
                         else "DuDu FitDance 已禁用，本机证书已清理。")
         elif operation == "cooldown_trigger":
             trigger = (result or {}).get("trigger", "next")
@@ -1570,6 +2053,31 @@ class MainWindow(QMainWindow, Pages):
             self.render_cooldown()
             self.notify("CoolDown 触发时机已切换为：重新载入当前歌曲。" if trigger == "reload"
                         else "CoolDown 触发时机已切换为：播放至下一首歌曲。")
+        elif operation == "library_organize":
+            result = result or {}
+            self._organizing_kind = None
+            self.apply_ui_mode()
+            for button_widget in (*self.organize_buttons.values(), *self.flatten_buttons.values()):
+                button_widget.setEnabled(True)
+            self.cancel_maintenance_button.setEnabled(False)
+            self.maintenance_progress.hide()
+            title = "平铺整理" if result.get("structure") == "flat" else "分类整理"
+            self.maintenance_status.setText("已取消，本次移动已回滚。" if result.get("cancelled")
+                                            else f"{title}完成 · 已移动 {result.get('moved', 0)} 个文件")
+            self.notify("演示模式：未移动真实文件。" if result.get("demo") else
+                        "曲库整理已取消并回滚。" if result.get("cancelled") else
+                        f"曲库{title}完成，共移动 {result.get('moved', 0)} 个文件。")
+            if result.get("structure") in ("flat", "classified") and not result.get("demo"):
+                self.load_fields("storage")
+            self.controller.refresh_stats()
+        elif operation == "compression_resources":
+            self.render_compression_resources(result or ["cpu"])
+        elif operation == "compression_start":
+            result = result or {}
+            if result.get("started"):
+                self.notify("曲库压缩已开始，VRChat 启动时将按设置自动暂停。")
+            else:
+                self.notify("没有等待压缩的视频。")
         elif operation == "reset_settings":
             self.reset_settings_button.setEnabled(True)
             self._pending_directory_actions.clear()
@@ -1578,15 +2086,25 @@ class MainWindow(QMainWindow, Pages):
             self.controller.check_index_maintenance()
             self.controller.refresh_stats()
             self.notify("全部软件设置已恢复默认，歌曲、收藏、历史和外观均保留。")
+        elif operation == "apply_dudu_event":
+            self._syncing = True
+            try:
+                self.dudu_event_mode.setCurrentIndex(self.dudu_event_mode.findData(
+                    self.controller.config().get("dudu_event_mode", "ask")))
+            finally:
+                self._syncing = False
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             if section == "storage":
                 self._pending_directory_actions.clear()
                 self._refresh_directory_pending_hint()
+            if section == "settings":
+                i18n.set_language(self.language.currentData())
+                i18n.translate_all()
             self.load_fields(section)
             if section == "storage":
                 self.controller.check_index_maintenance()
-            self.notify("设置已应用。" + ("请重新启动服务。" if (result or {}).get("restart_required") else ""))
+                self.notify("设置已应用。" + ("请重新启动服务。" if (result or {}).get("restart_required") else ""))
             self.controller.refresh_stats()
         elif operation == "clear_cache":
             result = result or {}
@@ -1649,6 +2167,7 @@ class MainWindow(QMainWindow, Pages):
             QTimer.singleShot(0, self.close)
 
     @Slot(str, str)
+    @i18n.translate_after
     def on_error(self, operation, message):
         if operation in ("vrcx_stats", "vrcx_stats_auto"):
             self.update_profile()
@@ -1663,6 +2182,10 @@ class MainWindow(QMainWindow, Pages):
                 self.update_status.setText("检查失败：" + message)
                 self.update_check_button.setEnabled(True)
             return  # 自动检查失败（无网络等）静默忽略
+        if operation == "dudu_event_check":
+            self.dudu_event_status.setText("活动自动检查失败，将在下次启动时重试。")
+            self.append_log("[界面] DuDu 活动自动检查失败：" + message)
+            return
         if operation == "clean_stale_hosts":
             self.hosts_clean_status.setText("清理失败：" + message)
             self.append_log("[界面] hosts 残留清理失败：" + message)
@@ -1675,8 +2198,20 @@ class MainWindow(QMainWindow, Pages):
         if operation == "steamvr_startup":
             self.steamvr_hint.setText(("保存失败，更改仍保留：" if self._steamvr_pending == "save" else "读取失败，无法确认当前状态：") + friendly_message(message))
             self.render_steamvr_controls()
+        elif operation == "dudu_event_preload":
+            self.dudu_event_status.setText("预载失败：" + friendly_message(message))
+        elif operation == "apply_dudu_event":
+            self.dudu_event_status.setText("自动缓存偏好保存失败：" + friendly_message(message))
         elif operation.startswith("apply_"):
             self.apply_hints[operation.removeprefix("apply_")].setText("保存失败，更改仍保留")
+        elif operation == "library_organize":
+            self._organizing_kind = None
+            self.apply_ui_mode()
+            for button_widget in (*self.organize_buttons.values(), *self.flatten_buttons.values()):
+                button_widget.setEnabled(True)
+            self.cancel_maintenance_button.setEnabled(False)
+            self.maintenance_progress.hide()
+            self.maintenance_status.setText(message)
         elif operation in ("rebuild", "verify"):
             self.finish_maintenance()
             self.maintenance_progress.hide()
@@ -1704,12 +2239,21 @@ class MainWindow(QMainWindow, Pages):
             else:
                 self._steamvr_pending = None
             self.render_steamvr_controls()
+        elif operation == "stats":
+            self._stats_refreshing = busy
+            if hasattr(self, "_last_stats_data"):
+                self.render_stats(self._last_stats_data)
+        elif operation == "apply_dudu_event":
+            pass
         elif operation.startswith("apply_"):
             section = operation.removeprefix("apply_")
             self.stack.widget(1 if section == "storage" else 3).setEnabled(not busy)
             self.apply_buttons[section].setEnabled(not busy and self._dirty[section])
             if busy:
                 self.apply_hints[section].setText("正在保存…")
+        elif operation == "dudu_event_preload":
+            if busy:
+                self.dudu_event_status.setText("正在读取最新活动…")
         elif operation == "dudu_setup":
             self.dudu_setup_button.setEnabled(not busy)
         elif operation == "scan":
@@ -1868,8 +2412,11 @@ def main(argv=None):
         if args.demo:
             store.select("light")
         controller = CoreController(demo=args.demo)
+        i18n.set_language(controller.config().get("language") or i18n.detect_system_language())
+        i18n.install(app)
         window = MainWindow(controller, store, auto_start=not args.no_autostart)
         window.show()
+        i18n.translate_all()
         if instance is not None and getattr(instance, "wake_event", None):
             import threading
             from .single_instance import wait_for_wake

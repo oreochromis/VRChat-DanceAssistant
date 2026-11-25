@@ -10,9 +10,14 @@ htmlcov/
 # Generated Windows bundles (the existing tracked spec remains versioned)
 build/
 dist/
+dist-downloader/
 release/
+release-minimal-ffmpeg/
 backups/
 build-reports/
+build-tools/
+tmp/
+压缩效果对比/
 *.spec
 !VRChat PyPyDance助手.spec
 *.exe
@@ -46,3 +51,9 @@ PyPyDance批量下载.bat
 tools/download_pypydance.py
 tools/pypydance_gui.pyw
 tools/pypydance_gui_settings.json
+tools/ffmpeg-bin/
+tools/ffmpeg-py/
+tools/ffmpeg-py2/
+tools/imageio/
+tools/ffmpeg-winget/
+assets/ffmpeg/

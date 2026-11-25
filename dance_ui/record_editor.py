@@ -8,10 +8,11 @@ from datetime import datetime
 from PySide6.QtCore import QDateTime, Qt, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFormLayout, QHBoxLayout, QLineEdit,
-    QMessageBox, QSpinBox, QTableWidgetItem, QVBoxLayout, QDateTimeEdit, QHeaderView,
+    QSpinBox, QTableWidgetItem, QVBoxLayout, QDateTimeEdit, QHeaderView,
 )
 
-from . import stats_records, vrcx_stats
+from . import i18n, stats_records, vrcx_stats
+from .i18n import MessageBox as QMessageBox
 from .pages import button
 from .widgets import label, table
 
@@ -235,6 +236,7 @@ class RecordEditorDialog(QDialog):
         finally:
             connection.close()
 
+    @i18n.translate_after
     def refresh(self):
         try:
             if self.kind in stats_records.VRCX_TABLES:

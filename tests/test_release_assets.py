@@ -571,6 +571,7 @@ class ReleaseAssetTests(unittest.TestCase):
         for name in (
             "VRChatDanceAssistant.exe", "_internal/python312.dll", "README.md", "LICENSE",
             "docs/DEVELOPMENT.md", "docs/WINDOWS_PREVIEW.md",
+            "_internal/ffmpeg/ffmpeg.exe", "_internal/ffmpeg/ffprobe.exe",
         ):
             target = bundle / name
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -601,6 +602,7 @@ class ReleaseAssetTests(unittest.TestCase):
                 redirect_stdout(io.StringIO()):
             self.assertEqual(packager.main(), 0)
             info, _ = publisher.verify_assets(output, self.SHA)
+            self.assertTrue(info["git_dirty"])
             self.assertEqual(info["user_reported_validation"]["environment"], "Windows running VRChat")
             self.assertEqual(info["frozen_demo_smoke"], self.info["frozen_demo_smoke"])
             self.assertEqual(info["bundled_cooldown_video"], self.cooldown_info)

@@ -81,7 +81,7 @@ class CDNSelectionTests(unittest.TestCase):
         result = self.dc.update_config({"preferred_cdn_ip": "8.8.8.8"}, expected_cdn_revision=old)
         self.assertFalse(result["changed"])
         self.assertEqual(self.dc.get_config()["preferred_cdn_ip"], "")
-        self.assertEqual(json.loads((self.root / "config.json").read_text())["preferred_cdn_ip"], "")
+        self.assertEqual(json.loads((self.root / "config.json").read_text(encoding="utf-8"))["preferred_cdn_ip"], "")
 
     def test_seven_kib_per_second_rechecks_before_two_mib(self):
         conn = SimpleNamespace(host="cdn.pypy.dance", _selected_ip="1.1.1.1")

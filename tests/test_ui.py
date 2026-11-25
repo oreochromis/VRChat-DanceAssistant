@@ -26,6 +26,7 @@ try:
     from PySide6.QtWidgets import QApplication, QLabel, QProgressBar
     import dance_cache as core
     from dance_ui.app import MainWindow
+    from dance_ui.i18n import MessageBox as LocalizedMessageBox
     from dance_ui.controller import CoreController
     from dance_ui.play_stats import PlayStatsPage
     from dance_ui.theme import ThemeStore
@@ -81,7 +82,7 @@ class UIIntegrationTests(unittest.TestCase):
             "start_services", "stop_services", "clean_stale_hosts", "hijack_hosts",
             "restore_hosts", "ensure_admin", "get_config", "get_runtime_state",
             "get_queue_snapshot", "get_downloads_snapshot", "get_cooldown_state",
-            "emit_stats", "update_config", "clear_cache", "rebuild_mapping",
+            "emit_stats", "storage_stats_snapshot", "update_config", "clear_cache", "rebuild_mapping",
             "verify_library", "cancel_library_download", "speed_test_ips", "full_scan_ips",
             "cooldown_arm", "cooldown_disarm", "is_running", "set_storage_mode",
         )
@@ -131,6 +132,10 @@ class UIIntegrationTests(unittest.TestCase):
         if not demo:
             for name in ("load_config", "load_mapping", "add_listener", "remove_listener", "emit_stats"):
                 self.allow_core(name)
+            self.allow_core("storage_stats_snapshot", result={"count": 0, "total_mb": 0, "limit_mb": 2048,
+                                                               "lib_count": 0, "lib_mb": 0, "wd_count": 0,
+                                                               "wd_mb": 0, "dudu_count": 0, "dudu_mb": 0,
+                                                               "updated_at": 0, "region_times": {}, "no_history": True})
             self.allow_core("get_config", lambda: copy.deepcopy(self.config))
             self.allow_core("get_runtime_state", result={"running": False, "phase": "stopped", "warnings": [], "error": None})
             self.allow_core("get_queue_snapshot", result=[])
@@ -146,6 +151,7 @@ class UIIntegrationTests(unittest.TestCase):
         # Integration tests below explicitly control this separate system bridge.
         if not demo:
             controller.vrcx_stats = Mock()
+            controller.compression_detect_resources = Mock()
             controller.steamvr_status = lambda: controller.result.emit("steamvr_startup", {
                 "enabled": False, "available": True, "message": "未启用跟随 SteamVR 启动。",
             })
@@ -203,6 +209,35 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertTrue(window.stack.currentWidget().isVisible())
         for mocked in self.core_mocks.values():
             mocked.assert_not_called()
+
+    def test_storage_navigation_refreshes_library_file_indexes(self):
+        window, controller, _ = self.make_window(demo=False)
+        self.wait_until(lambda: not controller.busy("stats"))
+        emitted = self.core_mocks["emit_stats"]
+        emitted.reset_mock()
+        window.navigate(0)
+        window.navigate(1)
+        emitted.assert_not_called()
+        controller._stats_last_refresh = 0
+        window.navigate(0)
+        window.navigate(1)
+        self.wait_until(lambda: emitted.called)
+        emitted.assert_called_once_with(refresh_library=True)
+
+    def test_storage_stats_shows_last_snapshot_before_background_refresh(self):
+        snapshot = {"count": 17, "total_mb": 128, "limit_mb": 2048,
+                    "lib_count": 23, "lib_mb": 4096, "lib_enabled": True,
+                    "wd_count": 0, "wd_mb": 0, "dudu_count": 0, "dudu_mb": 0,
+                    "updated_at": 1000, "region_times": {"cache": 1000}, "no_history": False}
+
+        def prepare():
+            self.allow_core("storage_stats_snapshot", result=snapshot)
+
+        window, _, _ = self.make_window(demo=False, before_controller=prepare)
+        self.assertIn("17 个视频文件", window.cache_detail.text())
+        self.assertIn("上次同步", window.cache_detail.text())
+        self.assertNotEqual(window.cache_summary.text(), "暂无历史统计")
+        self.core_mocks["emit_stats"].assert_called_with(refresh_library=True)
 
     def test_minimal_mode_starts_cache_and_restores_the_previous_full_interface(self):
         window, controller, _ = self.make_window()
@@ -458,7 +493,7 @@ class UIIntegrationTests(unittest.TestCase):
             self.assertIn("world-edited", editor.table.item(0, 2).text())
             editor.undo_last_change()
             self.assertIn("world-B", editor.table.item(0, 2).text())
-            with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+            with patch.object(LocalizedMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
                 editor.delete_selected()
             self.assertEqual(editor.table.rowCount(), 0)
             editor.undo_last_change()
@@ -571,32 +606,22 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn('QLabel[metricValue="success"]', vivid_css)
         self.assertIn('QHeaderView, QHeaderView::section {\n            background: qlineargradient', vivid_css)
 
-    def test_mode_switch_expands_on_hover_and_collapses_after_leave(self):
+    def test_mode_switch_uses_popup_and_keyboard(self):
         window, _, store = self.make_window()
         switch = window.mode_switch
-        collapsed_width = switch.width()
-        self.assertFalse(switch._expanded)
-        self.assertLess(collapsed_width, switch._seg_w * 3)
-        from PySide6.QtGui import QEnterEvent
-        switch.enterEvent(QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))
-        self.assertTrue(switch._expanded)
-        self.assertGreater(switch.width(), collapsed_width)
-        self.assertEqual(switch._display_modes()[-1][0], "simple")
-        point = QPoint(round(switch._PAD + switch._seg_w * 1.5), 15)
-        QTest.mouseClick(switch, Qt.MouseButton.LeftButton, pos=point)
+        switch.set_compact(True)
+        with patch.object(switch, "_show_menu", side_effect=lambda: switch._choose_mode("advanced")):
+            QTest.mouseClick(switch, Qt.MouseButton.LeftButton)
         self.assertEqual(store.preferences["ui_mode"], "advanced")
-        self.assertEqual(switch._display_modes()[-1][0], "advanced")
-        expanded_width = switch.width()
-        QTest.keyClick(switch, Qt.Key.Key_Space)
-        self.assertTrue(switch._expanded)
+        with patch.object(switch, "_show_menu"):
+            QTest.keyClick(switch, Qt.Key.Key_Space)
         QTest.keyClick(switch, Qt.Key.Key_Left)
         self.assertEqual(store.preferences["ui_mode"], "simple")
-        QTest.keyClick(switch, Qt.Key.Key_Escape)
-        self.assertFalse(switch._expanded)
+        from PySide6.QtGui import QEnterEvent
+        switch.enterEvent(QEnterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1)))
         switch.leaveEvent(QEvent(QEvent.Type.Leave))
         QTest.qWait(260)
         self.assertFalse(switch._expanded)
-        self.assertLess(switch.width(), expanded_width)
 
     def test_mid_tone_custom_accent_keeps_self_painted_controls_readable(self):
         window, _, store = self.make_window()
@@ -1006,6 +1031,294 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(window._dirty["settings"])
         self.assertTrue(window.apply_buttons["settings"].isEnabled())
 
+    def test_language_switch_applies_immediately_and_persists(self):
+        window, controller, _ = self.make_window(demo=False)
+        self.addCleanup(__import__("dance_ui.i18n", fromlist=["set_language"]).set_language, "zh")
+
+        def update(values):
+            self.config.update(values)
+            return {"changed": list(values), "restart_required": False}
+
+        self.allow_core("update_config", update)
+        window.language.setCurrentIndex(window.language.findData("en"))
+        QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
+        self.wait_until(lambda: not controller.busy("apply_settings") and not window._dirty["settings"], timeout=5000)
+        self.assertEqual(self.config["language"], "en")
+        self.assertEqual(window.nav_buttons[0].text(), "Run")
+        window.language.setCurrentIndex(window.language.findData("ja"))
+        self.assertIn("English", window.apply_buttons["settings"].text())
+        self.assertIn("日本語", window.apply_buttons["settings"].text())
+        self.assertIn("→", window.apply_buttons["settings"].text())
+        self.assertEqual(self.config["language"], "en")
+        QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
+        self.wait_until(lambda: not controller.busy("apply_settings") and not window._dirty["settings"], timeout=5000)
+        self.assertEqual(self.config["language"], "ja")
+        self.assertEqual(window.nav_buttons[0].text(), "実行")
+        window.language.setCurrentIndex(window.language.findData("zh_TW"))
+        QTest.mouseClick(window.apply_buttons["settings"], Qt.MouseButton.LeftButton)
+        self.wait_until(lambda: not controller.busy("apply_settings") and not window._dirty["settings"], timeout=5000)
+        self.assertEqual(self.config["language"], "zh_TW")
+        self.assertEqual(window.nav_buttons[0].text(), "運行")
+        self.assertEqual(window.cooldown_path.text(), self.config["cooldown_file"])
+        self.assertEqual(window.cache_path.text(), self.config["cache_dir"])
+        self.assertEqual(window.library_path.text(), self.config["library_dir"])
+        self.assertFalse(window._dirty["storage"])
+
+    def test_existing_logs_follow_language_without_changing_paths(self):
+        from dance_ui import i18n
+        self.addCleanup(i18n.set_language, "zh")
+        window, _, _ = self.make_window()
+        i18n.set_language("zh")
+        path = r"D:\软件小玩具开发\跳舞房缓存\曲库"
+        window.append_log("服务已停止")
+        window.append_log("曲库分类整理完成：366 个文件已按官方分组整理")
+        window.append_log("原始错误 " + path)
+        i18n.set_language("en")
+        i18n.translate_widget_tree(window)
+        self.assertIn("Service stopped", window.logs.toPlainText())
+        self.assertIn("366 files moved into official groups", window.logs.toPlainText())
+        self.assertIn("原始错误 " + path, window.logs.toPlainText())
+        i18n.set_language("ja")
+        i18n.translate_widget_tree(window)
+        self.assertIn("サービスを停止しました", window.logs.toPlainText())
+        self.assertIn("366 個のファイル", window.logs.toPlainText())
+
+    def test_expanded_mode_switch_keeps_current_item_and_other_controls_in_place(self):
+        window, _, _ = self.make_window()
+        window.resize(2000, 850)
+        QApplication.processEvents()
+        switch = window.mode_switch
+        switch.set_compact(False)
+        switch.set_mode("advanced")
+        switch._set_expanded(False)
+        QApplication.processEvents()
+        current_x = switch.mapTo(window, QPoint(0, 0)).x() + switch._PAD
+        positions = [widget.x() for widget in (*window.nav_buttons, window.service_button)]
+        self.assertTrue(window.profile_widget.isVisible())
+        self.assertGreaterEqual(window.profile_widget.x(), 16)
+        profile_x = window.profile_widget.x()
+        switch._set_expanded(True)
+        QApplication.processEvents()
+        overlay = switch._overlay
+        self.assertIsNotNone(overlay)
+        self.assertEqual(current_x, overlay.x() + switch._PAD + 2 * switch._seg_w)
+        self.assertEqual(positions, [widget.x() for widget in (*window.nav_buttons, window.service_button)])
+        self.assertTrue(window.profile_widget.isVisible())
+        self.assertEqual(window.profile_widget.x(), profile_x)
+        self.assertEqual(switch.width(), switch._seg_w + switch._PAD * 2)
+
+    def test_expanded_mode_switch_does_not_overlap_header_actions(self):
+        from dance_ui import i18n
+        self.addCleanup(i18n.set_language, "zh")
+        window, _, _ = self.make_window()
+        i18n.set_language("en")
+        i18n.translate_widget_tree(window)
+        window.mode_switch._set_expanded(True)
+        for width in (850, 1100, 1654):
+            window.resize(width, 800)
+            QApplication.processEvents()
+            right = window.mode_switch.x() + window.mode_switch.width()
+            following = window.service_status if window.service_status.isVisible() else window.service_button
+            self.assertLessEqual(right, following.x(), f"Header overlap at width {width}")
+            self.assertLessEqual(right, window.width())
+        padding = 16 if window.mode_switch._compact else 30
+        for _, text in window.mode_switch._modes:
+            self.assertGreaterEqual(window.mode_switch._seg_w,
+                                    window.mode_switch.fontMetrics().horizontalAdvance(i18n.tr(text)) + padding)
+
+    def test_library_structure_controls_are_advanced_and_default_to_flat(self):
+        window, _, _ = self.make_window()
+        self.assertEqual(window.library_structure.currentData(), "flat")
+        window.set_ui_mode("simple")
+        self.assertTrue(window.library_structure_row.isHidden())
+        self.assertTrue(all(button.isHidden() for button in window.organize_buttons.values()))
+        self.assertTrue(all(button.isHidden() for button in window.flatten_buttons.values()))
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.library_structure_row.isHidden())
+        self.assertTrue(all(not button.isHidden() for button in window.organize_buttons.values()))
+        self.assertTrue(all(not button.isHidden() for button in window.flatten_buttons.values()))
+        window.set_ui_mode("minimal")
+        self.assertTrue(all(button.isHidden() for button in window.organize_buttons.values()))
+        self.assertTrue(all(button.isHidden() for button in window.flatten_buttons.values()))
+
+    def test_library_organization_shows_each_real_progress_phase(self):
+        from dance_ui.i18n import MessageBox
+        window, controller, _ = self.make_window()
+        window._runtime["running"] = False
+        window.navigate(1)
+        controller.library_organize = Mock()
+        with patch("dance_ui.app.QMessageBox.warning", return_value=MessageBox.StandardButton.Yes):
+            window.start_library_organization("wd")
+        controller.library_organize.assert_called_once_with("wd")
+        self.assertTrue(window.maintenance_card.isVisible())
+        self.assertTrue(window.maintenance_progress.isVisible())
+        self.assertEqual(window.maintenance_progress.maximum(), 0)
+        controller.event.emit("library_organize_progress", {"phase": "planning", "done": 50, "total": 100})
+        self.assertIn("50 / 100", window.maintenance_status.text())
+        controller.event.emit("library_organize_progress", {"phase": "moving", "done": 25, "total": 100,
+                                                               "current": "wd_1.mp4"})
+        self.assertEqual(window.maintenance_progress.value(), 25)
+        self.assertIn("wd_1.mp4", window.maintenance_status.text())
+        controller.event.emit("library_organize_progress", {"phase": "rollback", "done": 2, "total": 25})
+        self.assertIn("回滚", window.maintenance_status.text())
+        controller.event.emit("library_organize_progress", {"phase": "finalizing", "done": 25, "total": 25})
+        self.assertIn("更新索引", window.maintenance_status.text())
+
+    def test_flat_library_conversion_popup_has_been_removed(self):
+        window, controller, _ = self.make_window()
+        self.assertFalse(hasattr(window, "_show_legacy_library_notice"))
+        with patch("dance_ui.app.QMessageBox.exec") as execute:
+            controller.result.emit("legacy_library_status", {"rooms": ["pypy"], "acknowledged": False})
+            execute.assert_not_called()
+
+    def test_compression_resource_checkboxes_auto_detect_and_follow_language(self):
+        from dance_ui import i18n
+        self.addCleanup(i18n.set_language, "zh")
+        window, _, _ = self.make_window()
+        self.assertFalse(hasattr(window, "compression_encoder"))
+        self.assertFalse(window.compression_resources_row.isHidden())
+        checks = window.compression_resource_checks
+        self.assertTrue(all(checks[name].isEnabled() for name in ("cpu", "nvenc", "amf")))
+        self.assertFalse(checks["qsv"].isEnabled())
+        self.assertFalse(checks["qsv"].isChecked())
+        window.select_all_compression_resources()
+        self.assertTrue(all(checks[name].isChecked() for name in ("cpu", "nvenc", "amf")))
+        self.assertTrue(window.compression_parallel.isEnabled())
+        checks["amf"].setChecked(False)
+        draft = window._settings_draft("storage")
+        self.assertEqual(draft["compression_encoder"], "full")
+        self.assertNotIn("amf", draft["compression_full_encoders"])
+        window.select_all_compression_resources()
+        self.assertTrue(checks["amf"].isChecked())
+        self.assertFalse(checks["qsv"].isChecked())
+        self.assertEqual(window.compression_parallel.maximum(), 8)
+        window.compression_parallel.setValue(2)
+        self.assertIn("AMD AMF 未参与", window.compression_assignment_hint.text())
+        self.assertIn("增加至 3 路", window.compression_assignment_hint.text())
+        window.compression_parallel.setValue(4)
+        self.assertIn("CPU x264×2", window.compression_assignment_hint.text())
+        self.assertIn("已覆盖全部已选资源", window.compression_assignment_hint.text())
+        window.compression_parallel.setValue(8)
+        self.assertIn("CPU x264×3", window.compression_assignment_hint.text())
+        self.assertIn("NVIDIA NVENC×3", window.compression_assignment_hint.text())
+        self.assertIn("AMD AMF×2", window.compression_assignment_hint.text())
+        window.compression_parallel.setValue(4)
+        labels = {"cpu": "CPU x264", "nvenc": "NVIDIA NVENC", "amf": "AMD AMF", "qsv": "Intel QSV"}
+        for language in ("en", "ja", "ko", "zh_TW", "zh"):
+            i18n.set_language(language)
+            i18n.translate_widget_tree(window)
+            for encoder, text in labels.items():
+                self.assertEqual(checks[encoder].text(), i18n.tr(text))
+            self.assertEqual(checks["qsv"].toolTip(), i18n.tr("当前硬件或编码器不可用"))
+            original_hint = window.compression_assignment_hint.property("_i18n_original_text")
+            self.assertEqual(window.compression_assignment_hint.text(), i18n.tr(original_hint))
+
+    def test_compression_assignment_hint_includes_available_qsv(self):
+        window, _, _ = self.make_window()
+        window.render_compression_resources(["cpu", "nvenc", "amf", "qsv"])
+        window.select_all_compression_resources()
+        window.compression_parallel.setValue(3)
+        self.assertIn("Intel QSV 未参与", window.compression_assignment_hint.text())
+        self.assertIn("增加至 4 路", window.compression_assignment_hint.text())
+        window.compression_parallel.setValue(4)
+        self.assertIn("Intel QSV", window.compression_assignment_hint.text())
+        self.assertIn("已覆盖全部已选资源", window.compression_assignment_hint.text())
+        window.compression_parallel.setValue(8)
+        self.assertIn("CPU x264×2", window.compression_assignment_hint.text())
+        self.assertIn("NVIDIA NVENC×2", window.compression_assignment_hint.text())
+        self.assertIn("AMD AMF×2", window.compression_assignment_hint.text())
+        self.assertIn("Intel QSV×2", window.compression_assignment_hint.text())
+
+    def test_all_library_scan_combines_songs_with_source_and_facets(self):
+        results = {
+            "pypy": {"kind": "pypy", "dir": "pypy", "songs": [{"id": 1, "size": 10}],
+                     "facets": {"categories": ["KPOP"], "secondary": ["pop"]}},
+            "wd": {"kind": "wd", "dir": "wd", "songs": [{"id": 1, "size": 20}],
+                   "facets": {"categories": ["Group"], "secondary": ["warm-up"]}},
+            "dudu": None,
+        }
+        with patch("dance_ui.controller.core.scan_library", side_effect=lambda kind: results[kind]):
+            result = CoreController._scan_all_libraries()
+        self.assertEqual(result["kind"], "all")
+        self.assertEqual([song["kind"] for song in result["songs"]], ["pypy", "wd"])
+        self.assertEqual(result["total_bytes"], 30)
+        self.assertEqual(result["facets"]["categories"], ["Group", "KPOP"])
+
+    def test_compression_controls_and_game_pause_rendering(self):
+        window, controller, _ = self.make_window(demo=False)
+        self.assertFalse(hasattr(window, "compression_source"))
+        controller.compression_start = Mock()
+        controller.compression_pause = Mock()
+        controller.compression_resume = Mock()
+        controller.compression_cancel = Mock()
+        self.assertFalse(window.compression_start_button.isEnabled())
+        window.start_compression()
+        controller.compression_start.assert_not_called()
+        window.start_compression_paths("pypy", ["123.mp4"])
+        controller.compression_start.assert_called_once_with(
+            "all", "cpu", True,
+            selected_paths={"pypy": ["123.mp4"], "wd": [], "dudu": []})
+        self.assertEqual(window.compression_browse_button.parentWidget(), window.compression_browse_row)
+        widgets = [window.compression_card.box.itemAt(index).widget()
+                   for index in range(window.compression_card.box.count())]
+        self.assertLess(widgets.index(window.compression_browse_row),
+                        widgets.index(window.compression_resources_row))
+        window.open_compression_library_browser = Mock()
+        window.compression_browse_button.click()
+        window.open_compression_library_browser.assert_called_once_with()
+
+        window.render_compression({"phase": "running", "counts": {"queued": 3},
+                                   "current": {"path": "song.mp4", "progress": 40, "message": "正在压缩"}})
+        self.assertEqual(window.compression_progress.value(), 40)
+        self.assertFalse(window.compression_progress.isTextVisible())
+        window.compression_pause_button.click()
+        controller.compression_pause.assert_called_once()
+        window.render_compression({"phase": "manual_paused", "counts": {}, "current": None})
+        self.assertTrue(window.compression_resume_button.isEnabled())
+        window.compression_resume_button.click()
+        controller.compression_resume.assert_called_once()
+        window.render_compression({"phase": "game_paused", "counts": {}, "current": None})
+        self.assertFalse(window.compression_resume_button.isEnabled())
+        self.assertIn("VRChat", window.compression_status.text())
+        window.compression_cancel_button.click()
+        controller.compression_cancel.assert_called_once()
+        window.render_compression({"phase": "idle", "counts": {"done": 1}, "current": None,
+                                   "items": [{"status": "done", "path": "song.mp4",
+                                              "crf": 30, "encoder": "cpu"}]})
+        self.assertIn("已压缩 · CRF 30 · CPU x264", window.compression_current.text())
+        self.assertTrue(window.compression_start_button.isEnabled())
+        window.render_compression({"phase": "idle", "counts": {"skipped": 1}, "current": None,
+                                   "items": [{"status": "skipped", "path": "dudu_2317.mp4",
+                                              "message": "CRF 30 未达到 25% 收益，已保留原文件"}]})
+        self.assertIn("dudu_2317.mp4", window.compression_current.text())
+        self.assertIn("未达到 25% 收益", window.compression_current.text())
+
+    def test_compression_blackbox_parallel_eta_and_per_file_details(self):
+        window, _, _ = self.make_window(demo=False)
+        self.assertEqual(window.compression_crf.count(), 2)
+        self.assertEqual(window.compression_crf.currentData(), "volume")
+        self.assertEqual(window.compression_parallel.value(), 1)
+        window.compression_parallel.setValue(2)
+        self.assertEqual(window._settings_draft("storage")["compression_parallel"], 2)
+        details = [
+            {"status": "skipped", "path": "one.mp4", "message": "原文件 10 MB，输出 9 MB"},
+            {"status": "done", "path": "two_compressed.mp4", "message": "压缩完成（CQ 37）"},
+        ]
+        window.render_compression({
+            "phase": "running", "eta_seconds": 125, "counts": {},
+            "current_items": [{"path": "one.mp4", "progress": 25, "message": "正在压缩"},
+                              {"path": "two.mp4", "progress": 75, "message": "正在压缩"}],
+            "details": details,
+        })
+        self.assertEqual(window.compression_progress.value(), 50)
+        self.assertIn("预计剩余约 2 分钟", window.compression_status.text())
+        self.assertEqual(window.compression_details.toPlainText(), "")
+        window.navigate(1)
+        window.compression_details_button.click()
+        self.assertFalse(window.compression_details.isHidden())
+        self.assertIn("one.mp4", window.compression_details.toPlainText())
+        self.assertIn("two_compressed.mp4", window.compression_details.toPlainText())
+
     def test_cache_directory_selection_is_applied_with_storage_settings(self):
         window, controller, _ = self.make_window(demo=False)
         selected = self.root / "new-cache"
@@ -1280,7 +1593,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.wait_until(lambda: window._steamvr_saved is not None)
         window.steamvr_startup.setChecked(True)
         from PySide6.QtWidgets import QMessageBox
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
+        with patch.object(LocalizedMessageBox, "question", return_value=QMessageBox.StandardButton.No) as question:
             window.close()
         question.assert_called_once()
         self.assertIn("启动", question.call_args.args[2])
@@ -1386,6 +1699,7 @@ class UIIntegrationTests(unittest.TestCase):
         instance.wake_event = None
         controller = Mock()
         controller.demo = False
+        controller.config = Mock(return_value={"language": "zh"})
         store = Mock()
         store.warnings = []
         with patch.object(app_module, "os", SimpleNamespace(name="nt")), \
@@ -1515,7 +1829,7 @@ class UIIntegrationTests(unittest.TestCase):
             self.config.update(dudu_enabled=enabled)
             controller.event.emit("config", {"changed": ["dudu_enabled"]})
         with patch.object(core, "configure_dudu", side_effect=configure) as configure, \
-                patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                patch.object(LocalizedMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             window.setup_dudu()
             configure.assert_called_once_with(True)
             self.wait_until(lambda: controller.config()["dudu_enabled"])
@@ -1524,6 +1838,61 @@ class UIIntegrationTests(unittest.TestCase):
             configure.assert_called_once_with(False)
             self.wait_until(lambda: not controller.config()["dudu_enabled"])
         self.assertIn("已清理", window.banner.text())
+
+    def test_dudu_event_preload_status_has_no_manual_button(self):
+        window, _, _ = self.make_window()
+        self.assertFalse(hasattr(window, "dudu_event_button"))
+        window.on_busy("dudu_event_preload", True)
+        self.assertIn("正在读取最新活动", window.dudu_event_status.text())
+        window.on_result("dudu_event_preload", {
+            "name": "20261124", "playlist_id": 65, "total": 17,
+            "already_cached": 3, "queued": 14, "song_ids": [2398],
+        })
+        self.assertIn("20261124", window.dudu_event_status.text())
+        self.assertIn("加入队列 14 首", window.dudu_event_status.text())
+        window.on_result("dudu_event_preload", {"action": "off", "queued": 0})
+        self.assertIn("活动歌单预载已关闭", window.dudu_event_status.text())
+        window.on_busy("dudu_event_preload", False)
+
+    def test_dudu_event_advanced_settings_and_api_reset(self):
+        window, controller, _ = self.make_window()
+        window.set_ui_mode("simple")
+        self.assertTrue(window.dudu_event_api_row.isHidden())
+        self.assertTrue(window.dudu_event_over_limit_row.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.dudu_event_api_row.isHidden())
+        self.assertFalse(window.dudu_event_over_limit_row.isHidden())
+        window.dudu_event_api_url.setText("https://example.com/custom-events")
+        window.dudu_event_api_reset_button.click()
+        self.assertEqual(window.dudu_event_api_url.text(),
+                         "https://api.dudufit.dance/api/v1/managed-playlists/ddfd")
+        window.dudu_event_mode.setCurrentIndex(window.dudu_event_mode.findData("auto"))
+        window.dudu_event_allow_over_limit.setChecked(True)
+        window.apply_settings("storage")
+        self.assertEqual(controller.config()["dudu_event_mode"], "auto")
+        self.assertTrue(controller.config()["dudu_event_allow_over_limit"])
+
+    def test_dudu_event_prompt_supports_auto_choice_and_skip(self):
+        window, controller, _ = self.make_window()
+        controller.apply_config = Mock()
+        controller.preload_dudu_event = Mock()
+        controller.dismiss_dudu_latest_event = Mock()
+        window._runtime["running"] = True
+        event = {"action": "ask", "name": "20261124", "signature": "event-signature",
+                 "total": 3, "already_cached": 2, "missing_ids": [3],
+                 "expires_text": "2026-11-25 00:00"}
+
+        def accept_and_enable(box):
+            box.checkBox().setChecked(True)
+            return LocalizedMessageBox.StandardButton.Yes
+
+        with patch.object(LocalizedMessageBox, "exec", autospec=True, side_effect=accept_and_enable):
+            window._handle_dudu_event_check(event)
+        controller.apply_config.assert_called_once_with({"dudu_event_mode": "auto"}, "dudu_event")
+        controller.preload_dudu_event.assert_called_once_with(signature="event-signature", automatic=True)
+        with patch.object(LocalizedMessageBox, "exec", return_value=LocalizedMessageBox.StandardButton.No):
+            window._handle_dudu_event_check(event)
+        controller.dismiss_dudu_latest_event.assert_called_once_with("event-signature")
 
     def test_reset_all_settings_cleans_up_enabled_dudu_certificate(self):
         from PySide6.QtWidgets import QMessageBox
@@ -1539,7 +1908,7 @@ class UIIntegrationTests(unittest.TestCase):
 
         self.allow_core("update_config", update)
         with patch.object(core, "configure_dudu", side_effect=configure) as configure, \
-                patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+                patch.object(LocalizedMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             window.reset_all_settings()
             self.wait_until(lambda: not controller.config()["dudu_enabled"])
         configure.assert_called_once_with(False)
@@ -1557,7 +1926,7 @@ class UIIntegrationTests(unittest.TestCase):
         window.speedtest_threads.setValue(5)
         window.cooldown_trigger.setCurrentIndex(window.cooldown_trigger.findData("reload"))
         window.library_path.setText("D:/custom-library")
-        with patch.object(QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
+        with patch.object(LocalizedMessageBox, "question", return_value=QMessageBox.StandardButton.Yes):
             window.reset_all_settings()
         self.assertEqual(controller.config()["preload_count"], 3)
         self.assertEqual(controller.config()["speedtest_threads"], 3)
@@ -1567,7 +1936,7 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertTrue(window.reset_settings_button.isEnabled())
         self.assertIn("已恢复默认", window.banner.text())
         controller.event.emit("state", {"running": True, "phase": "running", "warnings": []})
-        with patch.object(QMessageBox, "question") as question:
+        with patch.object(LocalizedMessageBox, "question") as question:
             window.reset_all_settings()
         question.assert_not_called()
         self.assertIn("停止服务", window.banner.text())
@@ -1600,6 +1969,19 @@ class UIIntegrationTests(unittest.TestCase):
             QTest.qWait(50)
             QApplication.processEvents()
             start_mock.assert_not_called()
+
+    def test_cooldown_library_entry_opens_filtered_all_library_picker(self):
+        window, _, _ = self.make_window()
+        self.assertEqual(window.default_cooldown_button.text(), "恢复默认视频")
+        window.choose_cooldown_from_library()
+        browser = window._library_browser
+        self.assertTrue(browser._cooldown_mode)
+        self.assertEqual(browser._kind, "all")
+        self.assertEqual(browser.search.text(), "cool down")
+        self.assertFalse(browser.only_missing.isChecked())
+        window.select_cooldown_from_library("D:/Library/1067.mp4")
+        self.assertEqual(window.cooldown_path.text(), "D:/Library/1067.mp4")
+        self.assertTrue(window._dirty["settings"])
 
     def test_restore_builtin_cooldown_is_a_draft_until_applied(self):
         window, controller, _ = self.make_window()
@@ -1716,6 +2098,25 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertEqual(stops, [False, True])
         self.assertFalse(runtime["running"])
 
+    def test_close_does_not_wait_for_blocked_stats_refresh(self):
+        entered, release = threading.Event(), threading.Event()
+        self.release_events.append(release)
+
+        def slow_refresh(*, refresh_library=False):
+            if refresh_library:
+                entered.set()
+                release.wait(5)
+
+        self.allow_core("stop_services", result=None)
+        window, controller, _ = self.make_window(
+            demo=False, before_controller=lambda: self.allow_core("emit_stats", slow_refresh))
+        self.wait_until(entered.is_set)
+        window.close()
+        self.wait_until(lambda: window._can_close and not window.isVisible())
+        self.assertTrue(controller.busy("stats"))
+        release.set()
+        self.wait_until(lambda: not controller.busy("stats"))
+
     def test_initial_load_events_are_replayed_once_after_window_connects(self):
         listeners = []
         warning = "配置读取失败，已使用默认值"
@@ -1751,6 +2152,22 @@ class UIIntegrationTests(unittest.TestCase):
         self.core_mocks["load_config"].assert_called_once_with()
         self.core_mocks["load_mapping"].assert_called_once_with()
 
+    def test_active_downloads_keep_start_order_while_progress_updates(self):
+        window, controller, _ = self.make_window(publish=False)
+        for task in ("first", "second"):
+            controller.event.emit("download_start", {"task_id": task, "filename": task + ".mp4"})
+        for _ in range(4):
+            controller.event.emit("progress", {"task_id": "second", "filename": "second.mp4", "done": 1, "total": 2})
+            window.render_downloads()
+            self.assertEqual([window.download_table.item(row, 0).toolTip() for row in range(2)],
+                             ["first.mp4", "second.mp4"])
+        controller.event.emit("download_done", {"task_id": "second", "filename": "second.mp4", "ok": True})
+        self.assertEqual([window.download_table.item(row, 0).toolTip() for row in range(2)],
+                         ["first.mp4", "second.mp4"])
+        controller.event.emit("download_start", {"task_id": "third", "filename": "third.mp4"})
+        self.assertEqual([window.download_table.item(row, 0).toolTip() for row in range(3)],
+                         ["first.mp4", "third.mp4", "second.mp4"])
+
     def test_unknown_download_size_failure_and_cancellation_are_distinct(self):
         window, controller, _ = self.make_window(publish=False)
         self.assertFalse(window.downloads_card.isVisible())
@@ -1778,6 +2195,54 @@ class UIIntegrationTests(unittest.TestCase):
         QTest.mouseClick(window.clear_history_button, Qt.MouseButton.LeftButton)
         self.assertEqual(window.download_table.rowCount(), 1)
         self.assertEqual(window.download_table.item(0, 0).toolTip(), "active.mp4")
+
+    def test_rebuild_index_is_standard_and_separate_from_verification_controls(self):
+        window, _, _ = self.make_window()
+        window.set_ui_mode("simple")
+        self.assertFalse(window.maintenance_card.isHidden())
+        self.assertFalse(window.maintenance_rebuild_row.isHidden())
+        self.assertTrue(window.maintenance_verify_row.isHidden())
+        self.assertTrue(window.maintenance_verify_note.isHidden())
+        self.assertTrue(window.maintenance_cancel_row.isHidden())
+        self.assertNotEqual(window.rebuild_button.parentWidget(), window.verify_button.parentWidget())
+        window.start_maintenance("rebuild")
+        self.assertFalse(window.maintenance_cancel_row.isHidden())
+        window.finish_maintenance()
+        self.assertTrue(window.maintenance_cancel_row.isHidden())
+        window.set_ui_mode("advanced")
+        self.assertFalse(window.maintenance_rebuild_row.isHidden())
+        self.assertFalse(window.maintenance_verify_row.isHidden())
+        self.assertFalse(window.maintenance_verify_note.isHidden())
+        self.assertFalse(window.maintenance_cancel_row.isHidden())
+        self.assertNotEqual(window.maintenance_rebuild_row, window.maintenance_verify_row)
+        widgets = [window.maintenance_card.box.itemAt(index).widget()
+                   for index in range(window.maintenance_card.box.count())]
+        verify_note_index = next(index for index, widget in enumerate(widgets)
+                                 if isinstance(widget, QLabel) and widget.text().startswith("校验支持三种曲库"))
+        self.assertLess(widgets.index(window.maintenance_rebuild_row), verify_note_index)
+        self.assertLess(verify_note_index, widgets.index(window.maintenance_verify_row))
+        self.assertTrue(all("含其他文件的文件夹会保留" in button.toolTip()
+                            for button in window.flatten_buttons.values()))
+
+    def test_verify_room_selection_summary_and_report_export(self):
+        window, controller, _ = self.make_window(demo=False)
+        controller.maintenance = Mock()
+        window.verify_source.setCurrentIndex(window.verify_source.findData("dudu"))
+        window.start_maintenance("verify")
+        controller.maintenance.assert_called_once_with("verify", "dudu")
+        report = self.root / "verification-report.json"
+        report.write_text('{"status":"passed"}', encoding="utf-8")
+        controller.event.emit("verify_done", {
+            "checked": 4, "total": 4, "matched": 2, "bad": 1, "compressed": 1,
+            "youtube": 0, "failed": 0, "report_path": str(report), "cancelled": False,
+        })
+        self.assertIn("大小不同 1", window.maintenance_status.text())
+        self.assertIn("已压缩 1", window.maintenance_status.text())
+        self.assertTrue(window.verify_export_button.isEnabled())
+        destination = self.root / "exported.json"
+        with patch("dance_ui.app.QFileDialog.getSaveFileName", return_value=(str(destination), "")):
+            window.export_verification_report()
+        self.assertEqual(destination.read_text(encoding="utf-8"), '{"status":"passed"}')
 
     def test_maintenance_cancel_waits_for_the_worker_completion_event(self):
         window, controller, _ = self.make_window(demo=False)
@@ -1818,7 +2283,7 @@ class UIIntegrationTests(unittest.TestCase):
         holder.start()
         self.assertTrue(lock_held.wait(0.5))
 
-        def begin_verify():
+        def begin_verify(room="pypy"):
             begin_threads.append(threading.get_ident())
             entered.set()
             with core._lifecycle_lock:
@@ -1871,9 +2336,9 @@ class UIIntegrationTests(unittest.TestCase):
         self.assertIn("共 0 首", browser.summary.text())
         self.assertEqual(browser.table.rowCount(), 2)
         self.assertEqual(browser.table.item(0, 0).text(), "9998")
-        self.assertEqual(browser.table.item(0, 2).text(), "已下架")
+        self.assertEqual(browser.table.item(0, 3).text(), "已下架")
         self.assertEqual(browser.table.item(1, 0).text(), "9999")
-        self.assertEqual(browser.table.item(1, 2).text(), "缺失")
+        self.assertEqual(browser.table.item(1, 3).text(), "缺失")
         self.assertIn("缺失 2 首", browser.missing_label.text())
         browser.close()
 

@@ -1,18 +1,18 @@
 # VRChat 跳舞房助手 · Windows 版
 
-**当前分支为 v4.1.1-bugfix.1 修复测试版。** 实机回归步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。[下载测试包](https://github.com/oreochromis/VRChat-DanceAssistant/releases/tag/v4.1.1-bugfix.1)。
+**当前版本为 v4.4.4.29。** 发布前验证步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。
 
 <img src="assets/app-icon.png" width="96" alt="VRChat 跳舞房助手图标">
 
 为 VRChat 的 PyPyDance / WannaDance / DuDu FitDance 跳舞房提供本地视频缓存、队列预加载和永久曲库管理。**本软件仅支持 Windows x64。**
 
-作者为 **Bilibili @鲨鲨比亚Sharkspeare**（GitHub [@oreochromis](https://github.com/oreochromis)）。3.x 版本保留原有 Python 缓存核心与命令行入口，使用 Qt for Python 重构桌面界面并增加日常使用功能，其中界面重构等部分包含 [@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12）贡献的代码。
+作者为 **Bilibili @鲨鲨比亚Sharkspeare**（GitHub [@oreochromis](https://github.com/oreochromis)）。4.x 版本保留原有 Python 缓存核心与命令行入口，使用 Qt for Python 重构桌面界面并增加日常使用功能，其中界面重构等部分包含 [@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12）贡献的代码。
 
 **[下载最新正式版](https://github.com/oreochromis/pypydance-video-cache/releases/latest)**（选择 VRChatDanceAssistant-windows 开头的 x64 ZIP）
 
 ## 下载与使用
 
-1. 下载 `VRChatDanceAssistant-windows-版本号_x64.zip`（例如 `VRChatDanceAssistant-windows-3.9.9.51_x64.zip`），将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
+1. 下载 `VRChatDanceAssistant-windows-版本号_x64.zip`（例如 `VRChatDanceAssistant-windows-4.4.4.29_x64.zip`），将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
 2. 双击 `VRChatDanceAssistant.exe`，确认 Windows 管理员授权。程序启动后会自动开启缓存服务，无需安装 Python。**不要把 exe 重命名为中文**：SteamVR 的客户端库无法用中文进程名写日志文件，VR 面板和跟随 SteamVR 启动会连不上（报 NoLogPath）。
 3. 服务显示运行中后，进入 VRChat 的 PyPyDance 房间正常点歌。
 4. 根据需要，在“存储”页设置永久曲库，在“设置”页调整预加载数量和 CDN，在“外观”页调整主题。
@@ -26,7 +26,7 @@
 
 对比基线为 [V1.2 源码提交 `5efd712`](https://github.com/oreochromis/pypydance-video-cache/tree/5efd712073d696e180ffeedfbfe51afd293f702e)（tkinter 单窗口时代）。
 
-V1.2 已经具备本地缓存、队列预加载、永久曲库、YouTube 源缓存、CDN 测速、曲库维护和 Cool Down。3.x 在这些能力上继续改进，主要变化如下：
+V1.2 已经具备本地缓存、队列预加载、永久曲库、YouTube 源缓存、CDN 测速、曲库维护和 Cool Down。4.x 在这些能力上继续改进，主要变化如下：
 
 | 项目 | V1.2 旧版 | 当前版本 |
 | --- | --- | --- |
@@ -69,6 +69,28 @@ V1.2 已经具备本地缓存、队列预加载、永久曲库、YouTube 源缓�
 
 歌单直取开启时，YouTube 源会优先尝试 CDN 同名文件并参与队列预载；CDN 无同名文件时，再依赖 VRChat 日志中实际播放时解析出的直链后台保存。软件不自行解析 YouTube。
 
+曲库浏览支持按官方信息筛选：PyPyDance 提供分类与流派，WannaDance 提供官方分组与标签，DuDu FitDance 提供与房间一致的歌曲分组。分类同时适用于本地与缺失歌曲，只改变列表显示，不移动或重命名视频文件。多选歌曲后可用“将选中编号复制到剪贴板”复制为中文顿号分隔格式，或用“将选中编号导出为txt文件”保存为每行一个编号的 TXT 文件。普通歌曲和缺失歌曲均可复制、导出。
+
+### 分类文件夹与旧曲库整理
+
+曲库支持“根目录／官方分类／编号视频”的结构。PyPyDance 使用官方歌曲分类，WannaDance 使用官方分组，DuDu FitDance 使用官方 `groups` 歌曲 ID 映射。官方后续新增分组时无需修改软件；无法识别的歌曲放入 `_未分类`。
+
+旧版平铺曲库仍可读取。需要整理时，在对应曲库卡片点击“整理为分类文件夹…”，程序会先检查同名和重复冲突，再移动文件；失败或取消会回滚本次移动。播放、下载、压缩、校验、删除和目录迁移均支持分类子目录。
+
+### 多语言
+
+软件支持简体中文、繁体中文、英语、日语和韩语。首次启动跟随 Windows 系统主语言，之后可在“设置 → 界面语言”切换并应用，选择会保存。曲库、VR 面板和分享图使用同一套本地语言资源，无需联网翻译。
+
+### 曲库压缩
+
+“存储 → 曲库压缩”可处理 PyPyDance、WannaDance 和 DuDu FitDance 的永久曲库。质量档和体积档会自动应用适合当前编码器的参数，无需手动了解 CRF、CQ、QP 或 ICQ。CPU x264、NVIDIA、AMD 和 Intel 以复选框直接显示，启动时自动检测；不可用项置灰，勾选多个可用资源后会同时处理不同视频，“全部勾选”只选择可用资源。
+
+压缩前点击第一排的“浏览并选择歌曲…”，在专用窗口中按分类、歌名或编号筛选并多选；未选择歌曲时“开始压缩”保持禁用，任务只处理选中的文件，缺失歌曲始终隐藏。普通曲库浏览也支持“全部曲库”，并显示“压缩状态”；可只看未压缩歌曲，鼠标停在已压缩状态上可查看编码器、档位和实际参数，外部已有标记但没有记录时显示参数未知。
+
+压缩保持 H.264、分辨率、帧率和实际帧数不变，AAC 音频直接复制。新文件完整解码验证通过、且至少比原文件小 25% 时才替换原片，否则保留原文件；替换后不额外保留原片。任务队列会持久化，支持并行、手动暂停、继续和取消，并可设置在 VRChat 启动时自动暂停、退出后继续。
+
+成功压缩的文件名会增加 `_compressed` 后缀，缓存与曲库功能仍可正常识别。队列会跳过未变化的已完成文件，并记录实际参数与编码器；原片重新下载或文件更新后会重新入队，失败、跳过和取消的项目可在下次手动开始时重试。
+
 ### CDN 测速与收藏
 
 1. 打开“设置 → CDN 网络”，运行“快速测速”；程序会汇总当前、DNS、收藏、历史优质节点和少量新节点。初筛只检查可用性和响应延迟，不再用小样本速度排名；不超过 8 个可用节点全部完整测速，更多候选按延迟筛选，当前节点始终参与对比。高级模式可自定义候选数量和完整测速样本大小；需要更多候选时，可使用“扩大范围测速（抽样）”。
@@ -99,8 +121,8 @@ VR 面板运行在**独立子进程**中：即使 SteamVR 退出、崩溃或 Ope
 
 程序内置一段约 **3 分 16 秒**的默认放松视频，使用用户提供的原文件，未压缩或降低音频码率。
 
-- 默认使用内置视频，也可以在“设置”页选择其他本地 MP4。
-- 已有自选视频设置会保留。需要切回默认时，点击“使用内置视频”并应用更改。
+- 默认使用内置视频，也可以在“设置”页上传其他本地 MP4，或从全部曲库中选择本地已有视频；曲库选择会默认搜索 `cool down`，缺失歌曲仅展示、不能选择。
+- 已有自选视频设置会保留。需要切回默认时，点击“恢复默认视频”并应用更改。
 - 在“运行”页手动启用 Cool Down 后进入待命，在符合条件的后续视频请求中替换本机画面。
 - 随机播放没有队列或未识别当前歌曲时，刷新模式也可启用，并在下一次视频请求时触发，无需等待队列出现。
 - 等待替换时可以取消，正在替换时可以退出；退出会中断正在发送的放松视频，之后重新加载当前歌曲即可恢复，没有精确的播放结束倒计时。
@@ -174,7 +196,7 @@ Windows 发布构建会执行完整自动化测试，并实际启动打包后的
 ## 来源与许可
 
 - 作者：Bilibili **@鲨鲨比亚Sharkspeare**（GitHub [@oreochromis](https://github.com/oreochromis)）。
-- 贡献者：[@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12），贡献了 3.x Qt 界面重构等代码。
+- 贡献者：[@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12），贡献了 4.x Qt 界面重构等代码。
 - 项目仓库：[oreochromis/pypydance-video-cache](https://github.com/oreochromis/pypydance-video-cache)。
 - 原理参考：[加载失败分析](https://github.com/kiyonya/why-my-dance-video-cannot-play)、[VRCDancePreloader](https://github.com/wzhqwq/VRCDancePreloader)。
 

@@ -11,6 +11,7 @@ import urllib.request
 from pathlib import Path
 
 import dance_cache as core
+from . import __version__
 
 PROFILE_FILENAME = "profile.json"
 AVATAR_FILENAME = "profile-avatar.png"
@@ -80,7 +81,7 @@ def _download(url: str, cookies: str, maximum: int) -> bytes:
     if host not in ("api.vrchat.cloud", "assets.vrchat.com"):
         raise ValueError("头像地址不属于 VRChat。")
     request = urllib.request.Request(url, headers={
-        "User-Agent": "VRChatDanceAssistant/4.2.3",
+        "User-Agent": f"VRChatDanceAssistant/{__version__}",
         "Accept": "application/json,image/*",
         "Cookie": cookies if host == "api.vrchat.cloud" else "",
     })

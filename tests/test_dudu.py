@@ -174,6 +174,156 @@ class DuduTests(unittest.TestCase):
             self.dc.cooldown_disarm()
             self.dc._running = False
 
+    def test_event_preload_uses_latest_playlist_and_preserves_song_order(self):
+        payload = {"playlists": [
+            {"id": 1, "name": "older", "event_date": 100, "ordered_items": [1, 2]},
+            {"id": 65, "name": "20261124", "event_date": 200,
+             "ordered_items": [2398, 1559, 2400, 258, 1559, 0]},
+        ]}
+        with mock.patch.object(self.dc, "is_running", return_value=True), \
+                mock.patch.object(self.dc, "dudu_api_request",
+                                  return_value=(200, {}, json.dumps(payload).encode())), \
+                mock.patch.object(self.dc, "dudu_local_path",
+                                  side_effect=lambda song_id: "cached" if song_id == 1559 else None), \
+                mock.patch.object(self.dc, "start_dudu_download") as start:
+            result = self.dc.preload_dudu_latest_event()
+        self.assertEqual(result["name"], "20261124")
+        self.assertEqual(result["song_ids"], [2398, 1559, 2400, 258])
+        self.assertEqual(result["already_cached"], 1)
+        self.assertEqual(result["queued"], 3)
+        self.assertEqual([call.args[0] for call in start.call_args_list], [258, 2400, 2398])
+
+    def test_event_auto_check_requires_certificate_and_skips_same_decision(self):
+        payload = {"playlists": [{"id": 65, "name": "20261124", "event_date": 200,
+                                  "ordered_items": [2398, 1559, 2400, 0]}]}
+        with mock.patch.object(self.dc, "dudu_api_request") as request:
+            self.assertEqual(self.dc.check_dudu_latest_event()["action"], "disabled")
+        request.assert_not_called()
+
+        self.dc._config["dudu_enabled"] = True
+        expiry = self.dc._dudu_event_expiry(payload["playlists"][0])
+        with mock.patch.object(self.dc.time, "time", return_value=expiry - 100), \
+                mock.patch.object(self.dc, "dudu_api_request",
+                                  return_value=(200, {}, json.dumps(payload).encode())) as request, \
+                mock.patch.object(self.dc, "dudu_local_path",
+                                  side_effect=lambda song_id: "cached" if song_id == 1559 else None):
+            first = self.dc.check_dudu_latest_event()
+            self.assertEqual(first["action"], "ask")
+            self.assertEqual((first["already_cached"], first["queued"]), (1, 2))
+            self.dc.dismiss_dudu_latest_event(first["signature"])
+            self.assertEqual(self.dc.check_dudu_latest_event()["action"], "skipped")
+            payload["playlists"][0]["ordered_items"].append(2401)
+            request.return_value = (200, {}, json.dumps(payload).encode())
+            self.assertEqual(self.dc.check_dudu_latest_event()["action"], "ask")
+
+    def test_event_protection_expires_and_strict_capacity_reclaims_normal_files(self):
+        cache = self.root / "cache"
+        cache.mkdir(exist_ok=True)
+        protected = cache / "dudu_1.mp4"
+        expired = cache / "dudu_2.mp4"
+        normal = cache / "123.mp4"
+        protected.write_bytes(b"protected")
+        expired.write_bytes(b"expired")
+        normal.write_bytes(b"normal")
+        now = self.dc.time.time()
+        self.dc._write_dudu_event_state({
+            "handled_signature": "", "decision": "",
+            "playlists": {
+                "active": {"name": "active", "expires_at": now + 3600, "song_ids": [1]},
+                "expired": {"name": "expired", "expires_at": now - 100, "song_ids": [2]},
+            },
+        })
+        self.dc._config["max_cache_mb"] = 0
+        self.dc.cleanup_cache()
+        self.assertTrue(protected.exists())
+        self.assertFalse(expired.exists())
+        self.assertFalse(normal.exists())
+
+    def test_event_capacity_reservation_and_allow_over_limit(self):
+        cache = self.root / "cache"
+        cache.mkdir(exist_ok=True)
+        protected = cache / "dudu_1.mp4"
+        normal = cache / "123.mp4"
+        protected.write_bytes(b"x" * (700 * 1024))
+        normal.write_bytes(b"x" * (500 * 1024))
+        self.dc._write_dudu_event_state({
+            "handled_signature": "", "decision": "",
+            "playlists": {"event": {"name": "event", "expires_at": self.dc.time.time() + 3600,
+                                    "song_ids": [1]}},
+        })
+        self.dc._config["max_cache_mb"] = 1
+        target = cache / "dudu_2.mp4"
+        self.assertTrue(self.dc._reserve_dudu_event_download(str(target), 300 * 1024, "event"))
+        self.assertFalse(normal.exists())
+        self.assertTrue(protected.exists())
+        with self.assertRaises(self.dc.DuduEventCapacityError):
+            self.dc._reserve_dudu_event_download(str(cache / "dudu_3.mp4"), 800 * 1024, "event")
+        self.dc._config["dudu_event_allow_over_limit"] = True
+        self.assertFalse(self.dc._reserve_dudu_event_download(str(target), 0, "event"))
+
+    def test_event_capacity_failure_pauses_only_remaining_event_tasks(self):
+        signature = "event"
+        first = ("dudu", None, 1, None, signature)
+        second = ("dudu", None, 2, None, signature)
+        ordinary = ("dudu", None, 3, None)
+        self.dc._preload_dl_items[:] = [second, ordinary]
+
+        def full(*args, **kwargs):
+            threading.current_thread()._dance_download_error = self.dc.DuduEventCapacityError("full")
+            return False
+
+        with mock.patch.object(self.dc, "download_dudu", side_effect=full):
+            self.dc._execute_preload_download(first, self.dc._preload_key(first))
+        self.assertEqual(self.dc._preload_dl_items, [ordinary])
+
+    def test_event_custom_https_endpoint_and_validation(self):
+        for invalid in ("http://example.com/events", "https://user:pass@example.com/events", "not-a-url"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                self.dc.update_config({"dudu_event_api_url": invalid})
+        url = "https://example.com/custom-events?room=ddfd"
+        self.dc.update_config({"dudu_event_api_url": url})
+        response = SimpleNamespace(
+            status=200, geturl=lambda: url, getheaders=lambda: {},
+            read=lambda size: b'{"playlists":[]}')
+        context = mock.MagicMock()
+        context.__enter__.return_value = response
+        with mock.patch.object(self.dc, "_tracked_urlopen", return_value=context) as tracked:
+            status, _, body = self.dc._dudu_event_api_request()
+        self.assertEqual((status, body), (200, b'{"playlists":[]}'))
+        self.assertEqual(tracked.call_args.args[0].full_url, url)
+        self.assertEqual(tracked.call_args.args[1], 30)
+
+    def test_automatic_event_preload_rechecks_enablement_mode_and_service(self):
+        self.dc._config["dudu_enabled"] = False
+        with mock.patch.object(self.dc, "is_running", return_value=True), \
+                mock.patch.object(self.dc, "dudu_api_request") as request:
+            self.assertEqual(self.dc.preload_dudu_latest_event(automatic=True)["action"], "disabled")
+        request.assert_not_called()
+
+        self.dc._config.update(dudu_enabled=True, dudu_event_mode="off")
+        with mock.patch.object(self.dc, "is_running", return_value=True), \
+                mock.patch.object(self.dc, "dudu_api_request") as request:
+            self.assertEqual(self.dc.preload_dudu_latest_event(automatic=True)["action"], "off")
+        request.assert_not_called()
+
+        self.dc._config["dudu_event_mode"] = "auto"
+        with mock.patch.object(self.dc, "is_running", return_value=False), \
+                mock.patch.object(self.dc, "dudu_api_request") as request:
+            self.assertEqual(self.dc.preload_dudu_latest_event(automatic=True)["action"], "stopped")
+        request.assert_not_called()
+
+    def test_event_preload_rejects_empty_song_list_and_stopped_service(self):
+        with mock.patch.object(self.dc, "is_running", return_value=True), \
+                mock.patch.object(self.dc, "dudu_api_request",
+                                  return_value=(200, {}, b'{"playlists":[{"ordered_items":[0]}]}')):
+            with self.assertRaisesRegex(RuntimeError, "没有可预载的歌曲"):
+                self.dc.preload_dudu_latest_event()
+        with mock.patch.object(self.dc, "is_running", return_value=False), \
+                mock.patch.object(self.dc, "dudu_api_request") as request:
+            with self.assertRaisesRegex(RuntimeError, "请先启动缓存服务"):
+                self.dc.preload_dudu_latest_event()
+        request.assert_not_called()
+
     def test_dudu_actual_state_log_drives_reload_cooldown(self):
         clip = self.root / "relax.mp4"
         clip.write_bytes(b"relax")

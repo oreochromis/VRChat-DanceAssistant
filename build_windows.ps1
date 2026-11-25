@@ -96,6 +96,10 @@ for name in ("PySide6-Essentials", "Pillow", "PyInstaller", "openvr"):
         "--add-data", ((Join-Path $projectRoot "assets\app-icon.png") + ";assets"),
         "--add-data", ((Join-Path $projectRoot "assets\app-icon.ico") + ";assets"),
         "--add-data", ((Join-Path $projectRoot "assets\backgrounds") + ";assets/backgrounds"),
+        "--add-data", ((Join-Path $projectRoot "assets\ffmpeg\ffmpeg.exe") + ";ffmpeg"),
+        "--add-data", ((Join-Path $projectRoot "assets\ffmpeg\ffprobe.exe") + ";ffmpeg"),
+        "--add-data", ((Join-Path $projectRoot "assets\ffmpeg\LICENSE") + ";ffmpeg"),
+        "--add-data", ((Join-Path $projectRoot "assets\ffmpeg\README.txt") + ";ffmpeg"),
         "dance_cache_gui.py"
     )
 
@@ -140,6 +144,10 @@ for package in ("PySide6-Essentials", "shiboken6", "Pillow", "PyInstaller", "ope
     print(f"{package}: copied {copied} available license/notice files")
 '@
     Invoke-ProjectPythonCode -Code $licenseCollector -ExtraArgs @($bundleRoot)
+    $ffmpegLicenseDir = Join-Path $bundleRoot "THIRD_PARTY_LICENSES\FFmpeg"
+    New-Item -ItemType Directory -Force -Path $ffmpegLicenseDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $projectRoot "assets\ffmpeg\LICENSE") -Destination $ffmpegLicenseDir
+    Copy-Item -LiteralPath (Join-Path $projectRoot "assets\ffmpeg\README.txt") -Destination $ffmpegLicenseDir
 
     Write-Host ""
     Write-Host "Bundle created: $bundleRoot"
