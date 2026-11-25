@@ -1,6 +1,6 @@
 # VRChat 跳舞房助手 · Windows 版
 
-**当前版本为 v4.4.4.29。** 发布前验证步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。
+**当前版本为 v4.4.5。** 发布前验证步骤与数据备份说明见 [测试说明](docs/BUGFIX_TESTING.md)。
 
 <img src="assets/app-icon.png" width="96" alt="VRChat 跳舞房助手图标">
 
@@ -8,11 +8,11 @@
 
 作者为 **Bilibili @鲨鲨比亚Sharkspeare**（GitHub [@oreochromis](https://github.com/oreochromis)）。4.x 版本保留原有 Python 缓存核心与命令行入口，使用 Qt for Python 重构桌面界面并增加日常使用功能，其中界面重构等部分包含 [@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12）贡献的代码。
 
-**[下载最新正式版](https://github.com/oreochromis/pypydance-video-cache/releases/latest)**（选择 VRChatDanceAssistant-windows 开头的 x64 ZIP）
+**[下载最新正式版](https://github.com/oreochromis/VRChat-DanceAssistant/releases/latest)**（选择 VRChatDanceAssistant-windows 开头的 x64 ZIP）
 
 ## 下载与使用
 
-1. 下载 `VRChatDanceAssistant-windows-版本号_x64.zip`（例如 `VRChatDanceAssistant-windows-4.4.4.29_x64.zip`），将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
+1. 下载 `VRChatDanceAssistant-windows-版本号_x64.zip`（例如 `VRChatDanceAssistant-windows-4.4.5_x64.zip`），将整个 `VRChatDanceAssistant` 文件夹解压到当前账户可写的目录（中文路径也可以）。
 2. 双击 `VRChatDanceAssistant.exe`，确认 Windows 管理员授权。程序启动后会自动开启缓存服务，无需安装 Python。**不要把 exe 重命名为中文**：SteamVR 的客户端库无法用中文进程名写日志文件，VR 面板和跟随 SteamVR 启动会连不上（报 NoLogPath）。
 3. 服务显示运行中后，进入 VRChat 的 PyPyDance 房间正常点歌。
 4. 根据需要，在“存储”页设置永久曲库，在“设置”页调整预加载数量和 CDN，在“外观”页调整主题。
@@ -197,7 +197,7 @@ Windows 发布构建会执行完整自动化测试，并实际启动打包后的
 
 - 作者：Bilibili **@鲨鲨比亚Sharkspeare**（GitHub [@oreochromis](https://github.com/oreochromis)）。
 - 贡献者：[@Xiaoyu12-CPU](https://github.com/Xiaoyu12-CPU)（小余12），贡献了 4.x Qt 界面重构等代码。
-- 项目仓库：[oreochromis/pypydance-video-cache](https://github.com/oreochromis/pypydance-video-cache)。
+- 项目仓库：[oreochromis/VRChat-DanceAssistant](https://github.com/oreochromis/VRChat-DanceAssistant)。
 - 原理参考：[加载失败分析](https://github.com/kiyonya/why-my-dance-video-cannot-play)、[VRCDancePreloader](https://github.com/wzhqwq/VRCDancePreloader)。
 
 项目代码沿用 [MIT License](LICENSE)。Qt for Python、Pillow、OpenVR 等依赖使用各自许可，Windows 分发包内的 `THIRD_PARTY_LICENSES` 提供相应声明。
